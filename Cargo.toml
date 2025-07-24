@@ -1,0 +1,53 @@
+[workspace]
+resolver = "2"
+
+members = [
+    "group",
+    "commitment",
+    "proof",
+    "homomorphic-encryption",
+    "mpc",
+    "enhanced-maurer",
+    "maurer",
+    "tiresias",
+    "2pc-mpc",
+    "class-groups",
+]
+
+exclude = []
+
+[workspace.package]
+authors = ["dWallet Labs Ltd. <dev@dwalletlabs.com>"]
+description = "dWallet Labs LTD. Cryptography Library."
+edition = "2021"
+license = "CC-BY-NC-ND-4.0"
+repository = "https://github.com/dwallet-labs/inkrypto"
+version = "0.1.0"
+
+[workspace.dependencies]
+bulletproofs = { git = "https://github.com/ycscaly/bulletproofs.git" }
+crypto-bigint = { version = "0.6.0-rc.6", default-features = false }
+merlin = { version = "3", default-features = false }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", default-features = false }
+thiserror = "1.0.63"
+subtle = { version = "2.5" }
+gcd = { version = "2.3.0" }
+crypto-primes = { version = "0.6.0-pre.2", default-features = false }
+rayon = { version = "1.10.0" }
+rand_core = { version = "0.6.4", default-features = false }
+rstest = "0.22.0"
+rand = "0.8.5"
+curve25519-dalek = { package = "curve25519-dalek-ng", version = "4", default-features = false }
+# curve25519 uses an old version, so must we.
+sha3_old = { package = "sha3", version = "0.9", default-features = false }
+criterion = { version = "0.5" }
+getrandom = { version = "0.2" }
+k256 = { version = "0.14.0-pre.2", default-features = false }
+subtle-ng = "2.5"
+sha3 = "=0.11.0-pre.4"
+ecdsa = { version = "0.17.0-pre.9" }
+itertools = "0.13.0"
+
+[patch.crates-io]
+crypto-bigint = { git = 'https://github.com/erik-3milabs/crypto-bigint.git', rev = '43226a4' }

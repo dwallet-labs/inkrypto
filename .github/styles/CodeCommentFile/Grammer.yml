@@ -1,0 +1,10 @@
+# styles/Grammar.yml
+extends: sequence
+message: "The infinitive '%[4]s' after 'be' requires 'to'. Did you mean '%[2]s to %[4]s'?"
+tokens:
+  - tag: MD    # Modal verb (e.g., 'should', 'must')
+  - pattern: be  # The word "be"
+  - tag: JJ    # Adjective (e.g., 'able', 'ready')
+  - tag: VB|VBN  # Verb (VB) or past participle (VBN)
+
+scope: raw.comment

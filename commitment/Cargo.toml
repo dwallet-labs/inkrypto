@@ -1,0 +1,24 @@
+[package]
+name = "commitment"
+version = "0.1.0"
+edition = "2021"
+license = "CC-BY-NC-ND-4.0"
+
+[dependencies]
+group = { path = "../group" }
+crypto-bigint = { workspace = true }
+serde = { workspace = true }
+merlin = { workspace = true }
+thiserror = { workspace = true }
+
+rand_core = { workspace = true, features = ["std"], optional = true }
+
+[dev-dependencies]
+rand_core = { workspace = true, features = ["std"] }
+bulletproofs = { workspace = true }
+subtle = { workspace = true, features = ["const-generics"] }
+
+[features]
+test_helpers = ["dep:rand_core"]
+
+

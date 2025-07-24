@@ -1,0 +1,28 @@
+[package]
+name = "homomorphic_encryption"
+version = "0.1.0"
+edition = "2021"
+license = "CC-BY-NC-ND-4.0"
+
+[dependencies]
+crypto-bigint = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+group = { path = "../group" }
+mpc = { path = "../mpc" }
+thiserror = { workspace = true }
+
+# for test_helpers feature
+rand_core = { workspace = true, features = ["std"], optional = true }
+getrandom = { workspace = true, features = ["js"] }
+rand = { workspace = true, optional = true }
+rstest = { workspace = true, optional = true }
+criterion = { workspace = true, features = ["html_reports"], optional = true }
+rayon = { workspace = true, optional = true }
+
+[dev-dependencies]
+rstest = { workspace = true }
+rand_core = { workspace = true, features = ["std"] }
+rand = { workspace = true }
+
+[features]
+test_helpers = ["dep:rand_core", "dep:rand", "dep:rayon", "dep:rstest", "dep:criterion",]

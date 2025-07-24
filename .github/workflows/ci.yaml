@@ -1,0 +1,144 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+env:
+  RUST_BACKTRACE: 1
+  RUST_MIN_STACK: 16777216
+  # Change to specific Rust release to pin or `stable` for the latest stable version.
+  rust_stable: "1.88"
+  rust_nightly: nightly
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install Rust ${{ env.rust_stable }}
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.rust_stable }}
+          targets: ${{ matrix.target }}
+      - name: Install Target
+        run: rustup target add ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: rustup target add x86_64-unknown-linux-gnu && cargo build --workspace --release --target ${{ matrix.target }}
+
+  build_wasm:
+    name: Build WASM
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - wasm32-unknown-unknown
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install Rust ${{ env.rust_stable }}
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.rust_stable }}
+          targets: ${{ matrix.target }}
+      - name: Install Target
+        run: rustup target add ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: rustup target add wasm32-unknown-unknown && RUSTFLAGS='--cfg getrandom_backend="wasm_js"' cargo build --workspace --release --target ${{ matrix.target }}
+
+  fmt:
+    name: Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      - name: Install Rust ${{ env.rust_nightly }}
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.rust_nightly }}
+          components: rustfmt
+      - name: Use Rust Cache
+        uses: Swatinem/rust-cache@v2
+      - name: Fmt Check
+        run: rustup component add --toolchain 1.88-x86_64-unknown-linux-gnu rustfmt && cargo fmt --all -- --check
+
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      - name: Install Rust ${{ env.rust_stable }}
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.rust_stable }}
+      - name: Use Rust Cache
+        uses: Swatinem/rust-cache@v2
+      - name: Run Tests
+        run: cargo test --all-features --workspace --release
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      - name: Install Rust ${{ env.rust_nightly }}
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.rust_nightly }}
+          components: clippy
+      - name: Use Rust Cache
+        uses: Swatinem/rust-cache@v2
+      - name: Run Clippy
+        run: rustup component add --toolchain 1.88-x86_64-unknown-linux-gnu clippy && cargo clippy --all --tests --all-targets --all-features --no-deps -- -D warnings
+
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      - name: Install Rust ${{ env.rust_stable }}
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.rust_stable }}
+      - name: Use Rust Cache
+        uses: Swatinem/rust-cache@v2
+      - name: Check Documentation
+        # --no-deps = Do not build documentation for dependencies.
+        # --workspace = Document all members in the workspace.
+        # --all-features = Activate all available features of all selected packages.
+        # --document-private-items = Include non-public items in the documentation.
+        # This will be enabled by default if documenting a binary target.
+        # --examples = Document all example targets.
+        run: |
+          cargo doc --workspace --no-deps --all-features --document-private-items --examples
+
+  verify-license:
+    name: License Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      - name: Verify Repository License
+        run: |
+          chmod +x "${{ github.workspace }}/.github/scripts/verify-license-rust.sh"
+          chmod +x "${{ github.workspace }}/.github/scripts/verify-license-presence.sh"
+          "${{ github.workspace }}/.github/scripts/verify-license-rust.sh"
+          "${{ github.workspace }}/.github/scripts/verify-license-presence.sh"

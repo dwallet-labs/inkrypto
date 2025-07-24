@@ -1,0 +1,45 @@
+[package]
+name = "tiresias"
+version = "0.2.0"
+edition = "2021"
+license = "CC-BY-NC-ND-4.0"
+
+[dependencies]
+group = { path = "../group" }
+homomorphic_encryption = { path = "../homomorphic-encryption" }
+mpc = { path = "../mpc" }
+crypto-bigint = { workspace = true, features = ["rand_core", "serde", "alloc"], default-features = false }
+merlin = { workspace = true, default-features = false }
+serde = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }
+subtle = { workspace = true, features = ["const-generics"] }
+crypto-primes = { workspace = true, default-features = false }
+
+rayon = { workspace = true, optional = true }
+
+# For benchmarking
+criterion = { workspace = true, features = ["html_reports"], optional = true }
+rand_core = { workspace = true, features = ["std"], optional = true }
+rand = { workspace = true, optional = true }
+rstest = { workspace = true, optional = true }
+
+[dev-dependencies]
+rand_core = { workspace = true, features = ["std"] }
+rstest = { workspace = true }
+rand = { workspace = true }
+mpc = { path = "../mpc", features = ["test_helpers"] }
+homomorphic_encryption = { path = "../homomorphic-encryption", features = ["test_helpers"] }
+
+[features]
+default = []
+parallel = ["dep:rayon", "mpc/parallel"]
+
+# These features are for internal-use only (for benchmarking & tests) and exists due to
+# limitations of benchmarking non-public functions, and exposing test functions in Rust.
+# There will be no SemVer support for these features.
+benchmarking = ["dep:criterion", "dep:rand_core", "dep:rand", "parallel", "test_helpers"]
+test_helpers = ["dep:rand_core", "dep:rand", "dep:rstest", "mpc/test_helpers"]
+
+[[bench]]
+name = "benches"
+harness = false

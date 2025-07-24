@@ -1,0 +1,7 @@
+# styles/Spelling.yml
+extends: spelling
+message: "'%s' is misspelled."
+level: error
+ignore:
+  - CodeCommentFile/ignore.txt
+

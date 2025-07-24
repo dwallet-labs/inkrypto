@@ -1,0 +1,34 @@
+[package]
+name = "proof"
+version = "0.1.0"
+edition = "2021"
+license = "CC-BY-NC-ND-4.0"
+
+[dependencies]
+crypto-bigint = { workspace = true, features = ["rand_core", "serde"], default-features = false }
+merlin = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, default-features = false, features = ["alloc"] }
+group = { path = "../group" }
+mpc = { path = "../mpc" }
+commitment = { path = "../commitment" }
+thiserror = { workspace = true }
+itertools = { workspace = true }
+bulletproofs = { workspace = true }
+
+rayon = { workspace = true, optional = true }
+criterion = { workspace = true, features = ["html_reports"], optional = true }
+rand_core = { workspace = true, features = ["std"], optional = true }
+getrandom = { workspace = true, features = ["js"] }
+rand = { workspace = true, features = ["std"], optional = true }
+rstest = { workspace = true, optional = true }
+curve25519-dalek = { workspace = true, default-features = false, features = ["u64_backend", "serde"] }
+
+[dev-dependencies]
+mpc = { path = "../mpc", features = ["test_helpers"] }
+rand_core = { workspace = true, features = ["std"] }
+bulletproofs = { git = "https://github.com/ycscaly/bulletproofs.git", features = ["cloneable"] }
+
+[features]
+test_helpers = ["dep:criterion", "dep:rand_core", "dep:rand", "dep:rstest", "bulletproofs/cloneable"]
+parallel = ["dep:rayon", "dep:rand_core", "mpc/parallel"]

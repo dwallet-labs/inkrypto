@@ -1,0 +1,50 @@
+[package]
+name = "class_groups"
+version = "0.1.0"
+edition = "2021"
+license = "CC-BY-NC-ND-4.0"
+authors = ["dWallet Labs Ltd. <dev@dwalletlabs.com>"]
+
+[lib]
+
+[dependencies]
+criterion = { workspace = true, optional = true }
+crypto-bigint = { workspace = true, features = ["serde"] }
+crypto-primes = { workspace = true }
+merlin = { workspace = true, default-features = false }
+group = { path = "../group" }
+commitment = { path = "../commitment" }
+proof = { path = "../proof" }
+homomorphic_encryption = { path = "../homomorphic-encryption" }
+mpc = { path = "../mpc" }
+maurer = { path = "../maurer", optional = true }
+rand = "0.8.5"
+rand_chacha = "0.3.1"
+rand_core = { workspace = true, features = ["std"], optional = true }
+rstest = { workspace = true, optional = true }
+serde = { version = "1.0.210", features = ["derive"] }
+sha3 = "0.10.8"
+thiserror = { workspace = true }
+itertools = { workspace = true }
+rayon = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true  }
+
+[dev-dependencies]
+criterion = { workspace = true }
+rand = { workspace = true, features = ["std"] }
+rand_core = { workspace = true, features = ["std"] }
+rstest = { workspace = true }
+mpc = { path = "../mpc", features = ["test_helpers"] }
+homomorphic_encryption = { path = "../homomorphic-encryption", features = ["test_helpers"] }
+serde_json = { workspace = true }
+
+[features]
+default = []
+threshold = ["dep:maurer"]
+parallel = ["dep:rayon", "mpc/parallel", "proof/parallel", "maurer/parallel"]
+test_helpers = ["dep:criterion", "dep:rand_core", "dep:rstest", "dep:serde_json", "mpc/test_helpers", "mpc/parallel", "homomorphic_encryption/test_helpers"]
+benchmarking = ["test_helpers", "mpc/parallel", "threshold"]
+
+[[bench]]
+name = "benches"
+harness = false

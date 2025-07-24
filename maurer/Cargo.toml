@@ -1,0 +1,42 @@
+[package]
+name = "maurer"
+version = "0.1.0"
+edition = "2021"
+license = "CC-BY-NC-ND-4.0"
+
+[dependencies]
+crypto-bigint = { workspace = true, features = ["rand_core", "serde"], default-features = false }
+merlin = { workspace = true, default-features = false }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, default-features = false, features = ["alloc"] }
+group = { path = "../group" }
+proof = { path = "../proof" }
+mpc = { path = "../mpc" }
+commitment = { path = "../commitment" }
+homomorphic_encryption = { path = "../homomorphic-encryption" }
+thiserror = { workspace = true }
+
+# For Benchmarking.
+tiresias = { path = "../tiresias", features = ["test_helpers"], optional = true }
+criterion = { workspace = true, features = ["html_reports"], optional = true }
+rand_core = { workspace = true, features = ["std"], optional = true }
+getrandom = { workspace = true, features = ["js"] }
+rstest = { workspace = true, optional = true }
+
+[dev-dependencies]
+rand_core = { workspace = true, features = ["std"] }
+criterion = { workspace = true, features = ["html_reports"] }
+rstest = { workspace = true }
+proof = { path = "../proof", features = ["test_helpers"] }
+mpc = { path = "../mpc", features = ["test_helpers"] }
+class_groups = { path = "../class-groups", features = ["test_helpers"] }
+tiresias = { path = "../tiresias", features = ["test_helpers"] }
+
+[features]
+test_helpers = ["dep:criterion", "dep:rand_core", "dep:rstest", "proof/test_helpers", "dep:tiresias",]
+benchmarking = ["test_helpers", "mpc/parallel", "proof/parallel"]
+parallel = ["group/parallel"]
+
+[[bench]]
+name = "benches"
+harness = false

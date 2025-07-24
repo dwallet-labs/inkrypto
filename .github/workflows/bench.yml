@@ -1,0 +1,49 @@
+name: Benchmarks
+
+on:
+  workflow_dispatch:
+    inputs:
+      benchmark_target:
+        description: "Select the benchmark target"
+        required: true
+        default: "maurer"
+        type: choice
+        options:
+          - maurer
+          - 2pc-mpc
+          - tiresias
+
+env:
+  RUST_BACKTRACE: 1
+  # Change to specific Rust release to pin or `stable` for the latest stable version.
+  rust_stable: "1.80"
+  rust_nightly: nightly
+
+jobs:
+  benchmarks:
+    name: Benchmarks
+    timeout-minutes: 10080
+    runs-on: self-hosted
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      - name: Install Rust ${{ env.rust_stable }}
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.rust_stable }}
+          components: bench
+      - name: Use Rust Cache
+        uses: Swatinem/rust-cache@v2
+      - name: Run Benchmarks
+        run: |
+          case ${{ github.event.inputs.benchmark_target }} in
+            maurer)
+              cargo bench --features benchmarking --package maurer
+              ;;
+            2pc-mpc)
+              cargo bench --features benchmarking --package 2pc-mpc
+              ;;
+            tiresias)
+              cargo bench --features benchmarking --package tiresias
+              ;;
+          esac

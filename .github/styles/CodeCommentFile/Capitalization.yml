@@ -1,0 +1,13 @@
+extends: capitalization
+message: "'%s' should be in sentence case."
+level: warning
+
+# Apply to code comments
+scope: heading.comment
+
+# Ensure comments follow sentence case
+match: $sentence
+style: AP
+exceptions:
+  - ABC
+  - add
