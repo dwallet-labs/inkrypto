@@ -6,12 +6,12 @@
 use std::fmt::Debug;
 use std::marker::PhantomData;
 
-use crypto_bigint::{rand_core::CryptoRngCore, ConcatMixed, Encoding, Uint};
+use crypto_bigint::{ConcatMixed, Encoding, Uint};
 use serde::{Deserialize, Serialize};
 
 use commitment::{pedersen, CommitmentSizedNumber, HomomorphicCommitmentScheme, Pedersen};
 use group::{
-    AffineXCoordinate, GroupElement as _, HashToGroup, Invert, PrimeGroupElement, Samplable,
+    AffineXCoordinate, CsRng, GroupElement as _, HashToGroup, Invert, PrimeGroupElement, Samplable,
     StatisticalSecuritySizedNumber,
 };
 use homomorphic_encryption::AdditivelyHomomorphicEncryptionKey;
@@ -23,10 +23,7 @@ use crate::languages::{
     VectorCommitmentOfDiscreteLogProof,
 };
 use crate::Party::CentralizedParty;
-use crate::{
-    dkg, languages, presign, sign, sign::centralized_party::message::paillier::Message, Error,
-    ProtocolContext, Result,
-};
+use crate::{dkg, languages, presign, sign, Error, ProtocolContext, Result};
 
 #[cfg(feature = "class_groups")]
 mod class_groups;
@@ -97,7 +94,7 @@ where
         >,
         protocol_public_parameters: &ProtocolPublicParameters,
         session_id: CommitmentSizedNumber,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<(
         GroupElement::Scalar,
         GroupElement::Scalar,
@@ -121,6 +118,10 @@ where
         CommitmentOfDiscreteLogProof<SCALAR_LIMBS, GroupElement>,
         VectorCommitmentOfDiscreteLogProof<SCALAR_LIMBS, GroupElement>,
     )> {
+        if presign.public_key != centralized_party_dkg_public_output.public_key {
+            return Err(Error::InvalidParameters);
+        }
+
         let protocol_public_parameters = protocol_public_parameters.as_ref();
 
         let commitment_scheme_public_parameters =
@@ -399,7 +400,7 @@ where
             GroupElement::PublicParameters,
             EncryptionKey::PublicParameters,
         >,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<(GroupElement::Scalar, GroupElement::Scalar, GroupElement)> {
         let witness = GroupElement::Scalar::sample(
             &protocol_public_parameters.scalar_group_public_parameters,
@@ -430,7 +431,7 @@ where
             GroupElement::PublicParameters,
             EncryptionKey::PublicParameters,
         >,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<(GroupElement::Scalar, GroupElement)> {
         let randomness = GroupElement::Scalar::sample(
             &protocol_public_parameters.scalar_group_public_parameters,
@@ -518,7 +519,7 @@ fn generate_protocol_context<GroupElementValue: Serialize>(
 }
 
 /// The public input of the decentralized party's Sign protocol.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct PublicInput<Scalar, DKGOutput, Presign, ProtocolPublicParameters> {
     pub hashed_message: Scalar,
     pub dkg_output: DKGOutput,

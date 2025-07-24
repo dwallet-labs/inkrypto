@@ -12,6 +12,8 @@ use crate::{ibqf::Ibqf, Error};
 
 /// A discriminant.
 /// Must be negative and 0 or 1 mod 4.
+///
+/// TODO(#300): the serialization of this object should not be sent over a wire.
 #[derive(Clone, Debug, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Discriminant<const LIMBS: usize>(NonZero<Int<LIMBS>>)
 where
@@ -22,43 +24,39 @@ where
     Int<LIMBS>: Encoding,
 {
     /// Attempt to create a new discriminant.
-    pub fn new(value: NonZero<Int<LIMBS>>) -> Result<Self, Error> {
+    pub fn new(value: NonZero<Int<LIMBS>>) -> CtOption<Self> {
         let is_negative = Choice::from(value.is_negative());
-
-        // Safe to `unwrap` as this hard-coded number is non-zero
-        let four = U64::from(4u32).to_nz().unwrap();
-        let three = U64::from(3u32);
 
         // For a negative value to be 0 or 1 mod 4, its absolute value should be 0 or 3 mod 4.
         // Note: value is negative.
-        let abs_value_mod_4 = value.abs().rem(&four);
+        let three = Uint::from(3u64);
+        let abs_value_mod_4 = value.abs().bitand(three);
         let is_zero_or_one_mod_4: Choice = abs_value_mod_4
             .is_zero()
             .bitor(abs_value_mod_4.ct_eq(&three));
 
         CtOption::new(Self(value), is_negative.bitand(is_zero_or_one_mod_4))
-            .into_option()
-            .ok_or(Error::InvalidDiscriminantParameters)
     }
 
     /// Upper bound on the size of the class group identified by this discriminant `∆`.
-    /// Computed as: `sqrt(|∆|) * ln(|∆|) / π`
+    /// Computed as: `√(|∆|) * ln(|∆|) / π`
     ///
     /// Ref: Section 5.4.3 (pg. 245) and Exercise 27 (pg. 296) in
     /// "A Course in Computational Algebraic Number Theory" (978-3-662-02945-9).
     pub fn class_number_upper_bound(&self) -> Uint<LIMBS> {
-        // Safe to `unwrap` as this hard-coded number is non-zero
-        let one_hundred_thousand = U64::from(100_000u64).to_nz().unwrap();
+        let one_hundred_thousand = U64::from(100_000u64).to_nz().expect("is non-zero");
 
         let abs = self.0.abs();
-        let sqrt_of_d = abs.sqrt();
-        let log2_of_d = Uint::from(abs.bits());
+        let log2 = abs.saturating_sub(&Uint::ONE).bits();
+
+        // Upper bound √(|∆|) with 2^(⌈log2(|∆|)/2⌉)
+        let sqrt_upper_bound = Uint::ONE.shl_vartime(log2.div_ceil(2));
 
         // ln(x) = log2(x) * ln(2), with ln(2) = 0.69315...
-        let ln_of_d = log2_of_d * U64::from(69_315u64) / one_hundred_thousand;
+        let ln = U64::from((log2 as u64 * 69_315u64) / 100_000u64);
 
         // note: 1/π = 0.31831...
-        ln_of_d * sqrt_of_d * U64::from(31_831u64) / one_hundred_thousand
+        sqrt_upper_bound * ln * U64::from(31_831u64) / one_hundred_thousand
     }
 
     pub(crate) fn resize<const TARGET_LIMBS: usize>(&self) -> Discriminant<TARGET_LIMBS>
@@ -95,6 +93,8 @@ where
 
     fn try_from(value: NonZero<Int<LIMBS>>) -> Result<Self, Self::Error> {
         Self::new(value)
+            .into_option()
+            .ok_or(Error::InvalidDiscriminantParameters)
     }
 }
 
@@ -105,9 +105,11 @@ where
     type Error = Error;
 
     fn try_from(form: Ibqf<LIMBS>) -> Result<Self, Self::Error> {
-        let d = form.discriminant().map_err(|_| Error::InternalError)?;
-        let d = NonZero::new(d).into_option().ok_or(Error::InternalError)?;
-        Self::try_from(d)
+        form.discriminant()
+            .and_then(|d| d.to_nz().into())
+            .into_option()
+            .ok_or(Error::InternalError)
+            .and_then(Self::try_from)
     }
 }
 
@@ -117,6 +119,16 @@ where
 {
     fn conditional_select(a: &Self, b: &Self, choice: Choice) -> Self {
         Self(NonZero::conditional_select(&a.0, &b.0, choice))
+    }
+}
+
+impl<const LIMBS: usize> Default for Discriminant<LIMBS>
+where
+    Int<LIMBS>: Encoding,
+{
+    fn default() -> Self {
+        let minus_15 = Int::from(-15i64).to_nz().expect("-15 is non-zero");
+        Self::new(minus_15).expect("-15 is negative and 1 mod 4")
     }
 }
 
@@ -142,13 +154,17 @@ mod tests {
     fn test_new_rejects_positive_values() {
         let val = NonZero::<I128>::new_unwrap(I128::from(7i64 * 13i64.pow(4u32) * 71i64.pow(4u32)));
         let d = Discriminant::new(val);
-        assert!(d.is_err());
+        assert!(bool::from(d.is_none()));
     }
 
     #[test]
     fn test_new_rejects_2mod4_or_3mod4_values() {
-        assert!(Discriminant::new(NonZero::<I128>::new_unwrap(I128::from(-2i32))).is_err());
-        assert!(Discriminant::new(NonZero::<I128>::new_unwrap(I128::MINUS_ONE)).is_err());
+        assert!(bool::from(
+            Discriminant::new(NonZero::<I128>::new_unwrap(I128::from(-2i32))).is_none()
+        ));
+        assert!(bool::from(
+            Discriminant::new(NonZero::<I128>::new_unwrap(I128::MINUS_ONE)).is_none()
+        ));
         // note: -1 = 3 mod 4
     }
 
@@ -164,7 +180,7 @@ mod tests {
     #[test]
     fn test_try_from_ibqf() {
         let d = Discriminant::new(NonZero::<I128>::new_unwrap(I128::from(-775i32))).unwrap();
-        let form = Ibqf::new_reduced(NonZero::ONE, I128::ONE, &d).unwrap();
+        let form = Ibqf::new(NonZero::ONE, I128::ONE, &d).unwrap();
         let d_ = Discriminant::try_from(form).unwrap();
         assert_eq!(d, d_);
     }
@@ -189,11 +205,11 @@ mod tests {
         .unwrap();
 
         let bound = U1280::from_be_hex(concat![
-            "00000000000000000000000000000000000000000000000000000000000001A2",
-            "D4420BC55D827F80DE9660685B05481823FF27D91483181980D4BBC245E7516C",
-            "57751168E396F79BE85B87C3F4358C3C89DB2E4BD0B21E974400F56AD5108262",
-            "F6ABFCDE31EB7EE9CD342260D4A9497D9E290051C6984588C30B1D77AC626EE0",
-            "CBF440564EA3E5B9DA870863B89CD05917E2EDCEDA3D768EEBA88C4E9C6BCAD2"
+            "00000000000000000000000000000000000000000000000000000000000001C3",
+            "AE9057D1782D38476F2A5A469D7342EDBB59DDC1E7967CAEA747D805E5F30E7F",
+            "F583A53B8E4B87BDCF0307F23CC8DE2AC322291FB3FA6DEFC7A398201CD5F99C",
+            "38B04AB606B7AA25D8D79D0A67620EE8D10F51AC9AFE1DA7B0B39192641B328B",
+            "6D86EC17EBAF102363B256FFC115DF6555C52E72DA122FAD6CB5350092CCF6BE"
         ])
         .resize::<{ U4096::LIMBS }>();
 

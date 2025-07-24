@@ -3,20 +3,20 @@
 
 //! This file implements the Signature Partial Decryption round party for Paillier
 
-use group::PrimeGroupElement;
-
+use super::*;
 use crate::languages::paillier::verify_committed_linear_evaluation;
 use crate::paillier::bulletproofs::PaillierProtocolPublicParameters;
 use crate::paillier::{
     CiphertextSpaceGroupElement, DecryptionKeyShare, DecryptionShare, PartialDecryptionProof,
 };
+use crate::sign::centralized_party::message::paillier::Message;
 use crate::{
     bulletproofs::{RangeProof, COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS},
     paillier::bulletproofs::UnboundedDComEvalWitness,
     paillier::{EncryptionKey, PLAINTEXT_SPACE_SCALAR_LIMBS},
 };
-
-use super::*;
+use group::{PrimeGroupElement, Scale};
+use tiresias::LargeBiPrimeSizedNumber;
 
 impl Party {
     /// Partially decrypt the encrypted signature parts sent by the centralized party.
@@ -28,7 +28,7 @@ impl Party {
         const RANGE_CLAIMS_PER_MASK: usize,
         const NUM_RANGE_CLAIMS: usize,
         const SCALAR_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + AffineXCoordinate<SCALAR_LIMBS> + group::HashToGroup,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Scale<LargeBiPrimeSizedNumber> + AffineXCoordinate<SCALAR_LIMBS> + group::HashToGroup,
     >(
         expected_decrypters: HashSet<PartyID>,
         hashed_message: GroupElement::Scalar,
@@ -63,7 +63,7 @@ impl Party {
             group::PublicParameters<GroupElement::Scalar>,
             GroupElement::PublicParameters,
         >,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> crate::Result< HashMap<
         PartyID,(DecryptionShare, DecryptionShare)>> where Uint<SCALAR_LIMBS>: ConcatMixed<StatisticalSecuritySizedNumber> + for<'a> From<&'a <Uint<SCALAR_LIMBS> as ConcatMixed<StatisticalSecuritySizedNumber>>::MixedOutput> + for<'a> From<&'a <Uint<SCALAR_LIMBS> as ConcatMixed<StatisticalSecuritySizedNumber>>::MixedOutput>,
     {
@@ -103,7 +103,7 @@ impl Party {
         const RANGE_CLAIMS_PER_MASK: usize,
         const NUM_RANGE_CLAIMS: usize,
         const SCALAR_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + AffineXCoordinate<SCALAR_LIMBS> + group::HashToGroup,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Scale<LargeBiPrimeSizedNumber> + AffineXCoordinate<SCALAR_LIMBS> + group::HashToGroup,
     >(
         hashed_message: GroupElement::Scalar,
         dkg_output: dkg::decentralized_party::Output<
@@ -137,7 +137,7 @@ impl Party {
             group::PublicParameters<GroupElement::Scalar>,
             GroupElement::PublicParameters,
         >,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> crate::Result<
         HashMap<PartyID, (DecryptionShare, DecryptionShare, PartialDecryptionProof)>,
     > where         Uint<SCALAR_LIMBS>: ConcatMixed<StatisticalSecuritySizedNumber> + for<'a> From<&'a <Uint<SCALAR_LIMBS> as ConcatMixed<StatisticalSecuritySizedNumber>>::MixedOutput> + for<'a> From<&'a <Uint<SCALAR_LIMBS> as ConcatMixed<StatisticalSecuritySizedNumber>>::MixedOutput>,
@@ -185,7 +185,7 @@ impl Party {
         const RANGE_CLAIMS_PER_MASK: usize,
         const NUM_RANGE_CLAIMS: usize,
         const SCALAR_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + AffineXCoordinate<SCALAR_LIMBS> + group::HashToGroup,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Scale<LargeBiPrimeSizedNumber> + AffineXCoordinate<SCALAR_LIMBS> + group::HashToGroup,
     >(
         paillier_protocol_public_parameters: &PaillierProtocolPublicParameters<
             SCALAR_LIMBS,
@@ -215,7 +215,7 @@ impl Party {
             UnboundedDComEvalWitness<SCALAR_LIMBS, GroupElement>,
         >,
         hashed_message: GroupElement::Scalar,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> crate::Result<()> where         Uint<SCALAR_LIMBS>: ConcatMixed<StatisticalSecuritySizedNumber> + for<'a> From<&'a <Uint<SCALAR_LIMBS> as ConcatMixed<StatisticalSecuritySizedNumber>>::MixedOutput> + for<'a> From<&'a <Uint<SCALAR_LIMBS> as ConcatMixed<StatisticalSecuritySizedNumber>>::MixedOutput>,
     {
         let (

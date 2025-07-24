@@ -3,14 +3,14 @@
 
 use core::{array, marker::PhantomData};
 
-use crypto_bigint::{rand_core::CryptoRngCore, CheckedMul, Uint, U64};
+use crypto_bigint::{CheckedMul, Uint, U64};
 use serde::Serialize;
 
 use commitment::{GroupsPublicParametersAccessors as _, HomomorphicCommitmentScheme};
 use group::{
     direct_product, helpers::FlatMapResults, self_product, BoundedGroupElement,
-    ComputationalSecuritySizedNumber, GroupElement, KnownOrderGroupElement, KnownOrderScalar,
-    PartyID, Samplable, StatisticalSecuritySizedNumber,
+    ComputationalSecuritySizedNumber, CsRng, GroupElement, KnownOrderGroupElement,
+    KnownOrderScalar, PartyID, Samplable, StatisticalSecuritySizedNumber, Transcribeable,
 };
 use mpc::secret_sharing::shamir::Polynomial;
 use proof::range::{
@@ -19,7 +19,9 @@ use proof::range::{
     CommitmentSchemeRandomnessSpaceGroupElement, CommitmentSchemeRandomnessSpacePublicParameters,
     PublicParametersAccessors,
 };
-use proof::{GroupsPublicParameters, GroupsPublicParametersAccessors};
+use proof::{
+    CanonicalGroupsPublicParameters, GroupsPublicParameters, GroupsPublicParametersAccessors,
+};
 
 use crate::{Error, Result};
 
@@ -179,6 +181,8 @@ impl<
     fn homomorphose(
         witness: &Self::WitnessSpaceGroupElement,
         enhanced_language_public_parameters: &Self::PublicParameters,
+        is_randomizer: bool,
+        is_verify: bool,
     ) -> maurer::Result<Self::StatementSpaceGroupElement> {
         let decomposed_witness: [_; NUM_RANGE_CLAIMS] =
             (*witness.range_proof_commitment_message()).into();
@@ -196,6 +200,8 @@ impl<
         let language_statement = Language::homomorphose(
             &language_witness,
             &enhanced_language_public_parameters.language_public_parameters,
+            is_randomizer,
+            is_verify,
         )?;
 
         let commitment_scheme = RangeProof::CommitmentScheme::new(
@@ -469,7 +475,7 @@ impl<
                 Language,
             >,
         >,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<
         maurer::language::WitnessSpaceGroupElement<
             REPETITIONS,
@@ -535,7 +541,7 @@ impl<
                 Language,
             >,
         >,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<
         Vec<
             maurer::language::WitnessSpaceGroupElement<
@@ -586,8 +592,137 @@ pub struct PublicParameters<
     >,
     pub range_proof_public_parameters: RangeProofPublicParameters,
     pub language_public_parameters: LanguagePublicParameters,
+}
+
+#[derive(Serialize)]
+pub struct CanonicalPublicParameters<
+    const REPETITIONS: usize,
+    const NUM_RANGE_CLAIMS: usize,
+    const COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS: usize,
+    RangeClaimPublicParameters: Transcribeable + Serialize,
+    RandomnessSpacePublicParameters: Transcribeable + Serialize,
+    CommitmentSpacePublicParameters: Transcribeable + Serialize,
+    RangeProofPublicParameters: Transcribeable + Serialize,
+    UnboundedWitnessSpacePublicParameters: Transcribeable + Serialize,
+    LanguageStatementSpacePublicParameters: Transcribeable + Serialize,
+    LanguagePublicParameters: Transcribeable + Serialize,
+> {
+    canonical_groups_public_parameters: CanonicalGroupsPublicParameters<
+        direct_product::ThreeWayPublicParameters<
+            self_product::PublicParameters<NUM_RANGE_CLAIMS, RangeClaimPublicParameters>,
+            RandomnessSpacePublicParameters,
+            UnboundedWitnessSpacePublicParameters,
+        >,
+        direct_product::PublicParameters<
+            CommitmentSpacePublicParameters,
+            LanguageStatementSpacePublicParameters,
+        >,
+    >,
+    canonical_range_proof_public_parameters: RangeProofPublicParameters::CanonicalRepresentation,
+    canonical_language_public_parameters: LanguagePublicParameters::CanonicalRepresentation,
     // This is just a string saying "enhanced", the idea is we want to add that to the transcript.
     enhanced_string_for_fiat_shamir: String,
+}
+
+impl<
+        const REPETITIONS: usize,
+        const NUM_RANGE_CLAIMS: usize,
+        const COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS: usize,
+        RangeClaimPublicParameters: Transcribeable + Serialize,
+        RandomnessSpacePublicParameters: Transcribeable + Serialize,
+        CommitmentSpacePublicParameters: Transcribeable + Serialize,
+        RangeProofPublicParameters: Transcribeable + Serialize,
+        UnboundedWitnessSpacePublicParameters: Transcribeable + Serialize,
+        LanguageStatementSpacePublicParameters: Transcribeable + Serialize,
+        LanguagePublicParameters: Transcribeable + Serialize,
+    >
+    From<
+        PublicParameters<
+            REPETITIONS,
+            NUM_RANGE_CLAIMS,
+            COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
+            RangeClaimPublicParameters,
+            RandomnessSpacePublicParameters,
+            CommitmentSpacePublicParameters,
+            RangeProofPublicParameters,
+            UnboundedWitnessSpacePublicParameters,
+            LanguageStatementSpacePublicParameters,
+            LanguagePublicParameters,
+        >,
+    >
+    for CanonicalPublicParameters<
+        REPETITIONS,
+        NUM_RANGE_CLAIMS,
+        COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
+        RangeClaimPublicParameters,
+        RandomnessSpacePublicParameters,
+        CommitmentSpacePublicParameters,
+        RangeProofPublicParameters,
+        UnboundedWitnessSpacePublicParameters,
+        LanguageStatementSpacePublicParameters,
+        LanguagePublicParameters,
+    >
+{
+    fn from(
+        value: PublicParameters<
+            REPETITIONS,
+            NUM_RANGE_CLAIMS,
+            COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
+            RangeClaimPublicParameters,
+            RandomnessSpacePublicParameters,
+            CommitmentSpacePublicParameters,
+            RangeProofPublicParameters,
+            UnboundedWitnessSpacePublicParameters,
+            LanguageStatementSpacePublicParameters,
+            LanguagePublicParameters,
+        >,
+    ) -> Self {
+        Self {
+            canonical_groups_public_parameters: value.groups_public_parameters.into(),
+            canonical_range_proof_public_parameters: value.range_proof_public_parameters.into(),
+            canonical_language_public_parameters: value.language_public_parameters.into(),
+            enhanced_string_for_fiat_shamir: "enhanced".to_string(),
+        }
+    }
+}
+
+impl<
+        const REPETITIONS: usize,
+        const NUM_RANGE_CLAIMS: usize,
+        const COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS: usize,
+        RangeClaimPublicParameters: Transcribeable + Serialize,
+        RandomnessSpacePublicParameters: Transcribeable + Serialize,
+        CommitmentSpacePublicParameters: Transcribeable + Serialize,
+        RangeProofPublicParameters: Transcribeable + Serialize,
+        UnboundedWitnessSpacePublicParameters: Transcribeable + Serialize,
+        LanguageStatementSpacePublicParameters: Transcribeable + Serialize,
+        LanguagePublicParameters: Transcribeable + Serialize,
+    > Transcribeable
+    for PublicParameters<
+        REPETITIONS,
+        NUM_RANGE_CLAIMS,
+        COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
+        RangeClaimPublicParameters,
+        RandomnessSpacePublicParameters,
+        CommitmentSpacePublicParameters,
+        RangeProofPublicParameters,
+        UnboundedWitnessSpacePublicParameters,
+        LanguageStatementSpacePublicParameters,
+        LanguagePublicParameters,
+    >
+{
+    type CanonicalRepresentation = CanonicalPublicParameters<
+        REPETITIONS,
+        NUM_RANGE_CLAIMS,
+        COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
+        RangeClaimPublicParameters,
+        RandomnessSpacePublicParameters,
+        CommitmentSpacePublicParameters,
+        RangeProofPublicParameters,
+        UnboundedWitnessSpacePublicParameters,
+        LanguageStatementSpacePublicParameters,
+        LanguagePublicParameters,
+    >;
 }
 
 impl<
@@ -717,7 +852,6 @@ impl<
             },
             range_proof_public_parameters,
             language_public_parameters,
-            enhanced_string_for_fiat_shamir: "enhanced".to_string(),
         })
     }
 
@@ -930,9 +1064,8 @@ pub type StatementSpaceGroupElement<
 #[cfg(test)]
 pub(crate) mod tests {
     use crypto_bigint::U256;
-    use rand_core::OsRng;
 
-    use group::secp256k1;
+    use group::{secp256k1, OsCsRng};
     use homomorphic_encryption::GroupsPublicParametersAccessors;
     use proof::{
         range,
@@ -963,7 +1096,7 @@ pub(crate) mod tests {
         let secp256k1_scalar_public_parameters = secp256k1::scalar::PublicParameters::default();
 
         let scalar =
-            secp256k1::Scalar::sample(&secp256k1_scalar_public_parameters, &mut OsRng).unwrap();
+            secp256k1::Scalar::sample(&secp256k1_scalar_public_parameters, &mut OsCsRng).unwrap();
 
         let paillier_public_parameters =
             tiresias::encryption_key::PublicParameters::new(N).unwrap();

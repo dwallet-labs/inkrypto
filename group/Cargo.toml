@@ -5,30 +5,36 @@ edition = "2021"
 license = "CC-BY-NC-ND-4.0"
 
 [dependencies]
-crypto-bigint = { workspace = true, features = ["rand_core", "serde"], default-features = false }
+crypto-bigint = { workspace = true, features = ["serde"], default-features = false }
 serde = { workspace = true, features = ["derive"] }
 subtle = { workspace = true, features = ["const-generics"] }
-subtle-ng = { workspace = true }
 thiserror = { workspace = true }
 k256 = { workspace = true, features = ["arithmetic", "critical-section", "precomputed-tables", "serde", "hash2curve", "alloc"], default-features = false }
-curve25519-dalek = { workspace = true, features = ["u64_backend", "serde"] }
-sha3_old = { workspace = true }
+curve25519-dalek = { workspace = true, features = ["serde", "digest"] }
+hash2curve = { workspace = true }
 sha3 = { workspace = true }
 itertools = { workspace = true }
 rayon = { workspace = true, optional = true }
+rand_chacha = { workspace = true, default-features = false }
+rand_core = { workspace = true }
+getrandom = { workspace = true, optional = true }
+serde_json = { workspace = true, default-features = false, features = ["alloc"] }
+
 
 # For Benchmarking.
-criterion = { workspace = true, features = ["html_reports"], optional = true }
-rand_core = { workspace = true, features = ["std"], optional = true }
-getrandom = { workspace = true, features = ["js"] }
+criterion = { workspace = true, default-features = false, features = ["html_reports", "cargo_bench_support", "rayon"], optional = true }
 
 [dev-dependencies]
-rand_core = { workspace = true, features = ["std"] }
 rand = { workspace = true }
+getrandom = { workspace = true }
+rand_core = { workspace = true, features = ["os_rng"] }
 serde_json = { workspace = true, default-features = false, features = ["alloc"] }
 
 [features]
-benchmarking = ["dep:criterion", "dep:rand_core"]
+test_helpers = []
+os_rng = ["dep:getrandom", "rand_core/os_rng"]
+wasm_js = ["os_rng", "getrandom/wasm_js"]
+benchmarking = ["dep:criterion", "rand_core/std"]
 parallel = ["dep:rayon"]
 
 [[bench]]

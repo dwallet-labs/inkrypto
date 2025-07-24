@@ -4,12 +4,13 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 
-use crypto_bigint::{rand_core::CryptoRngCore, ConcatMixed, Encoding, Uint};
+use crypto_bigint::{ConcatMixed, Encoding, Uint};
 use serde::{Deserialize, Serialize};
 
 use commitment::{pedersen, CommitmentSizedNumber};
 use group::{
-    AffineXCoordinate, GroupElement, PartyID, PrimeGroupElement, StatisticalSecuritySizedNumber,
+    AffineXCoordinate, CsRng, GroupElement, PartyID, PrimeGroupElement,
+    StatisticalSecuritySizedNumber,
 };
 use homomorphic_encryption::{
     AdditivelyHomomorphicDecryptionKeyShare, AdditivelyHomomorphicEncryptionKey,
@@ -23,9 +24,7 @@ use crate::languages::{
     VectorCommitmentOfDiscreteLogProof,
 };
 use crate::sign::centralized_party::signature_homomorphic_evaluation_round::generate_protocol_contexts;
-use crate::{
-    dkg, languages, presign, sign, sign::centralized_party::message::paillier::Message, Error,
-};
+use crate::{dkg, languages, presign, sign, Error};
 
 #[cfg(feature = "class_groups")]
 mod class_groups;
@@ -157,7 +156,7 @@ impl Party {
         tangible_party_id: PartyID,
         access_structure: &WeightedThresholdAccessStructure,
         encryption_scheme_public_parameters: &EncryptionKey::PublicParameters,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> crate::Result<
         HashMap<
             PartyID,

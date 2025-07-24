@@ -4,7 +4,18 @@
 use std::array;
 use std::collections::{HashMap, HashSet};
 
+use crypto_bigint::{Encoding, Int, Uint};
+
+use commitment::CommitmentSizedNumber;
+use group::helpers::{DeduplicateAndSort, FlatMapResults, GroupIntoNestedMap};
+use group::{bounded_integers_group, CsRng, GroupElement, PartyID, PrimeGroupElement};
+use homomorphic_encryption::AdditivelyHomomorphicDecryptionKeyShare;
+use mpc::secret_sharing::shamir::over_the_integers::factorial;
+use mpc::{AsynchronousRoundResult, WeightedThresholdAccessStructure};
+
+use crate::accelerator::MultiFoldNupowAccelerator;
 use crate::dkg::{verify_equality_of_discrete_log_proofs, ProveEqualityOfDiscreteLog};
+use crate::equivalence_class::EquivalenceClassOps;
 use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
     SecretKeyShareCRTPrimeDecryptionKeyShare,
     SecretKeyShareCRTPrimeDecryptionKeySharePublicParameters,
@@ -20,20 +31,12 @@ use crate::reconfiguration::party::RoundResult;
 use crate::reconfiguration::{
     Message, Party, PublicInput, PublicOutput, RANDOMIZER_LIMBS, RANDOMIZER_WITNESS_LIMBS,
 };
-use crate::setup::SetupParameters;
+use crate::setup::{DeriveFromPlaintextPublicParameters, SetupParameters};
 use crate::{
     equivalence_class, publicly_verifiable_secret_sharing, CiphertextSpaceGroupElement,
     CompactIbqf, EquivalenceClass, Error, Result,
 };
 use crate::{SECRET_KEY_SHARE_LIMBS, SECRET_KEY_SHARE_WITNESS_LIMBS};
-use commitment::CommitmentSizedNumber;
-use crypto_bigint::rand_core::CryptoRngCore;
-use crypto_bigint::{Encoding, Int, Uint};
-use group::helpers::{DeduplicateAndSort, FlatMapResults, GroupIntoNestedMap};
-use group::{bounded_integers_group, GroupElement, PartyID, PrimeGroupElement};
-use homomorphic_encryption::AdditivelyHomomorphicDecryptionKeyShare;
-use mpc::secret_sharing::shamir::over_the_integers::factorial;
-use mpc::{AsynchronousRoundResult, WeightedThresholdAccessStructure};
 
 impl<
         const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
@@ -58,14 +61,33 @@ where
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
 
     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-        Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        PublicParameters = equivalence_class::PublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
+    SetupParameters<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<GroupElement::Scalar>,
+    >: DeriveFromPlaintextPublicParameters<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<GroupElement::Scalar>,
     >,
     Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>: Encoding,
     GroupElement::Scalar: Default,
 {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn advance_fourth_round(
+        tangible_party_id: PartyID,
         current_access_structure: &WeightedThresholdAccessStructure,
         upcoming_access_structure: &WeightedThresholdAccessStructure,
         session_id: CommitmentSizedNumber,
@@ -107,8 +129,9 @@ where
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             >,
         >,
-        secret_key_share_upper_bound_bits: u32,
-        rng: &mut impl CryptoRngCore,
+        malicious_third_round_parties: HashSet<PartyID>,
+        current_decryption_key_share_bits: u32,
+        rng: &mut impl CsRng,
     ) -> Result<
         RoundResult<
             PLAINTEXT_SPACE_SCALAR_LIMBS,
@@ -124,14 +147,15 @@ where
             encryptions_of_randomizer_contribution_shares_and_proofs_to_upcoming,
             threshold_encryption_of_randomizer_contribution_and_proof,
         ) = Self::handle_first_round_messages(
+            tangible_party_id,
             public_input,
             deal_randomizer_messages.clone(),
             randomizer_contribution_to_upcoming_pvss_party,
+            true,
         )?;
 
         let (
             third_round_malicious_parties,
-            malicious_randomizer_dealers,
             masked_decryption_key_decryption_shares_and_proofs,
             threshold_public_verification_keys_and_proofs,
         ) = Self::handle_third_round_messages(
@@ -197,7 +221,7 @@ where
 
         let discrete_log_public_parameters =
             bounded_integers_group::PublicParameters::new_with_randomizer_upper_bound(
-                secret_key_share_upper_bound_bits,
+                current_decryption_key_share_bits,
             )?;
 
         let parties_sending_invalid_threshold_public_verification_keys_proofs =
@@ -216,19 +240,22 @@ where
                 setup_parameters,
                 current_public_verification_keys,
                 &threshold_public_verification_keys_and_proofs_for_verification,
-                secret_key_share_upper_bound_bits,
+                current_decryption_key_share_bits,
                 rng,
             )?;
 
         let threshold_encryption_scheme_public_parameters_per_crt_prime: [_;
             NUM_ENCRYPTION_OF_DECRYPTION_KEY_PRIMES] = public_input
             .dkg_output
-            .threshold_encryption_scheme_public_parameters_per_crt_prime()?;
+            .threshold_encryption_scheme_public_parameters_per_crt_prime(
+                &public_input.setup_parameters_per_crt_prime,
+            )?;
 
+        let malicious_third_round_parties = malicious_third_round_parties.deduplicate_and_sort();
         let malicious_parties: Vec<_> = first_round_malicious_parties
             .into_iter()
             .chain(third_round_malicious_parties)
-            .chain(malicious_randomizer_dealers.clone())
+            .chain(malicious_third_round_parties.clone())
             .chain(parties_sending_invalid_threshold_public_verification_keys_proofs)
             .deduplicate_and_sort();
 
@@ -238,7 +265,7 @@ where
         ) = Self::compute_threshold_decryption_key_share_public_parameters_per_crt_prime(
             current_access_structure,
             public_input,
-            &malicious_randomizer_dealers,
+            &malicious_third_round_parties,
             &malicious_parties,
             threshold_encryption_scheme_public_parameters_per_crt_prime,
             threshold_encryption_of_randomizer_contribution_and_proof,
@@ -247,7 +274,9 @@ where
 
         let threshold_encryption_of_decryption_key_per_crt_prime = public_input
             .dkg_output
-            .threshold_encryption_of_decryption_key_per_crt_prime()?;
+            .threshold_encryption_of_decryption_key_per_crt_prime(
+                &public_input.setup_parameters_per_crt_prime,
+            )?;
 
         // We sum the encryptions of the secret key and the randomizer for each CRT prime. This is then used for verification of the proofs of correct decryptions.
         // Valid decryption shares are collected to produce the value of $r+s\mod Q'_{m'}$ for each CRT prime.
@@ -314,7 +343,7 @@ where
             reconstructed_commitments_to_randomizer_contribution_sharing_to_upcoming
                 .into_iter()
                 .filter(|(dealer_tangible_party_id, _)| {
-                    !malicious_randomizer_dealers.contains(dealer_tangible_party_id)
+                    !malicious_third_round_parties.contains(dealer_tangible_party_id)
                 })
                 .collect();
 
@@ -322,7 +351,7 @@ where
             encryptions_of_randomizer_contribution_shares_and_proofs_to_upcoming
                 .into_iter()
                 .filter(|(dealer_tangible_party_id, _)| {
-                    !malicious_randomizer_dealers.contains(dealer_tangible_party_id)
+                    !malicious_third_round_parties.contains(dealer_tangible_party_id)
                 })
                 .collect();
 
@@ -342,7 +371,6 @@ where
                 .encryption_key
                 .value(),
             setup_parameters.h,
-            public_input.setup_parameters_per_crt_prime.clone(),
             upcoming_parties_n_factorial,
         )?;
 

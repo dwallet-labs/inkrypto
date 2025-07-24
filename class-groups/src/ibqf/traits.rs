@@ -46,9 +46,9 @@ where
 {
     fn default() -> Self {
         Self {
-            a: NonZero::<Int<LIMBS>>::new(Int::ONE).unwrap(),
-            b: Int::ZERO,
-            c: NonZero::<Int<LIMBS>>::new(Int::ONE).unwrap(),
+            a: Int::from(2i64).to_nz().unwrap(),
+            b: Int::<LIMBS>::ONE,
+            c: Int::from(2i64).to_nz().unwrap(),
             discriminant_bits: 2,
         }
     }

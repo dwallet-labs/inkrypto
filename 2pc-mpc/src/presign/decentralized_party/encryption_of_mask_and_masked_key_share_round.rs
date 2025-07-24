@@ -5,11 +5,11 @@
 
 use std::fmt::Debug;
 
-use crypto_bigint::{rand_core::CryptoRngCore, Encoding, Uint};
+use crypto_bigint::{Encoding, Uint};
 use serde::{Deserialize, Serialize};
 
 use commitment::CommitmentSizedNumber;
-use group::{bounded_natural_numbers_group, GroupElement, PrimeGroupElement, Samplable};
+use group::{bounded_natural_numbers_group, CsRng, GroupElement, PrimeGroupElement, Samplable};
 use homomorphic_encryption::{AdditivelyHomomorphicEncryptionKey, GroupsPublicParametersAccessors};
 use maurer::encryption_of_tuple;
 
@@ -37,7 +37,7 @@ impl Party {
             GroupElement::PublicParameters,
             EncryptionKey::PublicParameters,
         >,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> crate::Result<
         encryption_of_tuple::WitnessSpaceGroupElement<
             PLAINTEXT_SPACE_SCALAR_LIMBS,

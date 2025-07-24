@@ -1,6 +1,20 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
+use std::ops::BitAnd;
+
+use crypto_bigint::{CheckedAdd, CheckedMul, NonZero, Odd, RandomMod, Uint};
+
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use subtle::{Choice, ConstantTimeLess};
+
+use group::{
+    CsRng, GroupElement, KnownOrderGroupElement, StatisticalSecuritySizedNumber, Transcribeable,
+};
+use homomorphic_encryption::{
+    AdditivelyHomomorphicEncryptionKey, Error, GroupsPublicParametersAccessors,
+};
+
 use crate::{
     error::SanityCheckError,
     group::{CiphertextSpaceGroupElement, PlaintextSpaceGroupElement, RandomnessSpaceGroupElement},
@@ -8,15 +22,6 @@ use crate::{
     PaillierModulusSizedNumber, PlaintextSpacePublicParameters, RandomnessSpacePublicParameters,
     PLAINTEXT_SPACE_SCALAR_LIMBS,
 };
-use crypto_bigint::rand_core::CryptoRngCore;
-use crypto_bigint::{CheckedAdd, CheckedMul, NonZero, Odd, RandomMod, Uint};
-use group::{GroupElement, KnownOrderGroupElement, StatisticalSecuritySizedNumber};
-use homomorphic_encryption::{
-    AdditivelyHomomorphicEncryptionKey, Error, GroupsPublicParametersAccessors,
-};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::ops::BitAnd;
-use subtle::{Choice, ConstantTimeLess};
 
 /// A Paillier public encryption key.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +45,7 @@ impl AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS> for Encryp
         plaintext: &Self::PlaintextSpaceGroupElement,
         randomness: &Self::RandomnessSpaceGroupElement,
         public_parameters: &PublicParameters,
+        _is_vartime: bool,
     ) -> Self::CiphertextSpaceGroupElement {
         // Validity checks are performed in public parameter instantiation, given correct public
         // parameters Paillier encryption is a bijection and thus always succeeds, so `.unwrap()`s
@@ -47,7 +53,7 @@ impl AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS> for Encryp
         // are safe here $ c1 = (m*N + 1) * $
         let ciphertext_first_part = plaintext
             .value()
-            .widening_mul(
+            .concatenating_mul(
                 &*public_parameters
                     .plaintext_space_public_parameters()
                     .modulus,
@@ -96,7 +102,7 @@ impl AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS> for Encryp
         ); DIMENSION],
         modulus: &Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>,
         public_parameters: &Self::PublicParameters,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> homomorphic_encryption::Result<Self::PlaintextSpaceGroupElement> {
         if MESSAGE_LIMBS != PLAINTEXT_SPACE_SCALAR_LIMBS {
             return Err(Error::SecureFunctionEvaluation);
@@ -148,6 +154,7 @@ impl AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS> for Encryp
     >(
         &self,
         coefficients: &[Uint<MESSAGE_LIMBS>; DIMENSION],
+        coefficient_upper_bound_bits: u32,
         ciphertexts_and_encoded_messages_upper_bounds: [(
             Self::CiphertextSpaceGroupElement,
             Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>,
@@ -156,6 +163,7 @@ impl AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS> for Encryp
         mask: &Self::PlaintextSpaceGroupElement,
         randomness: &Self::RandomnessSpaceGroupElement,
         public_parameters: &Self::PublicParameters,
+        is_vartime: bool,
     ) -> homomorphic_encryption::Result<Self::CiphertextSpaceGroupElement> {
         if DIMENSION == 0 {
             return Err(Error::ZeroDimension);
@@ -202,14 +210,26 @@ impl AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS> for Encryp
             return Err(Error::SecureFunctionEvaluation);
         }
 
-        let modulus =
-            Self::PlaintextSpaceGroupElement::new(modulus.into(), &mask.public_parameters())?;
+        let modulus = Self::PlaintextSpaceGroupElement::new(
+            modulus.into(),
+            public_parameters.plaintext_space_public_parameters(),
+        )?;
 
-        let linear_combination = Self::evaluate_linear_combination(coefficients, &ciphertexts)?;
+        let linear_combination = Self::evaluate_linear_combination(
+            coefficients,
+            coefficient_upper_bound_bits,
+            &ciphertexts,
+            public_parameters,
+            is_vartime,
+        )?;
 
         // Re-randomize and add a masked multiplication of the modulus to the evaluated ciphertext.
-        let encryption_with_fresh_randomness =
-            self.encrypt_with_randomness(&(modulus * mask), randomness, public_parameters);
+        let encryption_with_fresh_randomness = self.encrypt_with_randomness(
+            &(modulus * mask),
+            randomness,
+            public_parameters,
+            is_vartime,
+        );
 
         Ok(linear_combination + encryption_with_fresh_randomness)
     }
@@ -254,6 +274,10 @@ impl Serialize for PublicParameters {
             .modulus
             .serialize(serializer)
     }
+}
+
+impl Transcribeable for PublicParameters {
+    type CanonicalRepresentation = Self;
 }
 
 impl<'de> Deserialize<'de> for PublicParameters {
@@ -323,6 +347,7 @@ mod tests {
                 &plaintext,
                 &randomness,
                 &public_parameters,
+                false
             )),
             CIPHERTEXT
         )

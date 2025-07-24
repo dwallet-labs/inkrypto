@@ -4,18 +4,11 @@
 //! This file implements the Encryption of Secret Key Share round party for Paillier
 
 pub mod asynchronous {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::fmt::Debug;
     use std::marker::PhantomData;
 
-    use crypto_bigint::rand_core::CryptoRngCore;
     use serde::{Deserialize, Serialize};
-
-    use commitment::CommitmentSizedNumber;
-    use group::{GroupElement, PartyID, PrimeGroupElement, PublicParameters};
-    use mpc::{
-        AsynchronousRoundResult, AsynchronouslyAdvanceable, WeightedThresholdAccessStructure,
-    };
 
     use crate::languages::paillier::{
         construct_encryption_of_discrete_log_public_parameters,
@@ -28,6 +21,12 @@ pub mod asynchronous {
         paillier::bulletproofs::PaillierProtocolPublicParameters,
         paillier::{EncryptionKey, PLAINTEXT_SPACE_SCALAR_LIMBS},
     };
+    use commitment::CommitmentSizedNumber;
+    use group::{PartyID, PrimeGroupElement, PublicParameters, Scale};
+    use mpc::{
+        AsynchronousRoundResult, AsynchronouslyAdvanceable, WeightedThresholdAccessStructure,
+    };
+    use tiresias::LargeBiPrimeSizedNumber;
 
     use super::super::*;
 
@@ -43,7 +42,7 @@ pub mod asynchronous {
             const RANGE_CLAIMS_PER_SCALAR: usize,
             const NUM_RANGE_CLAIMS: usize,
             const SCALAR_LIMBS: usize,
-            GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+            GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Scale<LargeBiPrimeSizedNumber>,
         > mpc::Party
         for Party<RANGE_CLAIMS_PER_SCALAR, NUM_RANGE_CLAIMS, SCALAR_LIMBS, GroupElement>
     {
@@ -62,7 +61,12 @@ pub mod asynchronous {
         );
         type PublicOutput = Self::PublicOutputValue;
         type Message = proof::aggregation::asynchronous::Message<
-            EncryptionOfDiscreteLogProof<SCALAR_LIMBS, RANGE_CLAIMS_PER_SCALAR, GroupElement>,
+            EncryptionOfDiscreteLogProof<
+                SCALAR_LIMBS,
+                RANGE_CLAIMS_PER_SCALAR,
+                GroupElement,
+                ProtocolContext,
+            >,
         >;
     }
 
@@ -70,7 +74,7 @@ pub mod asynchronous {
             const RANGE_CLAIMS_PER_SCALAR: usize,
             const NUM_RANGE_CLAIMS: usize,
             const SCALAR_LIMBS: usize,
-            GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+            GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Scale<LargeBiPrimeSizedNumber>,
         > AsynchronouslyAdvanceable
         for Party<RANGE_CLAIMS_PER_SCALAR, NUM_RANGE_CLAIMS, SCALAR_LIMBS, GroupElement>
     {
@@ -83,7 +87,8 @@ pub mod asynchronous {
             messages: Vec<HashMap<PartyID, Self::Message>>,
             _private_input: Option<Self::PrivateInput>,
             paillier_protocol_public_parameters: &Self::PublicInput,
-            rng: &mut impl CryptoRngCore,
+            malicious_parties_by_round: HashMap<u64, HashSet<PartyID>>,
+            rng: &mut impl CsRng,
         ) -> std::result::Result<
             AsynchronousRoundResult<Self::Message, Self::PrivateOutput, Self::PublicOutput>,
             Self::Error,
@@ -152,7 +157,12 @@ pub mod asynchronous {
             }?;
 
             match <proof::aggregation::asynchronous::Party<
-                EncryptionOfDiscreteLogProof<SCALAR_LIMBS, RANGE_CLAIMS_PER_SCALAR, GroupElement>,
+                EncryptionOfDiscreteLogProof<
+                    SCALAR_LIMBS,
+                    RANGE_CLAIMS_PER_SCALAR,
+                    GroupElement,
+                    ProtocolContext,
+                >,
             > as AsynchronouslyAdvanceable>::advance(
                 session_id,
                 party_id,
@@ -160,6 +170,7 @@ pub mod asynchronous {
                 messages,
                 private_input,
                 &aggregation_public_input,
+                malicious_parties_by_round,
                 rng,
             )? {
                 AsynchronousRoundResult::Advance {
@@ -195,9 +206,14 @@ pub mod asynchronous {
             }
         }
 
-        fn round_causing_threshold_not_reached(failed_round: usize) -> Option<usize> {
+        fn round_causing_threshold_not_reached(failed_round: u64) -> Option<u64> {
             <proof::aggregation::asynchronous::Party<
-                EncryptionOfDiscreteLogProof<SCALAR_LIMBS, RANGE_CLAIMS_PER_SCALAR, GroupElement>,
+                EncryptionOfDiscreteLogProof<
+                    SCALAR_LIMBS,
+                    RANGE_CLAIMS_PER_SCALAR,
+                    GroupElement,
+                    ProtocolContext,
+                >,
             > as AsynchronouslyAdvanceable>::round_causing_threshold_not_reached(
                 failed_round
             )

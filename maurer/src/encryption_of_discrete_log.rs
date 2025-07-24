@@ -7,7 +7,10 @@ use crypto_bigint::{NonZero, Uint};
 use serde::Serialize;
 
 use commitment::Error;
-use group::{direct_product, GroupElement, KnownOrderGroupElement, Reduce, Samplable, Scale};
+use group::bounded_natural_numbers_group::MAURER_RANDOMIZER_DIFF_BITS;
+use group::{
+    direct_product, GroupElement, KnownOrderGroupElement, Reduce, Samplable, Scale, Transcribeable,
+};
 use homomorphic_encryption::{AdditivelyHomomorphicEncryptionKey, GroupsPublicParametersAccessors};
 use proof::GroupsPublicParameters;
 
@@ -142,6 +145,8 @@ where
     fn homomorphose(
         witness: &Self::WitnessSpaceGroupElement,
         language_public_parameters: &Self::PublicParameters,
+        is_randomizer: bool,
+        is_verify: bool,
     ) -> crate::Result<Self::StatementSpaceGroupElement> {
         let base = GroupElement::new(
             language_public_parameters.base,
@@ -177,13 +182,32 @@ where
             &discrete_log_as_plaintext_group_element,
             witness.randomness(),
             &language_public_parameters.encryption_scheme_public_parameters,
+            is_verify,
         );
 
-        let discrete_log_upper_bound_bits = language_public_parameters
-            .discrete_log_upper_bound_bits
-            .unwrap_or(Uint::<DISCRETE_LOG_LIMBS>::BITS);
-        let base_by_discrete_log =
-            base.scale_bounded_generic(&discrete_log, discrete_log_upper_bound_bits);
+        let base_by_discrete_log = if is_verify {
+            base.scale_vartime_accelerated(
+                &discrete_log,
+                language_public_parameters.group_public_parameters(),
+            )
+        } else {
+            let discrete_log_upper_bound_bits = language_public_parameters
+                .discrete_log_sample_bits
+                .map(|discrete_log_upper_sample_bits| {
+                    if is_randomizer {
+                        discrete_log_upper_sample_bits + MAURER_RANDOMIZER_DIFF_BITS
+                    } else {
+                        discrete_log_upper_sample_bits
+                    }
+                })
+                .unwrap_or(Uint::<DISCRETE_LOG_LIMBS>::BITS);
+
+            base.scale_randomized_bounded_accelerated(
+                &discrete_log,
+                language_public_parameters.group_public_parameters(),
+                discrete_log_upper_bound_bits,
+            )
+        };
 
         Ok((encryption_of_discrete_log, base_by_discrete_log).into())
     }
@@ -191,7 +215,8 @@ where
 
 pub(super) mod private {
     use super::*;
-    use proof::GroupsPublicParameters;
+    use group::Transcribeable;
+    use proof::{CanonicalGroupsPublicParameters, GroupsPublicParameters};
 
     #[derive(Clone, Debug, PartialEq, Serialize, Eq)]
     pub struct PublicParameters<
@@ -214,7 +239,32 @@ pub(super) mod private {
         >,
         pub encryption_scheme_public_parameters: EncryptionKeyPublicParameters,
         pub base: GroupElementValue,
-        pub discrete_log_upper_bound_bits: Option<u32>,
+        pub discrete_log_sample_bits: Option<u32>,
+    }
+
+    #[derive(Serialize)]
+    pub struct CanonicalPublicParameters<
+        DiscreteLogGroupElementPublicParameters: Transcribeable + Serialize,
+        GroupPublicParameters: Transcribeable + Serialize,
+        GroupElementValue: Serialize,
+        RandomnessSpacePublicParameters: Transcribeable + Serialize,
+        CiphertextSpacePublicParameters: Transcribeable + Serialize,
+        EncryptionKeyPublicParameters: Transcribeable + Serialize,
+    > {
+        pub(super) canonical_groups_public_parameters: CanonicalGroupsPublicParameters<
+            direct_product::PublicParameters<
+                DiscreteLogGroupElementPublicParameters,
+                RandomnessSpacePublicParameters,
+            >,
+            direct_product::PublicParameters<
+                CiphertextSpacePublicParameters,
+                GroupPublicParameters,
+            >,
+        >,
+        pub(super) canonical_encryption_scheme_public_parameters:
+            EncryptionKeyPublicParameters::CanonicalRepresentation,
+        pub(super) base: GroupElementValue,
+        pub(super) discrete_log_sample_bits: Option<u32>,
     }
 }
 
@@ -286,7 +336,7 @@ impl<
         group_public_parameters: GroupPublicParameters,
         encryption_scheme_public_parameters: EncryptionKeyPublicParameters,
         base: GroupElementValue,
-        discrete_log_upper_bound_bits: Option<u32>,
+        discrete_log_sample_bits: Option<u32>,
     ) -> Self
     where
         EncryptionKey: AdditivelyHomomorphicEncryptionKey<
@@ -324,7 +374,7 @@ impl<
             },
             encryption_scheme_public_parameters,
             base,
-            discrete_log_upper_bound_bits,
+            discrete_log_sample_bits,
         }
     }
 
@@ -354,6 +404,81 @@ impl<
 
         group_public_parameters
     }
+}
+
+impl<
+        DiscreteLogGroupElementPublicParameters: Transcribeable + Serialize,
+        GroupPublicParameters: Transcribeable + Serialize,
+        GroupElementValue: Serialize,
+        RandomnessSpacePublicParameters: Transcribeable + Serialize,
+        CiphertextSpacePublicParameters: Transcribeable + Serialize,
+        EncryptionKeyPublicParameters: Transcribeable + Serialize,
+    >
+    From<
+        private::PublicParameters<
+            DiscreteLogGroupElementPublicParameters,
+            GroupPublicParameters,
+            GroupElementValue,
+            RandomnessSpacePublicParameters,
+            CiphertextSpacePublicParameters,
+            EncryptionKeyPublicParameters,
+        >,
+    >
+    for private::CanonicalPublicParameters<
+        DiscreteLogGroupElementPublicParameters,
+        GroupPublicParameters,
+        GroupElementValue,
+        RandomnessSpacePublicParameters,
+        CiphertextSpacePublicParameters,
+        EncryptionKeyPublicParameters,
+    >
+{
+    fn from(
+        value: private::PublicParameters<
+            DiscreteLogGroupElementPublicParameters,
+            GroupPublicParameters,
+            GroupElementValue,
+            RandomnessSpacePublicParameters,
+            CiphertextSpacePublicParameters,
+            EncryptionKeyPublicParameters,
+        >,
+    ) -> Self {
+        Self {
+            canonical_groups_public_parameters: value.groups_public_parameters.into(),
+            canonical_encryption_scheme_public_parameters: value
+                .encryption_scheme_public_parameters
+                .into(),
+            base: value.base,
+            discrete_log_sample_bits: value.discrete_log_sample_bits,
+        }
+    }
+}
+
+impl<
+        DiscreteLogGroupElementPublicParameters: Transcribeable + Serialize,
+        GroupPublicParameters: Transcribeable + Serialize,
+        GroupElementValue: Serialize,
+        RandomnessSpacePublicParameters: Transcribeable + Serialize,
+        CiphertextSpacePublicParameters: Transcribeable + Serialize,
+        EncryptionKeyPublicParameters: Transcribeable + Serialize,
+    > Transcribeable
+    for private::PublicParameters<
+        DiscreteLogGroupElementPublicParameters,
+        GroupPublicParameters,
+        GroupElementValue,
+        RandomnessSpacePublicParameters,
+        CiphertextSpacePublicParameters,
+        EncryptionKeyPublicParameters,
+    >
+{
+    type CanonicalRepresentation = private::CanonicalPublicParameters<
+        DiscreteLogGroupElementPublicParameters,
+        GroupPublicParameters,
+        GroupElementValue,
+        RandomnessSpacePublicParameters,
+        CiphertextSpacePublicParameters,
+        EncryptionKeyPublicParameters,
+    >;
 }
 
 pub trait WitnessAccessors<

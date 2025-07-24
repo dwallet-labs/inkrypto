@@ -4,10 +4,20 @@
 //! This file implements the Presign Protocol for Paillier
 
 pub mod asynchronous {
-    use crypto_bigint::rand_core::CryptoRngCore;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::fmt::Debug;
     use std::marker::PhantomData;
+
+    use serde::{Deserialize, Serialize};
+
+    use commitment::CommitmentSizedNumber;
+    use group::helpers::DeduplicateAndSort;
+    use group::{CsRng, GroupElement, PartyID, PrimeGroupElement, Scale};
+    use mpc::{
+        AsynchronousRoundResult, AsynchronouslyAdvanceable, HandleInvalidMessages, MajorityVote,
+        WeightedThresholdAccessStructure,
+    };
+    use tiresias::LargeBiPrimeSizedNumber;
 
     use crate::languages::paillier::{
         construct_encryption_of_tuple_public_parameters,
@@ -24,14 +34,6 @@ pub mod asynchronous {
         nonce_public_share_and_encryption_of_masked_nonce_round, PublicInput,
     };
     use crate::{Error, Result};
-    use commitment::CommitmentSizedNumber;
-    use group::helpers::DeduplicateAndSort;
-    use group::{GroupElement, PartyID, PrimeGroupElement};
-    use mpc::{
-        AsynchronousRoundResult, AsynchronouslyAdvanceable, HandleInvalidMessages, MajorityVote,
-        WeightedThresholdAccessStructure,
-    };
-    use serde::{Deserialize, Serialize};
 
     pub type Message<
         const RANGE_CLAIMS_PER_SCALAR: usize,
@@ -52,14 +54,14 @@ pub mod asynchronous {
         const RANGE_CLAIMS_PER_SCALAR: usize,
         const NUM_RANGE_CLAIMS: usize,
         const SCALAR_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Scale<LargeBiPrimeSizedNumber>,
     >(PhantomData<GroupElement>);
 
     impl<
             const RANGE_CLAIMS_PER_SCALAR: usize,
             const NUM_RANGE_CLAIMS: usize,
             const SCALAR_LIMBS: usize,
-            GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+            GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Scale<LargeBiPrimeSizedNumber>,
         > mpc::Party
         for Party<RANGE_CLAIMS_PER_SCALAR, NUM_RANGE_CLAIMS, SCALAR_LIMBS, GroupElement>
     {
@@ -85,7 +87,7 @@ pub mod asynchronous {
             const RANGE_CLAIMS_PER_SCALAR: usize,
             const NUM_RANGE_CLAIMS: usize,
             const SCALAR_LIMBS: usize,
-            GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+            GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Scale<LargeBiPrimeSizedNumber>,
         > AsynchronouslyAdvanceable
         for Party<RANGE_CLAIMS_PER_SCALAR, NUM_RANGE_CLAIMS, SCALAR_LIMBS, GroupElement>
     {
@@ -98,7 +100,8 @@ pub mod asynchronous {
             messages: Vec<HashMap<PartyID, Self::Message>>,
             _private_input: Option<Self::PrivateInput>,
             public_input: &Self::PublicInput,
-            rng: &mut impl CryptoRngCore,
+            malicious_parties_by_round: HashMap<u64, HashSet<PartyID>>,
+            rng: &mut impl CsRng,
         ) -> Result<AsynchronousRoundResult<Self::Message, Self::PrivateOutput, Self::PublicOutput>>
         {
             if messages.len() < 2 {
@@ -136,9 +139,20 @@ pub mod asynchronous {
                     encryption_of_mask_and_masked_key_share_messages,
                     public_input,
                     parties_sending_invalid_encryption_of_mask_and_masked_key_share_messages,
+                    malicious_parties_by_round,
                     rng,
                 )
             } else {
+                // We are calling an inner MPC protocol that assumes it starts from round 1, but we are already at round 3, so we have to transform the rounds.
+                // It is a two-round protocol, and as such for the third of this protocol, no malicious parties are expected
+                // (as it will be the first round of the inner protocol) and as such a default value is taken.
+                // For our fourth round, it will expect malicious parties from round 1.
+                let malicious_parties_by_round = malicious_parties_by_round
+                    .get(&3)
+                    .cloned()
+                    .map(|malicious_parties| HashMap::from([(1, malicious_parties)]))
+                    .unwrap_or_default();
+
                 // Make sure everyone sent the encryption of mask and masked key message.
                 let (
                     parties_sending_invalid_encryption_of_mask_and_masked_key_messages,
@@ -202,12 +216,13 @@ pub mod asynchronous {
                     public_input,
                     malicious_parties,
                     encryption_of_mask_and_masked_key,
+                    malicious_parties_by_round,
                     rng,
                 )
             }
         }
 
-        fn round_causing_threshold_not_reached(failed_round: usize) -> Option<usize> {
+        fn round_causing_threshold_not_reached(failed_round: u64) -> Option<u64> {
             if failed_round <= 2 {
                 <proof::aggregation::asynchronous::Party<
                     EncryptionOfTupleProof<SCALAR_LIMBS, RANGE_CLAIMS_PER_SCALAR, GroupElement>,
@@ -232,7 +247,7 @@ pub mod asynchronous {
             const RANGE_CLAIMS_PER_SCALAR: usize,
             const NUM_RANGE_CLAIMS: usize,
             const SCALAR_LIMBS: usize,
-            GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+            GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Scale<LargeBiPrimeSizedNumber>,
         > Party<RANGE_CLAIMS_PER_SCALAR, NUM_RANGE_CLAIMS, SCALAR_LIMBS, GroupElement>
     {
         #[allow(clippy::too_many_arguments)]
@@ -261,7 +276,8 @@ pub mod asynchronous {
                 >,
             >,
             malicious_parties: Vec<PartyID>,
-            rng: &mut impl CryptoRngCore,
+            malicious_parties_by_round: HashMap<u64, HashSet<PartyID>>,
+            rng: &mut impl CsRng,
         ) -> Result<
             AsynchronousRoundResult<
                 Message<RANGE_CLAIMS_PER_SCALAR, SCALAR_LIMBS, GroupElement>,
@@ -343,6 +359,7 @@ pub mod asynchronous {
                 messages,
                 private_input,
                 &aggregation_public_input,
+                malicious_parties_by_round,
                 rng,
             )? {
                 AsynchronousRoundResult::Advance {
@@ -413,7 +430,8 @@ pub mod asynchronous {
             >,
             malicious_parties: Vec<PartyID>,
             encryption_of_mask_and_masked_key: EncryptionOfMaskAndMaskedKey<SCALAR_LIMBS>,
-            rng: &mut impl CryptoRngCore,
+            malicious_parties_by_round: HashMap<u64, HashSet<PartyID>>,
+            rng: &mut impl CsRng,
         ) -> Result<
             AsynchronousRoundResult<
                 Message<RANGE_CLAIMS_PER_SCALAR, SCALAR_LIMBS, GroupElement>,
@@ -509,6 +527,7 @@ pub mod asynchronous {
                 messages,
                 private_input,
                 &aggregation_public_input,
+                malicious_parties_by_round,
                 rng,
             )? {
                 AsynchronousRoundResult::Advance {
@@ -548,6 +567,7 @@ pub mod asynchronous {
                                 session_id,
                                 encryption_of_mask_and_masked_key,
                                 [first_statement.value(), second_statement.value()],
+                                public_input.dkg_output.public_key,
                             ),
                         })
                     }

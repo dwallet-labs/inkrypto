@@ -4,11 +4,10 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 
-use crypto_bigint::rand_core::CryptoRngCore;
 use serde::{Deserialize, Serialize};
 
 use commitment::Commitment;
-use group::{ComputationalSecuritySizedNumber, PartyID};
+use group::{ComputationalSecuritySizedNumber, CsRng, PartyID};
 use proof::aggregation::{process_incoming_messages, DecommitmentRoundParty};
 
 use crate::aggregation::proof_share_round;
@@ -60,7 +59,7 @@ impl<
     fn decommit_statements_and_statement_mask(
         self,
         commitments: HashMap<PartyID, Self::Commitment>,
-        _rng: &mut impl CryptoRngCore,
+        _rng: &mut impl CsRng,
     ) -> Result<(Self::Decommitment, Self::ProofShareRoundParty)> {
         let commitments =
             process_incoming_messages(self.party_id, self.provers.clone(), commitments, true)?;

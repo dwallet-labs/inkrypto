@@ -5,8 +5,8 @@ use std::marker::PhantomData;
 use serde::{Deserialize, Serialize};
 
 use commitment::{GroupsPublicParametersAccessors, HomomorphicCommitmentScheme};
-use group::{direct_product, Samplable};
-use proof::GroupsPublicParameters;
+use group::{direct_product, Samplable, Transcribeable};
+use proof::{CanonicalGroupsPublicParameters, GroupsPublicParameters};
 
 use crate::Result;
 
@@ -48,6 +48,8 @@ where
     fn homomorphose(
         witness: &Self::WitnessSpaceGroupElement,
         language_public_parameters: &Self::PublicParameters,
+        _is_randomizer: bool,
+        _is_verify: bool,
     ) -> Result<Self::StatementSpaceGroupElement> {
         let commitment_scheme =
             CommitmentScheme::new(&language_public_parameters.commitment_scheme_public_parameters)?;
@@ -108,6 +110,27 @@ pub struct PublicParameters<
         CommitmentSpacePublicParameters,
     >,
     pub commitment_scheme_public_parameters: CommitmentSchemePublicParameters,
+}
+
+impl<
+        MessageSpacePublicParameters: Transcribeable + Serialize,
+        RandomnessSpacePublicParameters: Transcribeable + Serialize,
+        CommitmentSpacePublicParameters: Transcribeable + Serialize,
+        CommitmentSchemePublicParameters: Transcribeable + Serialize,
+    > Transcribeable
+    for PublicParameters<
+        MessageSpacePublicParameters,
+        RandomnessSpacePublicParameters,
+        CommitmentSpacePublicParameters,
+        CommitmentSchemePublicParameters,
+    >
+{
+    type CanonicalRepresentation = CanonicalPublicParameters<
+        MessageSpacePublicParameters,
+        RandomnessSpacePublicParameters,
+        CommitmentSpacePublicParameters,
+        CommitmentSchemePublicParameters,
+    >;
 }
 
 impl<
@@ -203,12 +226,71 @@ impl<
     }
 }
 
+/// The Canonical Representation of the Public Parameters of the Knowledge of Decommitment Maurer Language.
+#[derive(Serialize)]
+pub struct CanonicalPublicParameters<
+    MessageSpacePublicParameters: Transcribeable + Serialize,
+    RandomnessSpacePublicParameters: Transcribeable + Serialize,
+    CommitmentSpacePublicParameters: Transcribeable + Serialize,
+    CommitmentSchemePublicParameters: Transcribeable + Serialize,
+> {
+    canonical_groups_public_parameters: CanonicalGroupsPublicParameters<
+        direct_product::PublicParameters<
+            MessageSpacePublicParameters,
+            RandomnessSpacePublicParameters,
+        >,
+        CommitmentSpacePublicParameters,
+    >,
+    canonical_commitment_scheme_public_parameters:
+        CommitmentSchemePublicParameters::CanonicalRepresentation,
+}
+
+impl<
+        MessageSpacePublicParameters: Transcribeable + Serialize,
+        RandomnessSpacePublicParameters: Transcribeable + Serialize,
+        CommitmentSpacePublicParameters: Transcribeable + Serialize,
+        CommitmentSchemePublicParameters: Transcribeable + Serialize,
+    >
+    From<
+        PublicParameters<
+            MessageSpacePublicParameters,
+            RandomnessSpacePublicParameters,
+            CommitmentSpacePublicParameters,
+            CommitmentSchemePublicParameters,
+        >,
+    >
+    for CanonicalPublicParameters<
+        MessageSpacePublicParameters,
+        RandomnessSpacePublicParameters,
+        CommitmentSpacePublicParameters,
+        CommitmentSchemePublicParameters,
+    >
+{
+    fn from(
+        value: PublicParameters<
+            MessageSpacePublicParameters,
+            RandomnessSpacePublicParameters,
+            CommitmentSpacePublicParameters,
+            CommitmentSchemePublicParameters,
+        >,
+    ) -> Self {
+        Self {
+            canonical_groups_public_parameters: value.groups_public_parameters.into(),
+            canonical_commitment_scheme_public_parameters: value
+                .commitment_scheme_public_parameters
+                .into(),
+        }
+    }
+}
+
 #[cfg(any(test, feature = "test_helpers"))]
 pub mod test_helpers {
-    use super::*;
-    use crate::language;
     use commitment::{pedersen, Pedersen};
     use group::secp256k1;
+
+    use crate::language;
+
+    use super::*;
 
     pub type Lang<const REPETITIONS: usize, const BATCH_SIZE: usize> = Language<
         REPETITIONS,
@@ -247,16 +329,16 @@ mod tests {
     use std::collections::HashMap;
     use std::iter;
 
-    use rand_core::OsRng;
     use rstest::rstest;
 
-    use group::PartyID;
+    use group::{OsCsRng, PartyID};
     use mpc::Weight;
 
-    use super::test_helpers::*;
     use crate::language::StatementSpaceGroupElement;
     use crate::test_helpers::{batch_verifies, generate_valid_proof, sample_witnesses};
     use crate::{test_helpers, BIT_SOUNDNESS_PROOFS_REPETITIONS, SOUND_PROOFS_REPETITIONS};
+
+    use super::test_helpers::*;
 
     #[rstest]
     #[case(1)]
@@ -269,12 +351,12 @@ mod tests {
         test_helpers::valid_proof_verifies::<
             SOUND_PROOFS_REPETITIONS,
             Lang<SOUND_PROOFS_REPETITIONS, 1>,
-        >(&language_public_parameters, batch_size, &mut OsRng);
+        >(&language_public_parameters, batch_size, &mut OsCsRng);
 
         test_helpers::valid_proof_verifies::<
             BIT_SOUNDNESS_PROOFS_REPETITIONS,
             Lang<BIT_SOUNDNESS_PROOFS_REPETITIONS, 1>,
-        >(&language_public_parameters, batch_size, &mut OsRng)
+        >(&language_public_parameters, batch_size, &mut OsCsRng)
     }
 
     #[rstest]
@@ -299,14 +381,19 @@ mod tests {
             let witnesses = sample_witnesses::<
                 SOUND_PROOFS_REPETITIONS,
                 Lang<SOUND_PROOFS_REPETITIONS, 1>,
-            >(&language_public_parameters, batch_size, &mut OsRng);
+            >(&language_public_parameters, batch_size, &mut OsCsRng);
 
-            generate_valid_proof(&language_public_parameters, witnesses, &mut OsRng)
+            generate_valid_proof(&language_public_parameters, witnesses, &mut OsCsRng)
         })
         .take(number_of_proofs)
         .unzip();
 
-        batch_verifies(proofs, statements, &language_public_parameters, &mut OsRng);
+        batch_verifies(
+            proofs,
+            statements,
+            &language_public_parameters,
+            &mut OsCsRng,
+        );
     }
 
     #[test]
@@ -314,13 +401,13 @@ mod tests {
         let language_public_parameters32 = language_public_parameters::<32, 1>();
         test_helpers::valid_fischlin_proof_verifies::<32, Lang<32, 1>>(
             &language_public_parameters32,
-            &mut OsRng,
+            &mut OsCsRng,
         );
 
         let language_public_parameters16 = language_public_parameters::<16, 1>();
         test_helpers::valid_fischlin_proof_verifies::<16, Lang<16, 1>>(
             &language_public_parameters16,
-            &mut OsRng,
+            &mut OsCsRng,
         );
     }
 
@@ -330,13 +417,13 @@ mod tests {
 
         test_helpers::invalid_fischlin_proof_fails_verification::<16, Lang<16, 1>>(
             &language_public_parameters16,
-            &mut OsRng,
+            &mut OsCsRng,
         );
 
         let language_public_parameters22 = language_public_parameters::<22, 1>();
         test_helpers::invalid_fischlin_proof_fails_verification::<22, Lang<22, 1>>(
             &language_public_parameters22,
-            &mut OsRng,
+            &mut OsCsRng,
         );
     }
 
@@ -359,7 +446,7 @@ mod tests {
             None,
             &language_public_parameters,
             batch_size,
-            &mut OsRng,
+            &mut OsCsRng,
         )
     }
 
@@ -385,7 +472,7 @@ mod tests {
             &prover_public_parameters,
             &verifier_public_parameters,
             batch_size,
-            &mut OsRng,
+            &mut OsCsRng,
         );
     }
 
@@ -400,7 +487,7 @@ mod tests {
         test_helpers::proof_with_incomplete_transcript_fails::<
             SOUND_PROOFS_REPETITIONS,
             Lang<SOUND_PROOFS_REPETITIONS, 1>,
-        >(&language_public_parameters, batch_size, &mut OsRng)
+        >(&language_public_parameters, batch_size, &mut OsCsRng)
     }
 
     #[rstest]
@@ -441,7 +528,7 @@ mod tests {
             threshold,
             party_to_weight,
             batch_size,
-            &mut OsRng,
+            &mut OsCsRng,
         );
     }
 

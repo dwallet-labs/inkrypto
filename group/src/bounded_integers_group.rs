@@ -3,17 +3,17 @@
 
 use std::ops::{Add, AddAssign, BitAnd, Mul, Neg, Sub, SubAssign};
 
-use crypto_bigint::{rand_core::CryptoRngCore, Encoding, Int, NonZero, RandomMod, Uint};
+use crypto_bigint::{Encoding, Int, NonZero, RandomMod, Uint};
 use serde::{Deserialize, Serialize};
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 
 use crate::bounded_natural_numbers_group::{
-    MAURER_PROOFS_DIFF_UPPER_BOUND_BITS, MAURER_RANDOMIZER_DIFF_BITS,
+    MAURER_PROOFS_DIFF_UPPER_BOUND_BITS, MAURER_RANDOMIZER_DIFF_BITS, MAURER_RESPONSE_DIFF_BITS,
 };
 use crate::linear_combination::linearly_combine_bounded_or_scale;
 use crate::{
-    BoundedGroupElement, CyclicGroupElement, Error, GroupElement as _, LinearlyCombinable,
-    MulByGenerator, Result, Samplable,
+    BoundedGroupElement, CsRng, CyclicGroupElement, Error, GroupElement as _, LinearlyCombinable,
+    MulByGenerator, Result, Samplable, Transcribeable,
 };
 
 /// An element of the additive group of integers for a power-of-two modulo `n = modulus`
@@ -21,8 +21,6 @@ use crate::{
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub struct GroupElement<const LIMBS: usize> {
     value: Int<LIMBS>,
-    // The number of bits to sample
-    pub sample_bits: u32,
     // The number of bits that should never be overflown, used for computations like `scale_bounded`.
     pub upper_bound_bits: u32,
 }
@@ -39,6 +37,13 @@ where
     pub sample_bits: u32,
     // The number of bits that should never be overflown, used for computations like `scale_bounded`.
     pub upper_bound_bits: u32,
+}
+
+impl<const LIMBS: usize> Transcribeable for PublicParameters<LIMBS>
+where
+    Int<LIMBS>: Encoding,
+{
+    type CanonicalRepresentation = Self;
 }
 
 impl<const LIMBS: usize> PublicParameters<LIMBS>
@@ -77,16 +82,18 @@ where
 {
     fn sample(
         public_parameters: &Self::PublicParameters,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> crate::Result<Self> {
         let upper_bound =
             NonZero::new(Uint::<LIMBS>::ONE << public_parameters.sample_bits).unwrap();
 
         loop {
-            if let Some(value) = Uint::<LIMBS>::random_mod(rng, &upper_bound).to_int().into() {
+            if let Some(value) = Uint::<LIMBS>::random_mod(rng, &upper_bound)
+                .try_into_int()
+                .into()
+            {
                 return Ok(Self {
                     value,
-                    sample_bits: public_parameters.sample_bits,
                     upper_bound_bits: public_parameters.upper_bound_bits,
                 });
             }
@@ -95,7 +102,7 @@ where
 
     fn sample_randomizer(
         public_parameters: &Self::PublicParameters,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> crate::Result<Self> {
         let randomizer_bits = public_parameters
             .sample_bits
@@ -109,10 +116,12 @@ where
         let upper_bound = NonZero::new(Uint::<LIMBS>::ONE << randomizer_bits).unwrap();
 
         loop {
-            if let Some(value) = Uint::<LIMBS>::random_mod(rng, &upper_bound).to_int().into() {
+            if let Some(value) = Uint::<LIMBS>::random_mod(rng, &upper_bound)
+                .try_into_int()
+                .into()
+            {
                 return Ok(Self {
                     value,
-                    sample_bits: public_parameters.sample_bits,
                     upper_bound_bits: public_parameters.upper_bound_bits,
                 });
             }
@@ -147,9 +156,17 @@ where
     type PublicParameters = PublicParameters<LIMBS>;
 
     fn new(value: Self::Value, public_parameters: &Self::PublicParameters) -> crate::Result<Self> {
+        // Make sure that the value is lesser or equal than a Maurer response.
+        // This ensures that no overflow will ever occur in the group operations
+        // (which will panic if it does occur in the case of a bug) as Maurer batch verification is
+        // the largest supported sequence of group operations with this type.
+        let response_upper_bound = public_parameters.sample_bits + MAURER_RESPONSE_DIFF_BITS;
+        if value.abs().bits() > response_upper_bound {
+            return Err(Error::InvalidGroupElement);
+        }
+
         Ok(Self {
             value,
-            sample_bits: public_parameters.sample_bits,
             upper_bound_bits: public_parameters.upper_bound_bits,
         })
     }
@@ -157,7 +174,6 @@ where
     fn neutral(&self) -> Self {
         Self {
             value: Int::<LIMBS>::ZERO,
-            sample_bits: self.sample_bits,
             upper_bound_bits: self.upper_bound_bits,
         }
     }
@@ -167,15 +183,16 @@ where
     ) -> crate::Result<Self> {
         Ok(Self {
             value: Int::<LIMBS>::ZERO,
-            sample_bits: public_parameters.sample_bits,
             upper_bound_bits: public_parameters.upper_bound_bits,
         })
     }
 
     fn scale<const RHS_LIMBS: usize>(&self, scalar: &Uint<RHS_LIMBS>) -> Self {
+        let value = self.value.mul(scalar);
+        assert!(value.abs().bits() <= self.upper_bound_bits);
+
         Self {
-            value: self.value.mul(scalar),
-            sample_bits: self.sample_bits,
+            value,
             upper_bound_bits: self.upper_bound_bits,
         }
     }
@@ -185,25 +202,39 @@ where
         scalar: &Uint<RHS_LIMBS>,
         scalar_bits: u32,
     ) -> Self {
+        assert!(scalar.bits() <= scalar_bits);
+
         crate::scale_bounded(self, scalar, scalar_bits)
     }
 
+    fn scale_bounded_vartime<const RHS_LIMBS: usize>(
+        &self,
+        scalar: &Uint<RHS_LIMBS>,
+        scalar_bits: u32,
+    ) -> Self {
+        self.scale_bounded(scalar, scalar_bits)
+    }
+
+    fn add_randomized(self, other: &Self) -> Self {
+        self + other
+    }
+
+    fn add_vartime(self, other: &Self) -> Self {
+        self + other
+    }
+
     fn double(&self) -> Self {
+        let value = self.value + self.value;
+        assert!(value.abs().bits() <= self.upper_bound_bits);
+
         Self {
-            value: self.value + self.value,
-            sample_bits: self.sample_bits,
+            value,
             upper_bound_bits: self.upper_bound_bits,
         }
     }
-}
 
-impl<const LIMBS: usize> From<GroupElement<LIMBS>> for PublicParameters<LIMBS>
-where
-    Int<LIMBS>: Encoding,
-{
-    fn from(value: GroupElement<LIMBS>) -> Self {
-        // Safe to `unwrap` here, as `value` was constructed after `new()` succeeded for the same values.
-        PublicParameters::new(value.sample_bits, value.upper_bound_bits).unwrap()
+    fn double_vartime(&self) -> Self {
+        self.double()
     }
 }
 
@@ -211,9 +242,11 @@ impl<const LIMBS: usize> Neg for GroupElement<LIMBS> {
     type Output = Self;
 
     fn neg(self) -> Self::Output {
+        let value = self.value.checked_neg().unwrap_or(Int::ZERO);
+        assert!(value.abs().bits() <= self.upper_bound_bits);
+
         Self {
-            value: self.value.checked_neg().unwrap_or(Int::ZERO),
-            sample_bits: self.sample_bits,
+            value,
             upper_bound_bits: self.upper_bound_bits,
         }
     }
@@ -223,9 +256,11 @@ impl<const LIMBS: usize> Add<Self> for GroupElement<LIMBS> {
     type Output = Self;
 
     fn add(self, rhs: Self) -> Self::Output {
+        let value = self.value.add(rhs.value);
+        assert!(value.abs().bits() <= self.upper_bound_bits);
+
         Self {
-            value: self.value.add(rhs.value),
-            sample_bits: self.sample_bits,
+            value,
             upper_bound_bits: self.upper_bound_bits,
         }
     }
@@ -235,9 +270,11 @@ impl<'r, const LIMBS: usize> Add<&'r Self> for GroupElement<LIMBS> {
     type Output = Self;
 
     fn add(self, rhs: &'r Self) -> Self::Output {
+        let value = self.value.add(rhs.value);
+        assert!(value.abs().bits() <= self.upper_bound_bits);
+
         Self {
-            value: self.value.add(rhs.value),
-            sample_bits: self.sample_bits,
+            value,
             upper_bound_bits: self.upper_bound_bits,
         }
     }
@@ -247,9 +284,11 @@ impl<const LIMBS: usize> Sub<Self> for GroupElement<LIMBS> {
     type Output = Self;
 
     fn sub(self, rhs: Self) -> Self::Output {
+        let value = self.value.sub(rhs.value);
+        assert!(value.abs().bits() <= self.upper_bound_bits);
+
         Self {
-            value: self.value.sub(rhs.value),
-            sample_bits: self.sample_bits,
+            value,
             upper_bound_bits: self.upper_bound_bits,
         }
     }
@@ -259,9 +298,11 @@ impl<'r, const LIMBS: usize> Sub<&'r Self> for GroupElement<LIMBS> {
     type Output = Self;
 
     fn sub(self, rhs: &'r Self) -> Self::Output {
+        let value = self.value.sub(rhs.value);
+        assert!(value.abs().bits() <= self.upper_bound_bits);
+
         Self {
-            value: self.value.sub(rhs.value),
-            sample_bits: self.sample_bits,
+            value,
             upper_bound_bits: self.upper_bound_bits,
         }
     }
@@ -269,25 +310,33 @@ impl<'r, const LIMBS: usize> Sub<&'r Self> for GroupElement<LIMBS> {
 
 impl<const LIMBS: usize> AddAssign<Self> for GroupElement<LIMBS> {
     fn add_assign(&mut self, rhs: Self) {
-        self.value.add_assign(rhs.value)
+        self.value.add_assign(rhs.value);
+
+        assert!(self.value.abs().bits() <= self.upper_bound_bits);
     }
 }
 
 impl<'r, const LIMBS: usize> AddAssign<&'r Self> for GroupElement<LIMBS> {
     fn add_assign(&mut self, rhs: &'r Self) {
-        self.value.add_assign(rhs.value)
+        self.value.add_assign(rhs.value);
+
+        assert!(self.value.abs().bits() <= self.upper_bound_bits);
     }
 }
 
 impl<const LIMBS: usize> SubAssign<Self> for GroupElement<LIMBS> {
     fn sub_assign(&mut self, rhs: Self) {
-        self.value = self.value - rhs.value
+        self.value = self.value - rhs.value;
+
+        assert!(self.value.abs().bits() <= self.upper_bound_bits);
     }
 }
 
 impl<'r, const LIMBS: usize> SubAssign<&'r Self> for GroupElement<LIMBS> {
     fn sub_assign(&mut self, rhs: &'r Self) {
-        self.value = self.value - rhs.value
+        self.value = self.value - rhs.value;
+
+        assert!(self.value.abs().bits() <= self.upper_bound_bits);
     }
 }
 
@@ -296,7 +345,11 @@ where
     Int<LIMBS>: Encoding,
 {
     fn mul_by_generator(&self, scalar: Int<LIMBS>) -> Self {
-        self.mul_by_generator(&scalar)
+        let res = self.mul_by_generator(&scalar);
+
+        assert!(res.value.abs().bits() <= self.upper_bound_bits);
+
+        res
     }
 }
 
@@ -309,19 +362,20 @@ where
         // the same number modulu the order.
         Self {
             value: *scalar,
-            sample_bits: self.sample_bits,
             upper_bound_bits: self.upper_bound_bits,
         }
     }
 }
 
-impl<'r, const LIMBS: usize> Mul<Self> for &'r GroupElement<LIMBS> {
+impl<const LIMBS: usize> Mul<Self> for &GroupElement<LIMBS> {
     type Output = GroupElement<LIMBS>;
 
     fn mul(self, rhs: Self) -> Self::Output {
+        let value = self.value.mul(rhs.value);
+        assert!(value.abs().bits() <= self.upper_bound_bits);
+
         GroupElement::<LIMBS> {
-            value: self.value.mul(rhs.value),
-            sample_bits: self.sample_bits,
+            value,
             upper_bound_bits: self.upper_bound_bits,
         }
     }
@@ -331,9 +385,11 @@ impl<'r, const LIMBS: usize> Mul<&'r Self> for &'r GroupElement<LIMBS> {
     type Output = GroupElement<LIMBS>;
 
     fn mul(self, rhs: &'r Self) -> Self::Output {
+        let value = self.value.mul(rhs.value);
+        assert!(value.abs().bits() <= self.upper_bound_bits);
+
         GroupElement::<LIMBS> {
-            value: self.value.mul(rhs.value),
-            sample_bits: self.sample_bits,
+            value,
             upper_bound_bits: self.upper_bound_bits,
         }
     }
@@ -347,7 +403,11 @@ where
     type Output = Self;
 
     fn mul(self, rhs: Int<RHS_LIMBS>) -> Self::Output {
-        self.scale_integer(&rhs)
+        let res = self.scale_integer(&rhs);
+
+        assert!(res.value.abs().bits() <= self.upper_bound_bits);
+
+        res
     }
 }
 
@@ -359,11 +419,15 @@ where
     type Output = Self;
 
     fn mul(self, rhs: &'r Int<RHS_LIMBS>) -> Self::Output {
-        self.scale_integer(rhs)
+        let res = self.scale_integer(rhs);
+
+        assert!(res.value.abs().bits() <= self.upper_bound_bits);
+
+        res
     }
 }
 
-impl<'r, const LIMBS: usize, const RHS_LIMBS: usize> Mul<Int<RHS_LIMBS>> for &'r GroupElement<LIMBS>
+impl<const LIMBS: usize, const RHS_LIMBS: usize> Mul<Int<RHS_LIMBS>> for &GroupElement<LIMBS>
 where
     Int<LIMBS>: Encoding,
     Int<RHS_LIMBS>: Encoding,
@@ -371,7 +435,11 @@ where
     type Output = GroupElement<LIMBS>;
 
     fn mul(self, rhs: Int<RHS_LIMBS>) -> Self::Output {
-        self.scale_integer(&rhs)
+        let res = self.scale_integer(&rhs);
+
+        assert!(res.value.abs().bits() <= self.upper_bound_bits);
+
+        res
     }
 }
 
@@ -384,7 +452,11 @@ where
     type Output = GroupElement<LIMBS>;
 
     fn mul(self, rhs: &'r Int<RHS_LIMBS>) -> Self::Output {
-        self.scale_integer(rhs)
+        let res = self.scale_integer(rhs);
+
+        assert!(res.value.abs().bits() <= self.upper_bound_bits);
+
+        res
     }
 }
 
@@ -407,7 +479,6 @@ where
     fn ct_eq(&self, other: &Self) -> Choice {
         self.value
             .ct_eq(&other.value)
-            .bitand(self.sample_bits.ct_eq(&other.sample_bits))
             .bitand(self.upper_bound_bits.ct_eq(&other.upper_bound_bits))
     }
 }
@@ -420,11 +491,6 @@ where
         Self {
             value: <Int<LIMBS> as ConditionallySelectable>::conditional_select(
                 &a.value, &b.value, choice,
-            ),
-            sample_bits: <u32 as ConditionallySelectable>::conditional_select(
-                &a.sample_bits,
-                &b.sample_bits,
-                choice,
             ),
             upper_bound_bits: <u32 as ConditionallySelectable>::conditional_select(
                 &a.upper_bound_bits,
@@ -442,7 +508,6 @@ where
     fn generator(&self) -> Self {
         Self {
             value: Int::<LIMBS>::ONE,
-            sample_bits: self.sample_bits,
             upper_bound_bits: self.upper_bound_bits,
         }
     }

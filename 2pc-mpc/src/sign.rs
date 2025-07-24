@@ -7,13 +7,13 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::ops::Neg;
 
-use crypto_bigint::{rand_core::CryptoRngCore, ConcatMixed, NonZero, Uint};
+use crypto_bigint::{ConcatMixed, NonZero, Uint};
 use merlin::Transcript;
 use serde::{Deserialize, Serialize};
 
 use commitment::{CommitmentSizedNumber, Pedersen};
 use group::{
-    AffineXCoordinate, GroupElement as _, Invert, PartyID, PrimeGroupElement,
+    AffineXCoordinate, CsRng, GroupElement as _, Invert, PartyID, PrimeGroupElement,
     StatisticalSecuritySizedNumber,
 };
 use homomorphic_encryption::{AdditivelyHomomorphicEncryptionKey, GroupsPublicParametersAccessors};
@@ -50,12 +50,7 @@ pub trait Protocol: dkg::Protocol + presign::Protocol {
     type DecryptionKeyShare: Sync + Send;
 
     /// The decryption key share public parameters.
-    type DecryptionKeySharePublicParameters: Serialize
-        + for<'a> Deserialize<'a>
-        + Clone
-        + Debug
-        + PartialEq
-        + Eq;
+    type DecryptionKeySharePublicParameters: Serialize + Clone + Debug + PartialEq + Eq;
 
     /// The public input of the decentralized party's Sign protocol.
     type SignDecentralizedPartyPublicInput: From<(
@@ -67,7 +62,6 @@ pub trait Protocol: dkg::Protocol + presign::Protocol {
             Self::SignMessage,
             Self::DecryptionKeySharePublicParameters,
         )> + Serialize
-        + for<'a> Deserialize<'a>
         + Clone
         + Debug
         + PartialEq
@@ -91,7 +85,6 @@ pub trait Protocol: dkg::Protocol + presign::Protocol {
             Self::Presign,
             Self::ProtocolPublicParameters,
         )> + Serialize
-        + for<'a> Deserialize<'a>
         + Clone
         + Debug
         + PartialEq
@@ -127,7 +120,7 @@ pub trait Protocol: dkg::Protocol + presign::Protocol {
         presign: Self::Presign,
         sign_message: Self::SignMessage,
         hashed_message: Self::HashedMessage,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> crate::Result<()>;
 }
 
@@ -159,11 +152,11 @@ pub fn verify_signature<
 /// $R'_B$ and the encryption of its masked signature nonce share $\textsf{ct}_{\gamma\cdot k}$ (i.e. masked discrete
 /// log ) from two points $R_{B,0}, R_{B,1}$ and encryptions of
 /// their masked discrete logs $\textsf{ct}_{\gamma\cdot k_{0}}, \textsf{ct}_{\gamma\cdot k_{1}}$ by applying a linear combination using the
-/// public randomizer $\mu_{k}$ derived from a hash
+/// public randomizers $\mu_{x}^{0},\mu_{x}^{1},\mu_{x}^{G}$ derived from a hash
 /// $\mathcal{H}(\textsf{sid},\textsf{msg},\mathbb{G},G,q,H,X,\textsf{pres}_{X,\textsf{sid}},C_{k},C_{kx},X_{B},
 /// C_{\alpha},C_{\beta},\pi_{k},\pi_{\alpha},\pi_{\beta})$
-///  - $\textsf{ct}_{\gamma\cdot k}=(\textsf{ct}_{\gamma\cdot k_{0}})\oplus(\mu_{k}\odot\textsf{ct}_{\gamma\cdot k_{1}})$
-///  - $R_{B,0})+(\mu_{k}\cdot R_{B,1})$
+///  - $\textsf{ct}_{\gamma\cdot k}=(mu_{k}^{0}\odot \textsf{ct}_{\gamma\cdot k_{0}})\oplus(\mu_{k}^{1}\odot\textsf{ct}_{\gamma\cdot k_{1}}\oplus \mu_{k}^{G}\odot \textsf{ct}_{\gamma})$
+///  - $\mu_{k}^{0}\cdotR_{B,0})+\mu_{k}^{1}\cdot R_{B,1}+\mu_{k}^{G}\cdot G$
 ///
 /// NOTE: The protocol uses $ /textsf{msg} $ as input to the random oracle but using any strong collision resistant hash instead is safe.
 ///       Therefore, although this deviates slightly from the protocol, we can safely use here `hashed_message` instead of the message bytes.
@@ -209,6 +202,8 @@ where
             &'a <Uint<SCALAR_LIMBS> as ConcatMixed<StatisticalSecuritySizedNumber>>::MixedOutput,
         >,
 {
+    let generator = GroupElement::generator_from_public_parameters(group_public_parameters)?;
+
     // $\textsf{ct}_{\gamma\cdot k_{0}$
     let encryption_of_masked_decentralized_party_nonce_share_first_part =
         EncryptionKey::CiphertextSpaceGroupElement::new(
@@ -235,15 +230,20 @@ where
         group_public_parameters,
     )?;
 
+    // $ \textst{ct}_\gamma $
+    let encryption_of_mask = EncryptionKey::CiphertextSpaceGroupElement::new(
+        presign.encryption_of_mask,
+        encryption_scheme_public_parameters.ciphertext_space_public_parameters(),
+    )?;
+
     let mut transcript = Transcript::new(
         b"DKG randomize decentralized party public key share and encryption of secret key share",
     );
 
     transcript.append_uint(b"$ sid $", &session_id);
     transcript.serialize_to_transcript_as_json(b"$ msg $", &hashed_message.value())?;
-    transcript.serialize_to_transcript_as_json(b"$ \\GG,G,q $", &group_public_parameters)?;
-    transcript
-        .serialize_to_transcript_as_json(b"$ G, H $", &commitment_scheme_public_parameters)?;
+    transcript.transcribe(b"$ \\GG,G,q $", group_public_parameters.clone())?;
+    transcript.transcribe(b"$ G, H $", commitment_scheme_public_parameters.clone())?;
     transcript.serialize_to_transcript_as_json(b"$X$", &public_key)?;
     transcript.serialize_to_transcript_as_json(
         b"$X_{\\CentralizedParty}$ $",
@@ -277,16 +277,56 @@ where
         group_public_parameters,
     ))
     .unwrap();
-    let challenge: Uint<SCALAR_LIMBS> = group::Value::<GroupElement::Scalar>::from(
-        transcript.uniformly_reduced_challenge::<SCALAR_LIMBS>(b"$\\mu", &group_order),
-    )
-    .into();
+
+    let first_decentralized_party_nonce_share_public_randomizer: Uint<SCALAR_LIMBS> =
+        group::Value::<GroupElement::Scalar>::from(
+            transcript.uniformly_reduced_challenge::<SCALAR_LIMBS>(b"$\\mu_{k}^{0}$", &group_order),
+        )
+        .into();
+
+    let second_decentralized_party_nonce_share_public_randomizer: Uint<SCALAR_LIMBS> =
+        group::Value::<GroupElement::Scalar>::from(
+            transcript.uniformly_reduced_challenge::<SCALAR_LIMBS>(b"$\\mu_{k}^{1}$", &group_order),
+        )
+        .into();
+
+    let free_coefficient_decentralized_party_nonce_share_public_randomizer: Uint<SCALAR_LIMBS> =
+        group::Value::<GroupElement::Scalar>::from(
+            transcript.uniformly_reduced_challenge::<SCALAR_LIMBS>(b"$\\mu_{k}^{G}$", &group_order),
+        )
+        .into();
+
+    // Compute $\textsf{ct}_{\gamma\cdot k}=(mu_{k}^{0}\odot \textsf{ct}_{\gamma\cdot k_{0}})\oplus(\mu_{k}^{1}\odot\textsf{ct}_{\gamma\cdot k_{1}}\oplus \mu_{k}^{G}\odot \textsf{ct}_{\gamma})$
+    let encryption_of_masked_decentralized_party_nonce_share_before_displacing =
+        ((encryption_of_masked_decentralized_party_nonce_share_first_part
+            .scale_vartime(&first_decentralized_party_nonce_share_public_randomizer))
+        .add_vartime(
+            &(encryption_of_masked_decentralized_party_nonce_share_second_part
+                .scale_vartime(&second_decentralized_party_nonce_share_public_randomizer)),
+        ))
+        .add_vartime(
+            &(encryption_of_mask.scale_vartime(
+                &free_coefficient_decentralized_party_nonce_share_public_randomizer,
+            )),
+        );
+
+    // Compute $\mu_{k}^{0}\cdotR_{B,0})+\mu_{k}^{1}\cdot R_{B,1}+\mu_{k}^{G}\cdot G$
+    let decentralized_party_nonce_public_share_before_displacing =
+        ((decentralized_party_nonce_public_share_first_part
+            .scale_vartime(&first_decentralized_party_nonce_share_public_randomizer))
+        .add_vartime(
+            &(decentralized_party_nonce_public_share_second_part
+                .scale_vartime(&second_decentralized_party_nonce_share_public_randomizer)),
+        ))
+        .add_vartime(
+            &(generator.scale_vartime(
+                &free_coefficient_decentralized_party_nonce_share_public_randomizer,
+            )),
+        );
 
     Ok((
-        encryption_of_masked_decentralized_party_nonce_share_first_part
-            + encryption_of_masked_decentralized_party_nonce_share_second_part.scale(&challenge),
-        decentralized_party_nonce_public_share_first_part
-            + decentralized_party_nonce_public_share_second_part.scale(&challenge),
+        encryption_of_masked_decentralized_party_nonce_share_before_displacing,
+        decentralized_party_nonce_public_share_before_displacing,
     ))
 }
 
@@ -306,13 +346,12 @@ pub(crate) mod tests {
     use crypto_bigint::{ConstChoice, Int, Random, U256, U4096};
     use ecdsa::{
         elliptic_curve::{ops::Reduce, Scalar},
-        hazmat::{bits2field, DigestPrimitive},
+        hazmat::{bits2field, DigestAlgorithm},
         signature::{digest::Digest, Verifier},
         Signature, VerifyingKey,
     };
     use k256::sha2::digest::FixedOutput;
     use rand::prelude::IteratorRandom;
-    use rand_core::OsRng;
     use rstest::rstest;
 
     use ::class_groups::{
@@ -321,7 +360,7 @@ pub(crate) mod tests {
     use commitment::HomomorphicCommitmentScheme;
     use group::{
         secp256k1, AffineXCoordinate, GroupElement as _, HashToGroup, KnownOrderGroupElement,
-        PartyID,
+        OsCsRng, PartyID,
     };
     use homomorphic_encryption::{
         AdditivelyHomomorphicDecryptionKey, AdditivelyHomomorphicDecryptionKeyShare,
@@ -340,7 +379,9 @@ pub(crate) mod tests {
     };
 
     use crate::dkg::centralized_party::{PublicKeyShareAndProof, SecretKeyShare};
-    use crate::dkg::tests::{generates_distributed_key_internal, mock_dkg_output};
+    use crate::dkg::tests::{
+        deals_trusted_shares_internal, generates_distributed_key_internal, mock_dkg_output,
+    };
     use crate::languages::KnowledgeOfDiscreteLogUCProof;
     use crate::presign::tests::{generates_presignatures_internal, mock_presign};
     use crate::test_helpers::{setup_class_groups_secp256k1, setup_paillier_secp256k1};
@@ -408,7 +449,7 @@ pub(crate) mod tests {
             (),
             &centralized_party_secret_key_share,
             &centralized_party_public_input,
-            &mut OsRng,
+            &mut OsCsRng,
         )
         .unwrap()
         .outgoing_message;
@@ -541,19 +582,27 @@ pub(crate) mod tests {
     }
 
     #[rstest]
-    #[case(2, HashMap::from([(1, 1), (2, 1)]))]
-    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]))]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), false)]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), true)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), true)]
     #[cfg(feature = "class_groups")]
     fn dkg_presign_signs_async_class_groups_secp256k1(
         #[case] threshold: PartyID,
         #[case] party_to_weight: HashMap<PartyID, Weight>,
+        #[case] is_trusted_dealer: bool,
     ) {
-        dkg_presign_signs_async_class_groups_secp256k1_internal(threshold, party_to_weight)
+        dkg_presign_signs_async_class_groups_secp256k1_internal(
+            threshold,
+            party_to_weight,
+            is_trusted_dealer,
+        )
     }
 
     pub(crate) fn dkg_presign_signs_async_class_groups_secp256k1_internal(
         threshold: PartyID,
         party_to_weight: HashMap<PartyID, Weight>,
+        is_trusted_dealer: bool,
     ) {
         let access_structure =
             WeightedThresholdAccessStructure::new(threshold, party_to_weight.clone()).unwrap();
@@ -596,6 +645,7 @@ pub(crate) mod tests {
                         party_id,
                         share,
                         &decryption_key_share_public_parameters,
+                        &mut OsCsRng,
                     )
                     .unwrap(),
                 )
@@ -630,7 +680,7 @@ pub(crate) mod tests {
             .collect();
 
         let m = bits2field::<k256::Secp256k1>(
-            &<k256::Secp256k1 as DigestPrimitive>::Digest::new_with_prefix(MESSAGE.as_bytes())
+            &<k256::Secp256k1 as DigestAlgorithm>::Digest::new_with_prefix(MESSAGE.as_bytes())
                 .finalize_fixed(),
         )
         .unwrap();
@@ -653,6 +703,7 @@ pub(crate) mod tests {
             decryption_key_share_public_parameters,
             tangible_party_id_to_virtual_party_id_to_decryption_key_share,
             protocol_public_parameters,
+            is_trusted_dealer,
             "Class Groups Asynchronous secp256k1".to_string(),
         );
 
@@ -776,7 +827,7 @@ pub(crate) mod tests {
                         .to_tangible_party_id(virtual_party_id)
                         .unwrap(),
                 ) {
-                    let wrong_share = Uint::random(&mut OsRng);
+                    let wrong_share = Uint::random(&mut OsCsRng);
                     let wrong_share = wrong_share
                         & (Uint::ONE
                             << secret_key_share_size_upper_bound(
@@ -807,6 +858,7 @@ pub(crate) mod tests {
                         party_id,
                         share,
                         &decryption_key_share_public_parameters,
+                        &mut OsCsRng,
                     )
                     .unwrap(),
                 )
@@ -839,7 +891,7 @@ pub(crate) mod tests {
             .collect();
 
         let m = bits2field::<k256::Secp256k1>(
-            &<k256::Secp256k1 as DigestPrimitive>::Digest::new_with_prefix(MESSAGE.as_bytes())
+            &<k256::Secp256k1 as DigestAlgorithm>::Digest::new_with_prefix(MESSAGE.as_bytes())
                 .finalize_fixed(),
         )
         .unwrap();
@@ -863,7 +915,7 @@ pub(crate) mod tests {
             >,
         >(&protocol_public_parameters);
 
-        let presign_session_id = CommitmentSizedNumber::random(&mut OsRng);
+        let presign_session_id = CommitmentSizedNumber::random(&mut OsCsRng);
 
         let presign = mock_presign::<
             { secp256k1::SCALAR_LIMBS },
@@ -928,20 +980,28 @@ pub(crate) mod tests {
     }
 
     #[rstest]
-    #[case(2, HashMap::from([(1, 1), (2, 1)]))]
-    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]))]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), false)]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), true)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), true)]
     #[cfg(all(feature = "paillier", feature = "bulletproofs",))]
     pub(crate) fn dkg_presign_signs_async_paillier_secp256k11(
         #[case] threshold: PartyID,
         #[case] party_to_weight: HashMap<PartyID, Weight>,
+        #[case] is_trusted_dealer: bool,
     ) {
-        dkg_presign_signs_async_paillier_secp256k1_internal(threshold, party_to_weight)
+        dkg_presign_signs_async_paillier_secp256k1_internal(
+            threshold,
+            party_to_weight,
+            is_trusted_dealer,
+        )
     }
 
     #[cfg(all(feature = "paillier", feature = "bulletproofs",))]
     pub(crate) fn dkg_presign_signs_async_paillier_secp256k1_internal(
         threshold: PartyID,
         party_to_weight: HashMap<PartyID, Weight>,
+        is_trusted_dealer: bool,
     ) {
         let access_structure =
             WeightedThresholdAccessStructure::new(threshold, party_to_weight.clone()).unwrap();
@@ -964,6 +1024,7 @@ pub(crate) mod tests {
                         party_id,
                         share,
                         &decryption_key_share_public_parameters,
+                        &mut OsCsRng,
                     )
                     .unwrap(),
                 )
@@ -997,7 +1058,7 @@ pub(crate) mod tests {
             .collect();
 
         let m = bits2field::<k256::Secp256k1>(
-            &<k256::Secp256k1 as DigestPrimitive>::Digest::new_with_prefix(MESSAGE.as_bytes())
+            &<k256::Secp256k1 as DigestAlgorithm>::Digest::new_with_prefix(MESSAGE.as_bytes())
                 .finalize_fixed(),
         )
         .unwrap();
@@ -1020,6 +1081,7 @@ pub(crate) mod tests {
             decryption_key_share_public_parameters,
             tangible_party_id_to_virtual_party_id_to_decryption_key_share,
             paillier_protocol_public_parameters,
+            is_trusted_dealer,
             "Paillier Asynchronous secp256k1".to_string(),
         );
 
@@ -1122,7 +1184,7 @@ pub(crate) mod tests {
                     .contains(&access_structure.to_tangible_party_id(party_id).unwrap())
                 {
                     let wrong_share = if party_id % 2 == 0 {
-                        Uint::random(&mut OsRng)
+                        Uint::random(&mut OsCsRng)
                     } else {
                         Uint::default()
                     };
@@ -1150,6 +1212,7 @@ pub(crate) mod tests {
                         party_id,
                         share,
                         &decryption_key_share_public_parameters,
+                        &mut OsCsRng,
                     )
                     .unwrap(),
                 )
@@ -1180,7 +1243,7 @@ pub(crate) mod tests {
             .collect();
 
         let m = bits2field::<k256::Secp256k1>(
-            &<k256::Secp256k1 as DigestPrimitive>::Digest::new_with_prefix(MESSAGE.as_bytes())
+            &<k256::Secp256k1 as DigestAlgorithm>::Digest::new_with_prefix(MESSAGE.as_bytes())
                 .finalize_fixed(),
         )
         .unwrap();
@@ -1199,7 +1262,7 @@ pub(crate) mod tests {
             EncryptionKey,
         >(&paillier_protocol_public_parameters.protocol_public_parameters);
 
-        let presign_session_id = CommitmentSizedNumber::random(&mut OsRng);
+        let presign_session_id = CommitmentSizedNumber::random(&mut OsCsRng);
 
         let presign = mock_presign::<
             { secp256k1::SCALAR_LIMBS },
@@ -1271,6 +1334,7 @@ pub(crate) mod tests {
             HashMap<PartyID, P::DecryptionKeyShare>,
         >,
         protocol_public_parameters: P::ProtocolPublicParameters,
+        is_trusted_dealer: bool,
         description: String,
     ) -> (GroupElement, GroupElement::Scalar, GroupElement::Scalar)
     where
@@ -1294,6 +1358,7 @@ pub(crate) mod tests {
             >,
             HashedMessage = GroupElement::Scalar,
             Signature = (GroupElement::Scalar, GroupElement::Scalar),
+            SecretKey = group::Value<GroupElement::Scalar>,
         >,
         P::ProtocolPublicParameters: AsRef<
             ProtocolPublicParameters<
@@ -1307,20 +1372,34 @@ pub(crate) mod tests {
             centralized_party_dkg_output,
             centralized_party_secret_key_share,
             decentralized_party_dkg_output,
-        ) = generates_distributed_key_internal::<
-            SCALAR_LIMBS,
-            PLAINTEXT_SPACE_SCALAR_LIMBS,
-            GroupElement,
-            EncryptionKey,
-            DecryptionKey,
-            P,
-        >(
-            dkg_session_id,
-            access_structure.clone(),
-            protocol_public_parameters.clone(),
-            decryption_key,
-            description.clone(),
-        );
+        ) = if is_trusted_dealer {
+            deals_trusted_shares_internal::<
+                SCALAR_LIMBS,
+                PLAINTEXT_SPACE_SCALAR_LIMBS,
+                GroupElement,
+                EncryptionKey,
+                P,
+            >(
+                dkg_session_id,
+                access_structure.clone(),
+                protocol_public_parameters.clone(),
+            )
+        } else {
+            generates_distributed_key_internal::<
+                SCALAR_LIMBS,
+                PLAINTEXT_SPACE_SCALAR_LIMBS,
+                GroupElement,
+                EncryptionKey,
+                DecryptionKey,
+                P,
+            >(
+                dkg_session_id,
+                access_structure.clone(),
+                protocol_public_parameters.clone(),
+                decryption_key,
+                description.clone(),
+            )
+        };
         let parties: Vec<PartyID> = access_structure
             .party_to_virtual_parties()
             .keys()
@@ -1340,7 +1419,7 @@ pub(crate) mod tests {
             })
             .collect();
 
-        let presign_session_id = CommitmentSizedNumber::random(&mut OsRng);
+        let presign_session_id = CommitmentSizedNumber::random(&mut OsCsRng);
         let presign = generates_presignatures_internal::<
             SCALAR_LIMBS,
             PLAINTEXT_SPACE_SCALAR_LIMBS,
@@ -1381,44 +1460,27 @@ pub(crate) mod tests {
 
 #[cfg(all(test, feature = "benchmarking"))]
 mod benches {
-    use rand_core::OsRng;
     use std::collections::HashSet;
 
+    use group::OsCsRng;
     use mpc::WeightedThresholdAccessStructure;
 
     #[test]
     #[ignore]
+    #[allow(clippy::single_element_loop)]
     fn benchmark() {
         println!(
             "\nProtocol, Number of Parties, Threshold, Batch Size, Centralized Party Total Time (ms), Decentralized Party Total Time (ms), Decentralized Party Decryption Share Time (ms), Decentralized Party Threshold Decryption Time (ms)",
         );
 
-        for (threshold, number_of_tangible_parties, total_weight) in
-            [(10, 5, 15), (20, 10, 30), (67, 50, 100), (67, 100, 100)]
-        {
+        for (threshold, number_of_tangible_parties, total_weight) in [(67, 100, 100)] {
             let access_structure = WeightedThresholdAccessStructure::uniform(
                 threshold,
                 number_of_tangible_parties,
                 total_weight,
-                &mut OsRng,
+                &mut OsCsRng,
             )
             .unwrap();
-
-            super::tests::signs_async_paillier_secp256k1_internal(
-                access_structure.threshold,
-                access_structure.party_to_weight.clone(),
-                HashSet::new(),
-                true,
-                true,
-            );
-
-            super::tests::signs_async_paillier_secp256k1_internal(
-                access_structure.threshold,
-                access_structure.party_to_weight.clone(),
-                HashSet::new(),
-                true,
-                false,
-            );
 
             super::tests::signs_async_class_groups_secp256k1_internal(
                 access_structure.threshold,

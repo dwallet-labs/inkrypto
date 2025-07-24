@@ -4,12 +4,27 @@
 //! This file implements the Presign Protocol for Class Groups
 
 pub mod asynchronous {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::fmt::Debug;
     use std::marker::PhantomData;
 
     use crypto_bigint::{Encoding, Int, Uint};
     use serde::{Deserialize, Serialize};
+
+    use ::class_groups::CiphertextSpaceGroupElement;
+    use ::class_groups::{encryption_key, CompactIbqf, EncryptionKey, EquivalenceClass};
+    use ::class_groups::{equivalence_class, RandomnessSpaceGroupElement};
+    use ::class_groups::{CiphertextSpacePublicParameters, RandomnessSpacePublicParameters};
+    use class_groups::equivalence_class::EquivalenceClassOps;
+    use class_groups::MultiFoldNupowAccelerator;
+    use commitment::CommitmentSizedNumber;
+    use group::helpers::DeduplicateAndSort;
+    use group::{CsRng, GroupElement, PartyID, PrimeGroupElement};
+    use homomorphic_encryption::AdditivelyHomomorphicEncryptionKey;
+    use mpc::{
+        AsynchronousRoundResult, AsynchronouslyAdvanceable, HandleInvalidMessages, MajorityVote,
+        WeightedThresholdAccessStructure,
+    };
 
     use crate::class_groups::{EncryptionOfMaskAndMaskedKey, Presign};
     use crate::languages::class_groups::EncryptionOfTupleProof;
@@ -23,19 +38,6 @@ pub mod asynchronous {
         nonce_public_share_and_encryption_of_masked_nonce_round,
     };
     use crate::{Error, Result};
-    use ::class_groups::CiphertextSpaceGroupElement;
-    use ::class_groups::{encryption_key, CompactIbqf, EncryptionKey, EquivalenceClass};
-    use ::class_groups::{equivalence_class, RandomnessSpaceGroupElement};
-    use ::class_groups::{CiphertextSpacePublicParameters, RandomnessSpacePublicParameters};
-    use commitment::CommitmentSizedNumber;
-    use crypto_bigint::rand_core::CryptoRngCore;
-    use group::helpers::DeduplicateAndSort;
-    use group::{GroupElement, PartyID, PrimeGroupElement};
-    use homomorphic_encryption::AdditivelyHomomorphicEncryptionKey;
-    use mpc::{
-        AsynchronousRoundResult, AsynchronouslyAdvanceable, HandleInvalidMessages, MajorityVote,
-        WeightedThresholdAccessStructure,
-    };
 
     pub type Message<
         const SCALAR_LIMBS: usize,
@@ -106,11 +108,16 @@ pub mod asynchronous {
         Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
         Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
         EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-            PublicParameters = equivalence_class::PublicParameters<
+                Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+                PublicParameters = equivalence_class::PublicParameters<
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                >,
+            > + EquivalenceClassOps<
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                >,
             >,
-        >,
         EncryptionKey<
             SCALAR_LIMBS,
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -196,11 +203,16 @@ pub mod asynchronous {
         Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
         Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
         EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-            PublicParameters = equivalence_class::PublicParameters<
+                Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+                PublicParameters = equivalence_class::PublicParameters<
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                >,
+            > + EquivalenceClassOps<
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                >,
             >,
-        >,
         EncryptionKey<
             SCALAR_LIMBS,
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -245,7 +257,8 @@ pub mod asynchronous {
             messages: Vec<HashMap<PartyID, Self::Message>>,
             _private_input: Option<Self::PrivateInput>,
             public_input: &Self::PublicInput,
-            rng: &mut impl CryptoRngCore,
+            malicious_parties_by_round: HashMap<u64, HashSet<PartyID>>,
+            rng: &mut impl CsRng,
         ) -> Result<AsynchronousRoundResult<Self::Message, Self::PrivateOutput, Self::PublicOutput>>
         {
             if messages.len() < 2 {
@@ -283,9 +296,20 @@ pub mod asynchronous {
                     encryption_of_mask_and_masked_key_share_messages,
                     public_input,
                     parties_sending_invalid_encryption_of_mask_and_masked_key_share_messages,
+                    malicious_parties_by_round,
                     rng,
                 )
             } else {
+                // We are calling an inner MPC protocol that assumes it starts from round 1, but we are already at round 3, so we have to transform the rounds.
+                // It is a two-round protocol, and as such for the third of this protocol, no malicious parties are expected
+                // (as it will be the first round of the inner protocol) and as such a default value is taken.
+                // For our fourth round, it will expect malicious parties from round 1.
+                let malicious_parties_by_round = malicious_parties_by_round
+                    .get(&3)
+                    .cloned()
+                    .map(|malicious_parties| HashMap::from([(1, malicious_parties)]))
+                    .unwrap_or_default();
+
                 // Make sure everyone sent the encryption of mask and masked key message.
                 let (
                     parties_sending_invalid_encryption_of_mask_and_masked_key_messages,
@@ -349,12 +373,13 @@ pub mod asynchronous {
                     public_input,
                     malicious_parties,
                     encryption_of_mask_and_masked_key,
+                    malicious_parties_by_round,
                     rng,
                 )
             }
         }
 
-        fn round_causing_threshold_not_reached(failed_round: usize) -> Option<usize> {
+        fn round_causing_threshold_not_reached(failed_round: u64) -> Option<u64> {
             if failed_round <= 2 {
                 <proof::aggregation::asynchronous::Party<
                     EncryptionOfTupleProof<
@@ -409,11 +434,16 @@ pub mod asynchronous {
         Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
         Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
         EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-            PublicParameters = equivalence_class::PublicParameters<
+                Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+                PublicParameters = equivalence_class::PublicParameters<
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                >,
+            > + EquivalenceClassOps<
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                >,
             >,
-        >,
         EncryptionKey<
             SCALAR_LIMBS,
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -479,7 +509,8 @@ pub mod asynchronous {
                 >,
             >,
             malicious_parties: Vec<PartyID>,
-            rng: &mut impl CryptoRngCore,
+            malicious_parties_by_round: HashMap<u64, HashSet<PartyID>>,
+            rng: &mut impl CsRng,
         ) -> Result<
             AsynchronousRoundResult<
                 Message<
@@ -555,6 +586,7 @@ pub mod asynchronous {
                 messages,
                 private_input,
                 &aggregation_public_input,
+                malicious_parties_by_round,
                 rng,
             )? {
                 AsynchronousRoundResult::Advance {
@@ -628,7 +660,8 @@ pub mod asynchronous {
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
                 GroupElement,
             >,
-            rng: &mut impl CryptoRngCore,
+            malicious_parties_by_round: HashMap<u64, HashSet<PartyID>>,
+            rng: &mut impl CsRng,
         ) -> Result<
             AsynchronousRoundResult<
                 Message<
@@ -718,6 +751,7 @@ pub mod asynchronous {
                 messages,
                 private_input,
                 &aggregation_public_input,
+                malicious_parties_by_round,
                 rng,
             )? {
                 AsynchronousRoundResult::Advance {
@@ -759,6 +793,7 @@ pub mod asynchronous {
                                 session_id,
                                 encryption_of_mask_and_masked_key,
                                 [first_statement.value(), second_statement.value()],
+                                public_input.dkg_output.public_key,
                             ),
                         })
                     }

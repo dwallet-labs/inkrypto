@@ -3,7 +3,7 @@
 
 //! This file implements the Signature Threshold Decryption round party for Class Groups
 
-use group::PrimeGroupElement;
+use group::{CsRng, PrimeGroupElement};
 use homomorphic_encryption::GroupsPublicParametersAccessors;
 
 use crate::bulletproofs::{RangeProof, COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS};
@@ -137,7 +137,7 @@ impl Party {
             group::PublicParameters<GroupElement::Scalar>,
             GroupElement::PublicParameters,
         >,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> crate::Result<(Vec<PartyID>, (GroupElement::Scalar, GroupElement::Scalar))> {
         let encryption_of_partial_signature = CiphertextSpaceGroupElement::new(
             sign_message.encryption_of_partial_signature,

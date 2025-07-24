@@ -1,10 +1,11 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
-use crypto_bigint::{rand_core::CryptoRngCore, NonZero, Odd};
+use crypto_bigint::{NonZero, Odd};
+use crypto_primes::Flavor;
 use subtle::{Choice, CtOption};
 
-use group::GroupElement;
+use group::{CsRng, GroupElement};
 use homomorphic_encryption::{
     AdditivelyHomomorphicDecryptionKey, AdditivelyHomomorphicEncryptionKey,
     GroupsPublicParametersAccessors,
@@ -26,19 +27,17 @@ pub struct DecryptionKey {
 
 impl DecryptionKey {
     /// Generates a new Paillier Key Pair.
-    pub fn generate(
-        rng: &mut impl CryptoRngCore,
-    ) -> crate::Result<(PublicParameters, DecryptionKey)> {
-        let p: LargePrimeSizedNumber = crypto_primes::generate_safe_prime_with_rng(rng, 1024);
-        let q: LargePrimeSizedNumber = crypto_primes::generate_safe_prime_with_rng(rng, 1024);
+    pub fn generate(rng: &mut impl CsRng) -> crate::Result<(PublicParameters, DecryptionKey)> {
+        let p: LargePrimeSizedNumber = crypto_primes::random_prime(rng, Flavor::Safe, 1024);
+        let q: LargePrimeSizedNumber = crypto_primes::random_prime(rng, Flavor::Safe, 1024);
 
-        let n: LargeBiPrimeSizedNumber = p.widening_mul(&q);
+        let n: LargeBiPrimeSizedNumber = p.concatenating_mul(&q);
         // phi = (p-1)(q-1)
         let phi: LargeBiPrimeSizedNumber = (p.wrapping_sub(&LargePrimeSizedNumber::ONE))
-            .widening_mul(&(q.wrapping_sub(&LargePrimeSizedNumber::ONE)));
+            .concatenating_mul(&(q.wrapping_sub(&LargePrimeSizedNumber::ONE)));
         // With safe primes this can never fail since we have gcd(pq,4p'q') where p,q,p',q' are all
         // odd primes. So the only option is that p'=q or q'=p. 2p+1 has 1025 bits.
-        let phi_inv = phi.inv_odd_mod(&Odd::new(n).unwrap()).unwrap();
+        let phi_inv = phi.invert_odd_mod(&Odd::new(n).unwrap()).unwrap();
         let secret_key = phi.widening_mul(&phi_inv);
         let public_parameters = PublicParameters::new(n)?;
         let encryption_key = PaillierModulusSizedNumber::from(secret_key);
@@ -107,9 +106,8 @@ impl AsRef<EncryptionKey> for DecryptionKey {
 
 #[cfg(test)]
 mod tests {
-    use rand_core::OsRng;
 
-    use group::{secp256k1, GroupElement};
+    use group::{secp256k1, GroupElement, OsCsRng};
     use homomorphic_encryption::{
         AdditivelyHomomorphicDecryptionKey, GroupsPublicParametersAccessors,
     };
@@ -159,7 +157,7 @@ mod tests {
 
         let (_, ciphertext) = decryption_key
             .encryption_key
-            .encrypt(&plaintext, &public_parameters, &mut OsRng)
+            .encrypt(&plaintext, &public_parameters, false, &mut OsCsRng)
             .unwrap();
 
         assert_eq!(
@@ -178,7 +176,7 @@ mod tests {
         homomorphic_encryption::test_helpers::encrypt_decrypts(
             decryption_key,
             &public_parameters,
-            &mut OsRng,
+            &mut OsCsRng,
         );
     }
 
@@ -197,13 +195,13 @@ mod tests {
             decryption_key,
             &secp256k1::scalar::PublicParameters::default(),
             &public_parameters,
-            &mut OsRng,
+            &mut OsCsRng,
         );
     }
 
     #[test]
     fn generated_key_encrypts_decrypts() {
-        let rng = &mut OsRng;
+        let rng = &mut OsCsRng;
         let (public_parameters, decryption_key) = DecryptionKey::generate(rng).unwrap();
 
         let plaintext = PlaintextSpaceGroupElement::new(
@@ -214,7 +212,7 @@ mod tests {
 
         let (_, ciphertext) = decryption_key
             .encryption_key
-            .encrypt(&plaintext, &public_parameters, rng)
+            .encrypt(&plaintext, &public_parameters, false, rng)
             .unwrap();
 
         assert_eq!(

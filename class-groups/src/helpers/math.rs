@@ -8,6 +8,9 @@ use crypto_bigint::subtle::CtOption;
 use crypto_bigint::{
     CheckedAdd, Concat, ConstantTimeSelect, Int, Integer, Limb, NonZero, Split, Uint, Zero, U64,
 };
+use crypto_primes::Flavor;
+
+use group::CsRng;
 
 use crate::Error;
 
@@ -256,6 +259,61 @@ where
     Err(Error::NoSolutionAmongSmallPrimes)
 }
 
+/// Construct a prime `p` of given `bit_size` s.t. the Kronecker Symbol `(n | p) = 1`.
+///
+/// This function uses `rng` to repeatedly sample primes until a prime satisfying the
+/// constraints is found. If after the given number of `max_attempts` no satisfying prime is found,
+/// the function returns `None`. Heuristically, for large enough `max_attempts`, this function
+/// should fail with probability 1/2^max_attempts: for a random prime `p`, the probability that
+/// `Δ_qk` is a square mod `p` is ~1/2, and we repeat `max_attempts` times.
+///
+/// Note: since this function only accepts positive primes for $n$ and finds a positive prime $p$,
+/// the Kronecker symbol equals the Kronecker extension of the Legendre Symbol.
+pub(crate) fn random_kronecker_prime<
+    const LIMBS: usize,
+    const WIDE_LIMBS: usize,
+    const OUT_LIMBS: usize,
+>(
+    n: &Int<LIMBS>,
+    rng: &mut impl CsRng,
+    bit_length: u32,
+    max_attempts: u32,
+) -> Option<NonZero<Uint<OUT_LIMBS>>>
+where
+    Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>>,
+    Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
+{
+    assert!(OUT_LIMBS <= LIMBS);
+
+    let mut attempts = 0;
+    let mut p = None;
+
+    while p.is_none() && attempts < max_attempts {
+        let sample =
+            crypto_primes::random_prime::<Uint<OUT_LIMBS>, _>(rng, Flavor::Any, bit_length)
+                .to_nz()
+                .expect("a prime is non-zero");
+
+        // Note: using the kronecker extension of the legendre symbol suffices here (instead of
+        // using the full Kronecker Symbol), since we know `sample` to be prime.
+        let is_kronecker_prime = match kronecker_extension_of_legendre_symbol(
+            n,
+            &sample.resize::<LIMBS>().to_nz().unwrap(),
+        ) {
+            Ok(kronecker_symbol) => kronecker_symbol == 1i8,
+            Err(_) => false,
+        };
+
+        if is_kronecker_prime {
+            p = Some(sample);
+        }
+
+        attempts += 1;
+    }
+
+    p
+}
+
 /// Given `(numerator, divisor)`, returns `(factor, exponent)` s.t.
 /// $numerator = factor * divisor^{exponent}$, `factor` integral, and `exponent` maximal.
 /// In other words, count all factors of `divisor` in `numerator`, remove them and
@@ -303,7 +361,7 @@ where
         }
 
         if exponent_bit == 1 {
-            (res, overflow) = res.split_mul(x);
+            (res, overflow) = res.widening_mul(x);
             if overflow != Uint::ZERO {
                 return Err(Error::InternalError);
             }
@@ -350,11 +408,13 @@ pub(crate) fn representative_mod<const LIMBS: usize>(
 #[cfg(test)]
 mod tests {
     use crypto_bigint::{Int, Uint, U128};
+    use rand_chacha::rand_core::SeedableRng;
+    use rand_chacha::ChaChaRng;
 
     use crate::helpers::math::{
         factor_mod_vartime, is_a_quadratic_residue, kronecker_extension_of_legendre_symbol,
-        legendre_symbol, modpow_vartime, smallest_kronecker_prime, smallest_quadratic_non_residue,
-        sqrt_mod,
+        legendre_symbol, modpow_vartime, random_kronecker_prime, smallest_kronecker_prime,
+        smallest_quadratic_non_residue, sqrt_mod,
     };
 
     const LIMBS: usize = 1;
@@ -477,7 +537,7 @@ mod tests {
         let p = Uint::from(37u32).to_nz().unwrap();
         let n = Uint::<LIMBS>::from(3u32);
 
-        assert_eq!(legendre_symbol(&n.as_int(), &p).unwrap(), 1);
+        assert_eq!(legendre_symbol(n.as_int(), &p).unwrap(), 1);
         assert!(is_a_quadratic_residue(&n, &p).unwrap());
 
         let r = sqrt_mod(&n, &p).unwrap();
@@ -519,6 +579,42 @@ mod tests {
         // (37|2) = -1
         // (37|3) =  1
         assert_eq!(p, 3u64);
+    }
+
+    #[test]
+    fn test_random_kronecker_prime_73() {
+        let n = Int::<2>::from(73i32);
+        let mut rng = ChaChaRng::seed_from_u64(73);
+        let target = Uint::from(6491u64).to_nz().unwrap();
+
+        // Illustrate that target is a valid value
+        assert_eq!(
+            kronecker_extension_of_legendre_symbol(&n, &target).unwrap(),
+            1i8
+        );
+
+        let p = random_kronecker_prime(&n, &mut rng, 13, 1);
+        assert_eq!(p.unwrap(), target);
+    }
+
+    #[test]
+    fn test_random_kronecker_prime_509() {
+        let n = Int::<2>::from(509i32);
+        let mut rng = ChaChaRng::seed_from_u64(37);
+        let target = Uint::from(4903u64).to_nz().unwrap();
+
+        // Illustrate that target is a valid value
+        assert_eq!(
+            kronecker_extension_of_legendre_symbol(&n, &target).unwrap(),
+            1i8
+        );
+
+        // Does not find anything the first iteration
+        let p = random_kronecker_prime::<2, 4, 2>(&n, &mut rng, 13, 1);
+        assert!(p.is_none());
+
+        let p = random_kronecker_prime(&n, &mut rng, 13, 1);
+        assert_eq!(p.unwrap(), target);
     }
 
     #[test]

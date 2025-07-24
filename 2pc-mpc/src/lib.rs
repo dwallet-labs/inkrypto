@@ -26,7 +26,7 @@ pub mod presign;
 pub mod sign;
 
 /// 2PC-MPC error.
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Debug, Clone)]
 pub enum Error {
     #[error("group error")]
     Group(#[from] group::Error),
@@ -51,8 +51,8 @@ pub enum Error {
     #[cfg(feature = "class_groups")]
     #[error("class groups error")]
     ClassGroup(#[from] ::class_groups::Error),
-    #[error("serialization/deserialization error")]
-    Serialization(#[from] serde_json::Error),
+    #[error("serialization/deserialization error: {0:?}")]
+    Serialization(String),
     #[error(
         "parties {:?} did not send partial decryption proofs in the signing identifiable abort protocol", .0
     )]
@@ -67,6 +67,8 @@ pub enum Error {
     #[error("the designated decrypting party behaved maliciously by not sending the honest decrypted values"
     )]
     MaliciousDesignatedDecryptingParty(PartyID),
+    #[error("invalid public centralized key share")]
+    InvalidPublicCentralizedKeyShare,
     #[error("signature failed to verify")]
     SignatureVerification,
     #[error("invalid public parameters")]
@@ -75,6 +77,12 @@ pub enum Error {
     InvalidParameters,
     #[error("an internal error that should never have happened and signifies a bug")]
     InternalError,
+}
+
+impl From<serde_json::Error> for Error {
+    fn from(e: serde_json::Error) -> Self {
+        Error::Serialization(e.to_string())
+    }
 }
 
 /// 2PC-MPC result.
@@ -129,7 +137,7 @@ impl From<Error> for mpc::Error {
             Error::EnhancedMaurer(e) => e.into(),
             #[cfg(feature = "class_groups")]
             Error::ClassGroup(e) => e.into(),
-            e => mpc::Error::Consumer(format!("2pc-mpc error {:?}", e)),
+            e => mpc::Error::Consumer(format!("2pc-mpc error {e:?}")),
         }
     }
 }
@@ -700,7 +708,7 @@ pub mod paillier {
                 tiresias::RandomnessSpaceGroupElement,
             >;
 
-        #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+        #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
         pub struct PaillierProtocolPublicParameters<
             const SCALAR_LIMBS: usize,
             const RANGE_CLAIMS_PER_SCALAR: usize,
@@ -891,7 +899,6 @@ pub mod bulletproofs {
 pub mod secp256k1 {
     pub use ::class_groups::SECP256K1_MESSAGE_LIMBS as MESSAGE_LIMBS;
     use group::secp256k1;
-    use maurer::SOUND_PROOFS_REPETITIONS;
 
     pub const SCALAR_LIMBS: usize = secp256k1::SCALAR_LIMBS;
     pub type GroupElement = secp256k1::GroupElement;
@@ -899,10 +906,9 @@ pub mod secp256k1 {
 
     #[cfg(feature = "class_groups")]
     pub mod class_groups {
+        use crate::{languages, ProtocolContext};
+
         use super::*;
-        use crate::languages;
-        use crate::languages::class_groups::EncryptionOfDiscreteLogLanguage;
-        use std::marker::PhantomData;
 
         pub const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize =
             ::class_groups::SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS;
@@ -942,6 +948,7 @@ pub mod secp256k1 {
                 FUNDAMENTAL_DISCRIMINANT_LIMBS,
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
                 GroupElement,
+                ProtocolContext,
             >;
 
         pub type EncryptionOfSecretKeyShareRoundAsyncParty =
@@ -951,24 +958,13 @@ pub mod secp256k1 {
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
                 GroupElement,
             >;
-
-        pub type EncryptionOfSecretShareProof = maurer::Proof<
-            SOUND_PROOFS_REPETITIONS,
-            EncryptionOfDiscreteLogLanguage<
-                SCALAR_LIMBS,
-                FUNDAMENTAL_DISCRIMINANT_LIMBS,
-                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-                GroupElement,
-            >,
-            PhantomData<()>,
-        >;
     }
 
     #[cfg(feature = "paillier")]
     pub mod paillier {
         #[cfg(feature = "bulletproofs")]
         pub mod bulletproofs {
-            use crate::languages;
+            use crate::{languages, ProtocolContext};
 
             use super::super::bulletproofs::*;
             use super::super::*;
@@ -995,6 +991,7 @@ pub mod secp256k1 {
                     SCALAR_LIMBS,
                     RANGE_CLAIMS_PER_SCALAR,
                     GroupElement,
+                    ProtocolContext,
                 >;
 
             pub type EncryptionOfSecretKeyShareRoundAsyncParty =
@@ -1032,11 +1029,9 @@ pub mod secp256k1 {
 }
 #[cfg(any(test, feature = "test_helpers"))]
 pub mod test_helpers {
-    use rand_core::OsRng;
-
     use class_groups::test_helpers::get_setup_parameters_secp256k1_112_bits_deterministic;
     use class_groups::Secp256k1DecryptionKey;
-    use group::secp256k1;
+    use group::{secp256k1, OsCsRng};
     use homomorphic_encryption::AdditivelyHomomorphicDecryptionKey;
     #[cfg(all(feature = "paillier", feature = "bulletproofs",))]
     use tiresias::test_helpers::{N, SECRET_KEY};
@@ -1058,7 +1053,7 @@ pub mod test_helpers {
     ) {
         let setup_parameters = get_setup_parameters_secp256k1_112_bits_deterministic();
         let (encryption_scheme_public_parameters, decryption_key) =
-            Secp256k1DecryptionKey::generate(setup_parameters, &mut OsRng).unwrap();
+            Secp256k1DecryptionKey::generate(setup_parameters, &mut OsCsRng).unwrap();
 
         let protocol_public_parameters = ProtocolPublicParameters::new::<
             { secp256k1::SCALAR_LIMBS },

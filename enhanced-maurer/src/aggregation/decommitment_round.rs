@@ -4,11 +4,10 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 
-use crypto_bigint::rand_core::CryptoRngCore;
 use serde::Serialize;
 
 use commitment::Commitment;
-use group::{PartyID, Samplable};
+use group::{CsRng, PartyID, Samplable};
 use proof::{range, AggregatableRangeProof};
 
 use crate::{
@@ -136,7 +135,7 @@ where
     fn decommit_statements_and_statement_mask(
         self,
         commitments: HashMap<PartyID, Self::Commitment>,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<(Self::Decommitment, Self::ProofShareRoundParty)> {
         let (maurer_commitments, range_proof_commitments) = commitments
             .into_iter()

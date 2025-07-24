@@ -5,8 +5,8 @@ use std::{marker::PhantomData, ops::Mul};
 use serde::{Deserialize, Serialize};
 
 use commitment::{pedersen, pedersen::Pedersen, HomomorphicCommitmentScheme};
-use group::{self_product, KnownOrderGroupElement, Samplable};
-use proof::GroupsPublicParameters;
+use group::{self_product, KnownOrderGroupElement, Samplable, Transcribeable};
+use proof::{CanonicalGroupsPublicParameters, GroupsPublicParameters};
 
 use crate::{Result, SOUND_PROOFS_REPETITIONS};
 
@@ -54,6 +54,8 @@ where
     fn homomorphose(
         witness: &Self::WitnessSpaceGroupElement,
         language_public_parameters: &Self::PublicParameters,
+        _is_randomizer: bool,
+        _is_verify: bool,
     ) -> Result<Self::StatementSpaceGroupElement> {
         let commitment_scheme =
             Pedersen::new(&language_public_parameters.commitment_scheme_public_parameters)?;
@@ -152,6 +154,17 @@ pub struct PublicParameters<ScalarPublicParameters, GroupPublicParameters, Group
     pub base_by_discrete_log: GroupElementValue,
 }
 
+impl<
+        ScalarPublicParameters: Transcribeable + Serialize,
+        GroupPublicParameters: Transcribeable + Serialize,
+        GroupElementValue: Serialize,
+    > Transcribeable
+    for PublicParameters<ScalarPublicParameters, GroupPublicParameters, GroupElementValue>
+{
+    type CanonicalRepresentation =
+        CanonicalPublicParameters<ScalarPublicParameters, GroupPublicParameters, GroupElementValue>;
+}
+
 impl<ScalarPublicParameters, GroupPublicParameters, GroupElementValue>
     PublicParameters<ScalarPublicParameters, GroupPublicParameters, GroupElementValue>
 {
@@ -211,14 +224,56 @@ impl<ScalarPublicParameters, GroupPublicParameters, GroupElementValue>
     }
 }
 
+/// The Canonical Representation of the Public Parameters of the Ratio Between Committed Values is the Discrete Log Maurer
+/// Language.
+#[derive(Serialize)]
+pub struct CanonicalPublicParameters<
+    ScalarPublicParameters: Transcribeable,
+    GroupPublicParameters: Transcribeable,
+    GroupElementValue: Serialize,
+> {
+    canonical_groups_public_parameters: CanonicalGroupsPublicParameters<
+        self_product::PublicParameters<3, ScalarPublicParameters>,
+        self_product::PublicParameters<2, GroupPublicParameters>,
+    >,
+    canonical_commitment_scheme_public_parameters: pedersen::CanonicalPublicParameters<
+        1,
+        GroupElementValue,
+        ScalarPublicParameters,
+        GroupPublicParameters,
+    >,
+    base_by_discrete_log: GroupElementValue,
+}
+
+impl<
+        ScalarPublicParameters: Transcribeable,
+        GroupPublicParameters: Transcribeable,
+        GroupElementValue: Serialize,
+    > From<PublicParameters<ScalarPublicParameters, GroupPublicParameters, GroupElementValue>>
+    for CanonicalPublicParameters<ScalarPublicParameters, GroupPublicParameters, GroupElementValue>
+{
+    fn from(
+        value: PublicParameters<ScalarPublicParameters, GroupPublicParameters, GroupElementValue>,
+    ) -> Self {
+        Self {
+            canonical_groups_public_parameters: value.groups_public_parameters.into(),
+            canonical_commitment_scheme_public_parameters: value
+                .commitment_scheme_public_parameters
+                .into(),
+            base_by_discrete_log: value.base_by_discrete_log,
+        }
+    }
+}
+
 #[cfg(any(test, feature = "test_helpers"))]
 pub mod test_helpers {
-    use super::*;
+    use commitment::pedersen;
+    use group::{secp256k1, GroupElement, OsCsRng, Samplable};
+
     use crate::discrete_log_ratio_of_committed_values::PublicParameters;
     use crate::{language, SOUND_PROOFS_REPETITIONS};
-    use commitment::pedersen;
-    use group::{secp256k1, GroupElement, Samplable};
-    use rand_core::OsRng;
+
+    use super::*;
 
     pub type Lang =
         Language<{ secp256k1::SCALAR_LIMBS }, secp256k1::Scalar, secp256k1::GroupElement>;
@@ -237,7 +292,7 @@ pub mod test_helpers {
         .unwrap();
 
         let discrete_log =
-            secp256k1::Scalar::sample(&secp256k1_scalar_public_parameters, &mut OsRng).unwrap();
+            secp256k1::Scalar::sample(&secp256k1_scalar_public_parameters, &mut OsCsRng).unwrap();
 
         let base_by_discrete_log = discrete_log * generator;
 
@@ -266,17 +321,17 @@ mod tests {
     use std::iter;
 
     use crypto_bigint::U256;
-    use rand_core::OsRng;
     use rstest::rstest;
 
-    use group::{secp256k1, GroupElement, PartyID};
+    use group::{secp256k1, GroupElement, OsCsRng, PartyID};
     use mpc::Weight;
 
-    use super::test_helpers::*;
-    use super::*;
     use crate::language::StatementSpaceGroupElement;
     use crate::test_helpers;
     use crate::test_helpers::{batch_verifies, generate_valid_proof, sample_witnesses};
+
+    use super::test_helpers::*;
+    use super::*;
 
     #[rstest]
     #[case(1)]
@@ -288,7 +343,7 @@ mod tests {
         test_helpers::valid_proof_verifies::<SOUND_PROOFS_REPETITIONS, Lang>(
             &language_public_parameters,
             batch_size,
-            &mut OsRng,
+            &mut OsCsRng,
         )
     }
 
@@ -306,15 +361,20 @@ mod tests {
             let witnesses = sample_witnesses::<SOUND_PROOFS_REPETITIONS, Lang>(
                 &language_public_parameters,
                 batch_size,
-                &mut OsRng,
+                &mut OsCsRng,
             );
 
-            generate_valid_proof(&language_public_parameters, witnesses, &mut OsRng)
+            generate_valid_proof(&language_public_parameters, witnesses, &mut OsCsRng)
         })
         .take(number_of_proofs)
         .unzip();
 
-        batch_verifies(proofs, statements, &language_public_parameters, &mut OsRng);
+        batch_verifies(
+            proofs,
+            statements,
+            &language_public_parameters,
+            &mut OsCsRng,
+        );
     }
 
     #[rstest]
@@ -332,7 +392,7 @@ mod tests {
             None,
             &language_public_parameters,
             batch_size,
-            &mut OsRng,
+            &mut OsCsRng,
         )
     }
 
@@ -361,14 +421,14 @@ mod tests {
             &prover_public_parameters,
             &verifier_public_parameters,
             batch_size,
-            &mut OsRng,
+            &mut OsCsRng,
         );
 
         let mut prover_public_parameters = verifier_public_parameters.clone();
         prover_public_parameters
             .groups_public_parameters
             .statement_space_public_parameters
-            .public_parameters
+            .0
             .curve_equation_a = U256::from(42u8);
 
         test_helpers::proof_over_invalid_public_parameters_fails_verification::<
@@ -378,7 +438,7 @@ mod tests {
             &prover_public_parameters,
             &verifier_public_parameters,
             batch_size,
-            &mut OsRng,
+            &mut OsCsRng,
         );
 
         let mut prover_public_parameters = verifier_public_parameters.clone();
@@ -395,7 +455,7 @@ mod tests {
             &prover_public_parameters,
             &verifier_public_parameters,
             batch_size,
-            &mut OsRng,
+            &mut OsCsRng,
         );
     }
 
@@ -409,7 +469,7 @@ mod tests {
         test_helpers::proof_with_incomplete_transcript_fails::<SOUND_PROOFS_REPETITIONS, Lang>(
             &language_public_parameters,
             batch_size,
-            &mut OsRng,
+            &mut OsCsRng,
         )
     }
 
@@ -446,7 +506,7 @@ mod tests {
             threshold,
             party_to_weight,
             batch_size,
-            &mut OsRng,
+            &mut OsCsRng,
         );
     }
 

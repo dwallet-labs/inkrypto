@@ -19,7 +19,7 @@ pub mod class_groups;
 pub mod paillier;
 
 /// The public input of the decentralized party's Sign protocol.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct PublicInput<
     Scalar,
     DKGOutput,

@@ -3,23 +3,31 @@
 
 //! This file implements the `Sign` protocol trait for Class Groups
 
-use crypto_bigint::rand_core::CryptoRngCore;
 use crypto_bigint::{ConcatMixed, Encoding, Int, Uint};
 use serde::{Deserialize, Serialize};
 
-use crate::class_groups::{asynchronous::Protocol, DecryptionKeySharePublicParameters};
-use crate::sign::centralized_party::message::class_groups::Message;
+use ::class_groups::{decryption_key_share, SecretKeyShareSizedInteger};
 use ::class_groups::{
     encryption_key, equivalence_class, CiphertextSpaceGroupElement,
     CiphertextSpacePublicParameters, CompactIbqf, DecryptionKeyShare, EncryptionKey,
     EquivalenceClass, RandomnessSpaceGroupElement, RandomnessSpacePublicParameters,
 };
 use ::class_groups::{DecryptionKey, DiscreteLogInF};
-use group::{AffineXCoordinate, HashToGroup, PrimeGroupElement, StatisticalSecuritySizedNumber};
-use homomorphic_encryption::AdditivelyHomomorphicEncryptionKey;
+use class_groups::encryption_key::public_parameters::Instantiate;
+use class_groups::equivalence_class::EquivalenceClassOps;
+use class_groups::MultiFoldNupowAccelerator;
+use group::{
+    AffineXCoordinate, CsRng, HashToGroup, PrimeGroupElement, StatisticalSecuritySizedNumber,
+};
+use homomorphic_encryption::{
+    AdditivelyHomomorphicDecryptionKeyShare, AdditivelyHomomorphicEncryptionKey,
+};
+use mpc::secret_sharing::shamir::over_the_integers::AdjustedLagrangeCoefficientSizedNumber;
 use sign::decentralized_party::signature_partial_decryption_round;
 
+use crate::class_groups::{asynchronous::Protocol, DecryptionKeySharePublicParameters};
 use crate::sign;
+use crate::sign::centralized_party::message::class_groups::Message;
 
 impl<
         const SCALAR_LIMBS: usize,
@@ -49,9 +57,16 @@ where
     Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-        Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        PublicParameters = equivalence_class::PublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    >,
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
     EncryptionKey<
         SCALAR_LIMBS,
         FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -93,6 +108,44 @@ where
         FUNDAMENTAL_DISCRIMINANT_LIMBS,
         NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
         GroupElement,
+    >,
+    DecryptionKeyShare<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        GroupElement,
+    >: AdditivelyHomomorphicDecryptionKeyShare<
+        SCALAR_LIMBS,
+        EncryptionKey<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >,
+        PublicParameters = decryption_key_share::PublicParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >,
+        SecretKeyShare = SecretKeyShareSizedInteger,
+        PartialDecryptionProof = decryption_key_share::PartialDecryptionProof<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        >,
+        DecryptionShare = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+        LagrangeCoefficient = AdjustedLagrangeCoefficientSizedNumber,
+        Error = ::class_groups::Error,
+    >,
+    encryption_key::PublicParameters<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<GroupElement::Scalar>,
+    >: Instantiate<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<GroupElement::Scalar>,
     >,
     Uint<MESSAGE_LIMBS>: Encoding,
     GroupElement::Scalar: Serialize + for<'a> Deserialize<'a>,
@@ -161,7 +214,7 @@ where
         presign: Self::Presign,
         sign_message: Self::SignMessage,
         hashed_message: Self::HashedMessage,
-        _rng: &mut impl CryptoRngCore,
+        _rng: &mut impl CsRng,
     ) -> crate::Result<()> {
         signature_partial_decryption_round::Party::verify_encryption_of_signature_parts_prehash_class_groups(protocol_public_parameters, dkg_output, presign, sign_message, hashed_message)
     }

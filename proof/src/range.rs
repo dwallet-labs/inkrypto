@@ -6,15 +6,16 @@ use std::{
     fmt::Debug,
 };
 
-use crypto_bigint::rand_core::CryptoRngCore;
 use merlin::Transcript;
+
 use serde::{Deserialize, Serialize};
 
 use commitment::{GroupsPublicParametersAccessors, HomomorphicCommitmentScheme};
-use group::{self_product, NumbersGroupElement, PartyID};
+use group::{self_product, CsRng, NumbersGroupElement, PartyID, Transcribeable};
 
 use crate::aggregation;
 
+#[cfg(feature = "bulletproofs")]
 pub mod bulletproofs;
 
 /// A range proof over `Self::CommitmentScheme`, capable of proving `Self::RANGE_CLAIM_BITS` bits.
@@ -45,7 +46,7 @@ pub trait RangeProof<
     /// SECURITY NOTE: Needs to be inserted to the Fiat-Shamir Transcript of the proof protocol.
     type PublicParameters<const NUM_RANGE_CLAIMS: usize>: AsRef<
         commitment::PublicParameters<COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS, Self::CommitmentScheme<NUM_RANGE_CLAIMS>>
-    > + Serialize
+    > + Transcribeable + Serialize
     + for<'r> Deserialize<'r>
     + Clone
     + PartialEq + Eq + Debug + Send + Sync;
@@ -57,7 +58,7 @@ pub trait RangeProof<
         witnesses: Vec<CommitmentSchemeMessageSpaceGroupElement<COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS, NUM_RANGE_CLAIMS, Self>>,
         commitments_randomness: Vec<CommitmentSchemeRandomnessSpaceGroupElement<COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS, NUM_RANGE_CLAIMS, Self>>,
         transcript: Transcript,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> crate::Result<(Self, Vec<commitment::CommitmentSpaceGroupElement<COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS, Self::CommitmentScheme<NUM_RANGE_CLAIMS>>>)>;
 
     /// Verifies that all witnesses committed in `commitment` are bounded by their corresponding
@@ -67,7 +68,7 @@ pub trait RangeProof<
         public_parameters: &Self::PublicParameters<NUM_RANGE_CLAIMS>,
         commitments: Vec<CommitmentSchemeCommitmentSpaceGroupElement<COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS, NUM_RANGE_CLAIMS, Self>>,
         transcript: Transcript,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> crate::Result<()>;
 }
 
@@ -231,7 +232,7 @@ pub trait PublicParametersAccessors<
         &self
             .commitment_scheme_public_parameters()
             .message_space_public_parameters()
-            .public_parameters
+            .0
     }
 }
 

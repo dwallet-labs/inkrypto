@@ -6,14 +6,16 @@ use bulletproofs::{
     range_proof_mpc::{dealer::Dealer, messages::BitCommitment, party},
     BulletproofGens, PedersenGens,
 };
-use crypto_bigint::{rand_core::CryptoRngCore, U256, U64};
-use group::PartyID;
+use crypto_bigint::{U256, U64};
 use merlin::Transcript;
 
-use super::{decommitment_round, COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS, RANGE_CLAIM_BITS};
+use group::{CsRng, PartyID};
+
 use crate::{
     aggregation, aggregation::CommitmentRoundParty, range::CommitmentScheme, Error, Result,
 };
+
+use super::{decommitment_round, COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS, RANGE_CLAIM_BITS};
 
 #[cfg_attr(feature = "test_helpers", derive(Clone))]
 pub struct Party<const NUM_RANGE_CLAIMS: usize> {
@@ -52,7 +54,7 @@ impl<const NUM_RANGE_CLAIMS: usize> CommitmentRoundParty<super::Output<NUM_RANGE
 
     fn commit_statements_and_statement_mask(
         self,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<(Self::Commitment, Self::DecommitmentRoundParty)> {
         if !self.provers.contains(&self.party_id) {
             return Err(Error::Aggregation(
@@ -106,7 +108,7 @@ impl<const NUM_RANGE_CLAIMS: usize> CommitmentRoundParty<super::Output<NUM_RANGE
         let mut iter = commitments_randomness.into_iter();
         let commitments_randomness: Vec<_> = iter::repeat_with(|| {
             iter.next()
-                .unwrap_or(curve25519_dalek::scalar::Scalar::zero())
+                .unwrap_or(curve25519_dalek::scalar::Scalar::ZERO)
         })
         .take(number_of_padded_witnesses)
         .collect();

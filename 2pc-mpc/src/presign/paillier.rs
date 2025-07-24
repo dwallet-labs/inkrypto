@@ -5,8 +5,8 @@
 
 use crypto_bigint::{ConcatMixed, Encoding, Uint};
 
-use group::{PrimeGroupElement, StatisticalSecuritySizedNumber};
-use tiresias::CiphertextSpaceValue;
+use group::{PrimeGroupElement, Scale, StatisticalSecuritySizedNumber};
+use tiresias::{CiphertextSpaceValue, LargeBiPrimeSizedNumber};
 
 use crate::paillier::asynchronous::Protocol;
 use crate::paillier::Presign;
@@ -17,7 +17,7 @@ impl<
         const RANGE_CLAIMS_PER_MASK: usize,
         const NUM_RANGE_CLAIMS: usize,
         const SCALAR_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Scale<LargeBiPrimeSizedNumber>,
     > super::Protocol
     for Protocol<
         RANGE_CLAIMS_PER_SCALAR,

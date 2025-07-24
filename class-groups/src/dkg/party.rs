@@ -1,20 +1,21 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 
-use crypto_bigint::rand_core::CryptoRngCore;
 use crypto_bigint::{Encoding, Int, Uint};
 use serde::{Deserialize, Serialize};
 
 use commitment::CommitmentSizedNumber;
-use group::{GroupElement, PartyID, PrimeGroupElement};
+use group::{CsRng, GroupElement, PartyID, PrimeGroupElement};
 use mpc::secret_sharing::shamir::over_the_integers::secret_key_share_size_upper_bound;
 use mpc::{AsynchronousRoundResult, AsynchronouslyAdvanceable, WeightedThresholdAccessStructure};
 
+use crate::accelerator::MultiFoldNupowAccelerator;
 pub use crate::dkg::public_output::PublicOutput;
 use crate::dkg::{Message, PublicInput};
+use crate::equivalence_class::EquivalenceClassOps;
 use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
     CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS, MAX_PRIMES, NUM_SECRET_SHARE_PRIMES,
 };
@@ -76,9 +77,28 @@ where
 
     Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
-
-    EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>:
-        group::GroupElement<Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+    EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
+    SetupParameters<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<GroupElement::Scalar>,
+    >: DeriveFromPlaintextPublicParameters<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<GroupElement::Scalar>,
+    >,
 {
     type Error = Error;
     type PublicInput = PublicInput<
@@ -123,9 +143,16 @@ where
     Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-        Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        PublicParameters = equivalence_class::PublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    >,
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
     SetupParameters<
         PLAINTEXT_SPACE_SCALAR_LIMBS,
         FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -148,7 +175,8 @@ where
         messages: Vec<HashMap<PartyID, Self::Message>>,
         decryption_key_per_crt_prime: Option<Self::PrivateInput>,
         public_input: &Self::PublicInput,
-        rng: &mut impl CryptoRngCore,
+        malicious_parties_by_round: HashMap<u64, HashSet<PartyID>>,
+        rng: &mut impl CsRng,
     ) -> Result<AsynchronousRoundResult<Self::Message, Self::PrivateOutput, Self::PublicOutput>>
     {
         let decryption_key_per_crt_prime =
@@ -194,13 +222,13 @@ where
             Some(tangible_party_id),
             access_structure.clone(),
             access_structure.clone(),
-            setup_parameters.clone(),
+            public_input.setup_parameters.clone(),
             public_input.setup_parameters_per_crt_prime.clone(),
             public_input
                 .encryption_key_values_and_proofs_per_crt_prime
                 .clone(),
             base_protocol_context,
-            setup_parameters.h.value(),
+            public_input.setup_parameters.h.value(),
             decryption_key_bits,
             decryption_key_share_bits,
             true,
@@ -219,7 +247,7 @@ where
                 session_id,
                 knowledge_of_discrete_log_base_protocol_context,
                 &public_input.setup_parameters_per_crt_prime,
-                &setup_parameters,
+                &public_input.setup_parameters,
                 &pvss_party,
                 rng,
             ),
@@ -239,7 +267,6 @@ where
                     encryption_of_decryption_key_base_protocol_context,
                     access_structure,
                     public_input,
-                    &setup_parameters,
                     &pvss_party,
                     deal_decryption_key_contribution_messages.clone(),
                     verified_dealers_messages.clone(),
@@ -248,17 +275,23 @@ where
                     rng,
                 )
             }
-            [deal_decryption_key_contribution_messages, _, encrypt_decryption_key_shares_messages] => {
+            [deal_decryption_key_contribution_messages, _, encrypt_decryption_key_shares_messages] =>
+            {
+                let malicious_third_round_parties = malicious_parties_by_round
+                    .get(&3)
+                    .ok_or(Error::InvalidParameters)?
+                    .clone();
+
                 Self::advance_fourth_round(
                     tangible_party_id,
                     session_id,
                     encryption_of_decryption_key_base_protocol_context,
                     access_structure,
                     public_input,
-                    &setup_parameters,
                     &pvss_party,
                     deal_decryption_key_contribution_messages.clone(),
                     encrypt_decryption_key_shares_messages.clone(),
+                    malicious_third_round_parties,
                     decryption_key_share_bits,
                     rng,
                 )
@@ -267,7 +300,7 @@ where
         }
     }
 
-    fn round_causing_threshold_not_reached(failed_round: usize) -> Option<usize> {
+    fn round_causing_threshold_not_reached(failed_round: u64) -> Option<u64> {
         match failed_round {
             3 => Some(1),
             4 => Some(3),

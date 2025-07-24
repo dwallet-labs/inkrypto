@@ -7,7 +7,8 @@ use core::{
     ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign},
 };
 
-use crypto_bigint::{rand_core::CryptoRngCore, Int, Uint, U128, U64};
+use crypto_bigint::{Int, Uint, U128, U64};
+
 use serde::{Deserialize, Serialize};
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq, CtOption};
 
@@ -20,6 +21,7 @@ pub mod additive;
 pub mod bounded_integers_group;
 pub mod bounded_natural_numbers_group;
 pub mod const_additive;
+mod csrng;
 pub mod direct_product;
 pub mod linear_combination;
 mod reduce;
@@ -27,6 +29,18 @@ pub mod ristretto;
 pub mod scalar;
 pub mod secp256k1;
 pub mod self_product;
+mod transcription;
+
+pub use transcription::Transcribeable;
+#[cfg(any(test, feature = "test_helpers"))]
+#[allow(unused_imports)]
+pub mod test_helpers {
+    pub use crate::transcription::test_helpers::*;
+}
+
+#[cfg(any(test, feature = "os_rng"))]
+pub use csrng::OsCsRng;
+pub use csrng::{CsRng, SeedableRng};
 
 /// Represents an unsigned integer sized based on the computation security parameter, denoted as
 /// $\kappa$.
@@ -58,6 +72,9 @@ pub enum Error {
     #[error("hash to group: failed to encode bytes to a group element.")]
     HashToGroup,
 
+    #[error("transcription error")]
+    Transcription,
+
     #[error("invalid parameters")]
     InvalidParameters,
 
@@ -85,7 +102,6 @@ pub trait GroupElement:
     + SubAssign<Self>
     + for<'r> SubAssign<&'r Self>
     + Into<Self::Value>
-    + Into<Self::PublicParameters>
     + Debug
     + PartialEq
     + Eq
@@ -156,7 +172,8 @@ pub trait GroupElement:
     /// instantiate a [`GroupElement`]), and static information hardcoded into the code
     /// (that, together with the dynamic information, uniquely identifies a group and will be used
     /// for Fiat-Shamir Transcripts).
-    type PublicParameters: Serialize
+    type PublicParameters: Transcribeable
+        + Serialize
         + for<'r> Deserialize<'r>
         + Clone
         + PartialEq
@@ -164,11 +181,6 @@ pub trait GroupElement:
         + Debug
         + Send
         + Sync;
-
-    /// Returns the public parameters of this group element
-    fn public_parameters(&self) -> Self::PublicParameters {
-        (*self).into()
-    }
 
     /// Instantiate the group element from its value and the caller supplied parameters.
     ///
@@ -215,10 +227,7 @@ pub trait GroupElement:
     /// to take into account for the scalar.
     ///
     /// NOTE: `scalar_bits` may be leaked in the time pattern.
-    fn scale_bounded<const LIMBS: usize>(&self, scalar: &Uint<LIMBS>, scalar_bits: u32) -> Self {
-        // Safe to `.unwrap()` here as we assure `bases_and_multiplicands` is non-empty
-        Self::linearly_combine_bounded(vec![(*self, *scalar)], scalar_bits).unwrap()
-    }
+    fn scale_bounded<const LIMBS: usize>(&self, scalar: &Uint<LIMBS>, scalar_bits: u32) -> Self;
 
     /// Constant-time Multiplication by (any bounded) integer (scalar),
     /// with `scalar_bits` representing the number of (least significant) bits
@@ -247,9 +256,7 @@ pub trait GroupElement:
         &self,
         scalar: &Uint<LIMBS>,
         scalar_bits: u32,
-    ) -> Self {
-        self.scale_bounded(scalar, scalar_bits)
-    }
+    ) -> Self;
 
     /// Variable-time Multiplication by (any bounded) integer (scalar),
     /// with `scalar_bits` representing the number of (least significant) bits
@@ -277,7 +284,7 @@ pub trait GroupElement:
         integer: &Int<LIMBS>,
         scalar_bits: u32,
     ) -> Self {
-        let positive = self.scale_bounded_vartime(&integer.abs(), scalar_bits);
+        let positive = self.scale_bounded(&integer.abs(), scalar_bits);
 
         if bool::from(integer.is_negative()) {
             positive.neg()
@@ -286,10 +293,11 @@ pub trait GroupElement:
         }
     }
 
+    /// Add two randomized group elements in constant-time.
+    fn add_randomized(self, other: &Self) -> Self;
+
     /// Variable-time Addition.
-    fn add_vartime(self, other: &Self) -> Self {
-        self + other
-    }
+    fn add_vartime(self, other: &Self) -> Self;
 
     /// Double this point in constant-time.
     #[must_use]
@@ -297,54 +305,47 @@ pub trait GroupElement:
 
     /// Double this point in variable-time.
     #[must_use]
-    fn double_vartime(&self) -> Self {
-        self.double()
-    }
+    fn double_vartime(&self) -> Self;
 }
 
-pub trait Scale<T> {
+/// Scale a randomized base by a scalar of type `T`, supporting acceleration if possible.
+/// Note: `self` may be leaked in the time pattern, so must be public.
+pub trait Scale<T>: GroupElement {
     /// Constant-time Multiplication by a Scalar
-    fn scale_generic(&self, scalar: &T) -> Self;
+    fn scale_randomized_accelerated(
+        &self,
+        scalar: &T,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self;
+
+    /// Variable-time Multiplication by a Scalar
+    fn scale_vartime_accelerated(
+        &self,
+        scalar: &T,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self;
 
     /// Constant-time Multiplication by a scalar,
     /// with `scalar_bits` representing the number of (least significant) bits
     /// to take into account for the scalar.
     ///
     /// NOTE: `scalar_bits` may be leaked in the time pattern.
-    fn scale_bounded_generic(&self, scalar: &T, scalar_bits: u32) -> Self;
+    fn scale_randomized_bounded_accelerated(
+        &self,
+        scalar: &T,
+        public_parameters: &Self::PublicParameters,
+        scalar_bits: u32,
+    ) -> Self;
 
     /// Variable-time Multiplication by a scalar,
     /// with `scalar_bits` representing the number of (least significant) bits
     /// to take into account for the scalar.
-    fn scale_bounded_vartime_generic(&self, scalar: &T, scalar_bits: u32) -> Self;
-}
-
-impl<const LIMBS: usize, G: GroupElement> Scale<Uint<LIMBS>> for G {
-    fn scale_generic(&self, scalar: &Uint<LIMBS>) -> Self {
-        self.scale(scalar)
-    }
-
-    fn scale_bounded_generic(&self, scalar: &Uint<LIMBS>, scalar_bits: u32) -> Self {
-        self.scale_bounded(scalar, scalar_bits)
-    }
-
-    fn scale_bounded_vartime_generic(&self, scalar: &Uint<LIMBS>, scalar_bits: u32) -> Self {
-        self.scale_bounded_vartime(scalar, scalar_bits)
-    }
-}
-
-impl<const LIMBS: usize, G: GroupElement> Scale<Int<LIMBS>> for G {
-    fn scale_generic(&self, scalar: &Int<LIMBS>) -> Self {
-        self.scale_integer(scalar)
-    }
-
-    fn scale_bounded_generic(&self, scalar: &Int<LIMBS>, scalar_bits: u32) -> Self {
-        self.scale_integer_bounded(scalar, scalar_bits)
-    }
-
-    fn scale_bounded_vartime_generic(&self, scalar: &Int<LIMBS>, scalar_bits: u32) -> Self {
-        self.scale_integer_bounded_vartime(scalar, scalar_bits)
-    }
+    fn scale_bounded_vartime_accelerated(
+        &self,
+        scalar: &T,
+        public_parameters: &Self::PublicParameters,
+        scalar_bits: u32,
+    ) -> Self;
 }
 
 /// A bench implementation for groups whose underlying implementation does not expose a
@@ -445,11 +446,6 @@ pub trait KnownOrderGroupElement<const SCALAR_LIMBS: usize>:
         + for<'r> Mul<&'r Self, Output = Self>;
 
     /// Returns the order of the group
-    fn order(&self) -> Uint<SCALAR_LIMBS> {
-        Self::order_from_public_parameters(&self.public_parameters())
-    }
-
-    /// Returns the order of the group
     fn order_from_public_parameters(
         public_parameters: &Self::PublicParameters,
     ) -> Uint<SCALAR_LIMBS>;
@@ -505,16 +501,13 @@ pub trait PrimeGroupElement<const SCALAR_LIMBS: usize>:
 
 pub trait Samplable: GroupElement {
     /// Uniformly sample a random element.
-    fn sample(
-        public_parameters: &Self::PublicParameters,
-        rng: &mut impl CryptoRngCore,
-    ) -> Result<Self>;
+    fn sample(public_parameters: &Self::PublicParameters, rng: &mut impl CsRng) -> Result<Self>;
 
     /// Uniformly sample a batch of random elements.
     fn sample_batch(
         public_parameters: &Self::PublicParameters,
         batch_size: usize,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<Vec<Self>> {
         iter::repeat_with(|| Self::sample(public_parameters, rng))
             .take(batch_size)
@@ -527,10 +520,8 @@ pub trait Samplable: GroupElement {
     /// as adding a uniform randomizer modulo the group order perfectly hides the group element it is added to.
     fn sample_randomizer(
         public_parameters: &Self::PublicParameters,
-        rng: &mut impl CryptoRngCore,
-    ) -> Result<Self> {
-        Self::sample(public_parameters, rng)
-    }
+        rng: &mut impl CsRng,
+    ) -> Result<Self>;
 }
 
 /// Perform an inversion on a field element (i.e., base field element or scalar)

@@ -6,19 +6,19 @@
 use std::array;
 use std::collections::{HashMap, HashSet};
 
-use crypto_bigint::rand_core::CryptoRngCore;
-#[cfg(feature = "parallel")]
-use crypto_bigint::rand_core::OsRng;
 use crypto_bigint::{Encoding, Int, Uint};
-use group::helpers::{DeduplicateAndSort, FlatMapResults, GroupIntoNestedMap};
-use group::PrimeGroupElement;
-use mpc::HandleInvalidMessages;
-use mpc::PartyID;
-
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
+use group::helpers::{DeduplicateAndSort, FlatMapResults, GroupIntoNestedMap};
+use group::{CsRng, PrimeGroupElement};
+use mpc::PartyID;
+use mpc::{HandleInvalidMessages, SeedableCollection};
+
+use crate::accelerator::MultiFoldNupowAccelerator;
 use crate::dkg::verify_encryptions_of_secrets_per_crt_prime;
+use crate::encryption_key::public_parameters::Instantiate;
+use crate::equivalence_class::EquivalenceClassOps;
 use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::*;
 use crate::publicly_verifiable_secret_sharing::{DealtSecretShare, Party};
 use crate::{encryption_key, equivalence_class, CompactIbqf, EquivalenceClass, Error, Result};
@@ -57,9 +57,16 @@ where
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
 
     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-        Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        PublicParameters = equivalence_class::PublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    >,
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
 {
     /// This function verifies using batch verification the $\textsf{EncDL}$ proofs for both
     /// 1. Parties which were not available to check their own, and
@@ -94,7 +101,7 @@ where
                 >,
             >,
         >,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<HashSet<PartyID>> {
         let (
             parties_with_invalid_encryption_keys,
@@ -122,17 +129,19 @@ where
             )
             .handle_invalid_messages_async();
 
+        let seeded_encryptions_of_shares_and_proofs = encryptions_of_shares_and_proofs.seed(rng);
+
         #[cfg(not(feature = "parallel"))]
-        let iter = encryptions_of_shares_and_proofs.into_iter();
+        let iter = seeded_encryptions_of_shares_and_proofs.into_iter();
         #[cfg(feature = "parallel")]
-        let iter = encryptions_of_shares_and_proofs.into_par_iter();
+        let iter = seeded_encryptions_of_shares_and_proofs.into_par_iter();
 
         let parties_sending_invalid_proofs: Result<Vec<HashSet<PartyID>>> = iter
-            .filter(|(participating_tangible_party_id, _)| {
+            .filter(|((participating_tangible_party_id, _), _)| {
                 !parties_with_invalid_encryption_keys.contains(participating_tangible_party_id)
             })
             .map(
-                |(participating_tangible_party_id, encryptions_of_shares_and_proofs)| {
+                |((participating_tangible_party_id, encryptions_of_shares_and_proofs), mut unique_rng)| {
                     // Safe to unwrap, as we filtered to guarantee that the key exists,
                     // and the size is MAX_PRIMES, so converting to an array of size NUM_PRIMES must succeed.
                     let encryption_scheme_public_parameters_per_crt_prime =
@@ -195,11 +204,8 @@ where
                         self.equivalence_class_public_parameters.clone(),
                         self.public_verification_key_base,
                         self.base_protocol_context.clone(),
-                        self.secret_bits,
-                        #[cfg(not(feature = "parallel"))]
-                        rng,
-                        #[cfg(feature = "parallel")]
-                        &mut OsRng,
+                        self.discrete_log_witness_group_public_parameters.sample_bits,
+                        &mut unique_rng
                     )
                 },
             )
@@ -242,7 +248,7 @@ where
                 HashMap<PartyID, EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
             >,
         >,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<Vec<PartyID>> {
         // First filter verified dealers
         let encryptions_of_secrets_and_proofs: HashMap<_, _> = encryptions_of_secrets_and_proofs
@@ -421,7 +427,7 @@ where
                 HashMap<PartyID, EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
             >,
         >,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<Option<HashSet<PartyID>>> {
         match self.participating_tangible_party_id {
             Some(participating_tangible_party_id) => {

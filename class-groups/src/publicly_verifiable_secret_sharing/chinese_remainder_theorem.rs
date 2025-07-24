@@ -3,32 +3,33 @@
 
 #![allow(clippy::type_complexity)]
 
-use crypto_bigint::subtle::{ConditionallySelectable, ConstantTimeLess};
-use crypto_bigint::{rand_core::CryptoRngCore, CheckedSub, ConstChoice, Int, Limb, NonZero, Uint};
-use group::helpers::{DeduplicateAndSort, FlatMapResults};
-use group::{bounded_natural_numbers_group, GroupElement, PartyID};
-use maurer::{fischlin, knowledge_of_discrete_log, UC_PROOFS_REPETITIONS};
-use mpc::HandleInvalidMessages;
-use proof::GroupsPublicParametersAccessors;
-#[cfg(feature = "parallel")]
-use rayon::iter::IntoParallelRefIterator;
-#[cfg(feature = "parallel")]
-use rayon::prelude::*;
 use std::array;
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 
+use crypto_bigint::subtle::{ConditionallySelectable, ConstantTimeLess};
+use crypto_bigint::{CheckedSub, ConstChoice, Int, Limb, NonZero, Uint};
+#[cfg(feature = "parallel")]
+use rayon::iter::IntoParallelRefIterator;
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
+
+pub use consts::*;
+use group::bounded_natural_numbers_group::MAURER_PROOFS_DIFF_UPPER_BOUND_BITS;
+use group::helpers::{DeduplicateAndSort, FlatMapResults};
+use group::{bounded_natural_numbers_group, CsRng, GroupElement, PartyID};
+use maurer::{fischlin, knowledge_of_discrete_log, UC_PROOFS_REPETITIONS};
+use mpc::secret_sharing::shamir::over_the_integers::find_closest_crypto_bigint_size;
+use mpc::{HandleInvalidMessages, SeedableCollection};
+use proof::GroupsPublicParametersAccessors;
+
+use crate::decryption_key_share::PartialDecryptionProof;
 use crate::setup::DeriveFromPlaintextPublicParameters;
 use crate::setup::SetupParameters;
 use crate::{
     decryption_key_share, encryption_key, equivalence_class, CompactIbqf, DecryptionKey,
     DecryptionKeyShare, EncryptionKey, EquivalenceClass, Error, Result,
 };
-
-use crate::decryption_key_share::PartialDecryptionProof;
-pub use consts::*;
-use group::bounded_natural_numbers_group::MAURER_PROOFS_DIFF_UPPER_BOUND_BITS;
-use mpc::secret_sharing::shamir::over_the_integers::find_closest_crypto_bigint_size;
 
 mod consts;
 
@@ -195,7 +196,7 @@ pub fn construct_setup_parameters_per_crt_prime(
 
 pub fn generate_keypairs_per_crt_prime(
     setup_parameters_per_crt_prime: [SecretKeyShareCRTPrimeSetupParameters; MAX_PRIMES],
-    rng: &mut impl CryptoRngCore,
+    rng: &mut impl CsRng,
 ) -> Result<[Uint<CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS>; MAX_PRIMES]> {
     setup_parameters_per_crt_prime
         .map(|setup_parameters| {
@@ -223,13 +224,15 @@ pub fn construct_knowledge_of_decryption_key_public_parameters(
         discrete_log_sample_bits
     )?;
 
+    let discrete_log_sample_bits = Some(witness_group_public_parameters.sample_bits);
     let language_public_parameters = knowledge_of_discrete_log::PublicParameters::new::<
         bounded_natural_numbers_group::GroupElement<CRT_DECRYPTION_KEY_WITNESS_LIMBS>,
         EquivalenceClass<CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
     >(
-        witness_group_public_parameters.clone(),
-        equivalence_class_public_parameters.clone(),
+        witness_group_public_parameters,
+        equivalence_class_public_parameters,
         base,
+        discrete_log_sample_bits,
     );
 
     Ok(language_public_parameters)
@@ -256,33 +259,42 @@ pub fn generate_knowledge_of_decryption_key_proofs_per_crt_prime(
     language_public_parameters_per_crt_prime: [KnowledgeOfDiscreteLogUCPublicParameters;
         MAX_PRIMES],
     decryption_key_per_crt_prime: [Uint<CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS>; MAX_PRIMES],
-    rng: &mut impl CryptoRngCore,
+    rng: &mut impl CsRng,
 ) -> Result<
     [(
         CompactIbqf<CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
         KnowledgeOfDiscreteLogUCProof,
     ); MAX_PRIMES],
 > {
-    let encryption_keys_and_proofs = array::from_fn(|i| {
-        let language_public_parameters = &language_public_parameters_per_crt_prime[i];
-        let decryption_key = bounded_natural_numbers_group::GroupElement::new(
-            Uint::from(&decryption_key_per_crt_prime[i]),
-            language_public_parameters.witness_space_public_parameters(),
-        )?;
+    let seeded_indices = (0..MAX_PRIMES).seed(rng);
+    #[cfg(not(feature = "parallel"))]
+    let iter = seeded_indices.into_iter();
+    #[cfg(feature = "parallel")]
+    let iter = seeded_indices.into_par_iter();
 
-        let (proof, encryption_key) = KnowledgeOfDiscreteLogUCProof::prove(
-            // Don't need a protocol context for this specific proof.
-            &PhantomData,
-            language_public_parameters,
-            decryption_key,
-            rng,
-        )?;
+    let encryption_keys_and_proofs = iter
+        .map(|(i, mut unique_rng)| {
+            let language_public_parameters = &language_public_parameters_per_crt_prime[i];
+            let decryption_key = bounded_natural_numbers_group::GroupElement::new(
+                Uint::from(&decryption_key_per_crt_prime[i]),
+                language_public_parameters.witness_space_public_parameters(),
+            )?;
 
-        Ok::<_, Error>((encryption_key.value(), proof))
-    })
-    .flat_map_results()?;
+            let (proof, encryption_key) = KnowledgeOfDiscreteLogUCProof::prove(
+                // Don't need a protocol context for this specific proof.
+                &PhantomData,
+                language_public_parameters,
+                decryption_key,
+                &mut unique_rng,
+            )?;
 
-    Ok(encryption_keys_and_proofs)
+            Ok::<_, Error>((encryption_key.value(), proof))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    encryption_keys_and_proofs
+        .try_into()
+        .map_err(|_| Error::InternalError)
 }
 
 pub(super) fn instantiate_encryption_keys_per_crt_prime(
@@ -328,7 +340,7 @@ pub fn verify_knowledge_of_decryption_key_proofs(
     language_public_parameters_per_crt_prime: [KnowledgeOfDiscreteLogUCPublicParameters;
         MAX_PRIMES],
     preverified_parties: HashSet<PartyID>,
-    parties_sending_invalid_encryption_keys: Vec<PartyID>,
+    parties_without_valid_encryption_keys: Vec<PartyID>,
     verify_non_pre_verified: bool,
     encryption_keys_and_proofs_per_crt_prime: HashMap<
         PartyID,
@@ -368,7 +380,7 @@ pub fn verify_knowledge_of_decryption_key_proofs(
         .collect();
 
     // Add both the parties that sent invalid statements and malicious proof to the malicious parties list, and filter out their messages.
-    let malicious_parties: Vec<PartyID> = parties_sending_invalid_encryption_keys
+    let malicious_parties: Vec<PartyID> = parties_without_valid_encryption_keys
         .into_iter()
         .chain(parties_sending_invalid_proofs)
         .deduplicate_and_sort();
@@ -395,15 +407,15 @@ pub fn verify_knowledge_of_decryption_key_proofs(
 #[cfg(test)]
 mod tests {
     use crypto_bigint::{CheckedMul, RandomMod};
-    use rand_core::OsRng;
 
-    use group::Reduce;
+    use group::{OsCsRng, Reduce};
     use mpc::secret_sharing::shamir::over_the_integers::{
         secret_key_share_size_upper_bound, MAX_PLAYERS,
     };
 
-    use super::*;
     use crate::{SecretKeyShareSizedNumber, DECRYPTION_KEY_BITS_112BIT_SECURITY, MAX_THRESHOLD};
+
+    use super::*;
 
     #[test]
     fn crt_reconstructs() {
@@ -433,7 +445,7 @@ mod tests {
         );
 
         let secret = SecretKeyShareSizedNumber::random_mod(
-            &mut OsRng,
+            &mut OsCsRng,
             &NonZero::new(SecretKeyShareSizedNumber::ONE.shl_vartime(
                 secret_key_share_size_upper_bound(
                     MAX_PLAYERS,
@@ -457,5 +469,184 @@ mod tests {
             secret, reconstructed_secret,
             "CRT reconstruction should yield the original secret"
         );
+    }
+}
+
+#[cfg(feature = "benchmarking")]
+pub(crate) mod benches {
+    use std::hint::black_box;
+    use std::time::Duration;
+
+    use criterion::{BatchSize, Criterion};
+    use crypto_bigint::Random;
+
+    use group::{OsCsRng, Samplable};
+    use homomorphic_encryption::GroupsPublicParametersAccessors;
+
+    use crate::equivalence_class::EquivalenceClassOps;
+    use crate::{RandomnessSpaceGroupElement, DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER};
+
+    use super::*;
+
+    pub(crate) fn benchmark(_c: &mut Criterion) {
+        let mut group = _c.benchmark_group("crt");
+        group.warm_up_time(Duration::from_secs(5));
+        group.measurement_time(Duration::from_secs(10));
+        group.sample_size(10);
+
+        let group = &mut group;
+
+        let setup_parameters_per_crt_prime =
+            construct_setup_parameters_per_crt_prime(DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER)
+                .unwrap();
+        let setup_parameters = setup_parameters_per_crt_prime[0].clone();
+        let (pp, decryption_key) =
+            SecretKeyShareCRTPrimeDecryptionKey::generate(setup_parameters.clone(), &mut OsCsRng)
+                .unwrap();
+        let encryption_key = decryption_key.encryption_key;
+
+        group.bench_function("equivalence class mul (ct)", |b| {
+            b.iter_batched(
+                || {
+                    let randomness = RandomnessSpaceGroupElement::sample(
+                        pp.randomness_space_public_parameters(),
+                        &mut OsCsRng,
+                    )
+                    .unwrap()
+                    .value();
+
+                    let a = setup_parameters.h.pow_vartime(&randomness);
+                    let b = setup_parameters.h.pow_vartime(&randomness);
+
+                    (a, b)
+                },
+                |(a, b)| {
+                    let res = a.mul(&b).unwrap();
+                    black_box(res)
+                },
+                BatchSize::SmallInput,
+            )
+        });
+
+        group.bench_function("equivalence class mul (rt)", |b| {
+            b.iter_batched(
+                || {
+                    let randomness = RandomnessSpaceGroupElement::sample(
+                        pp.randomness_space_public_parameters(),
+                        &mut OsCsRng,
+                    )
+                    .unwrap()
+                    .value();
+
+                    let a = setup_parameters.h.pow_vartime(&randomness);
+                    let b = setup_parameters.h.pow_vartime(&randomness);
+
+                    (a, b)
+                },
+                |(a, b)| {
+                    let res = a.mul_randomized(&b).unwrap();
+                    black_box(res)
+                },
+                BatchSize::SmallInput,
+            )
+        });
+
+        group.bench_function("equivalence class mul (vt)", |b| {
+            b.iter_batched(
+                || {
+                    let randomness = RandomnessSpaceGroupElement::sample(
+                        pp.randomness_space_public_parameters(),
+                        &mut OsCsRng,
+                    )
+                    .unwrap()
+                    .value();
+
+                    let a = setup_parameters.h.pow_vartime(&randomness);
+                    let b = setup_parameters.h.pow_vartime(&randomness);
+
+                    (a, b)
+                },
+                |(a, b)| {
+                    let res = a.mul_vartime(&b).unwrap();
+                    black_box(res)
+                },
+                BatchSize::SmallInput,
+            )
+        });
+
+        group.bench_function("equivalence class pow (ct)", |b| {
+            b.iter_batched(
+                || {
+                    RandomnessSpaceGroupElement::sample(
+                        pp.randomness_space_public_parameters(),
+                        &mut OsCsRng,
+                    )
+                    .unwrap()
+                    .value()
+                },
+                |randomness| {
+                    let res = setup_parameters.h.pow_bounded(
+                        &randomness,
+                        pp.randomness_space_public_parameters().sample_bits,
+                    );
+                    black_box(res)
+                },
+                BatchSize::SmallInput,
+            )
+        });
+
+        group.bench_function("equivalence class pow (rt)", |b| {
+            b.iter_batched(
+                || {
+                    RandomnessSpaceGroupElement::sample(
+                        pp.randomness_space_public_parameters(),
+                        &mut OsCsRng,
+                    )
+                    .unwrap()
+                    .value()
+                },
+                |randomness| {
+                    let res = setup_parameters.h.pow_bounded_randomized(
+                        &randomness,
+                        pp.randomness_space_public_parameters().sample_bits,
+                    );
+                    black_box(res)
+                },
+                BatchSize::SmallInput,
+            )
+        });
+
+        group.bench_function("equivalence class pow (vt)", |b| {
+            b.iter_batched(
+                || {
+                    RandomnessSpaceGroupElement::sample(
+                        pp.randomness_space_public_parameters(),
+                        &mut OsCsRng,
+                    )
+                    .unwrap()
+                    .value()
+                },
+                |randomness| {
+                    let res = setup_parameters.h.pow_vartime(&randomness);
+                    black_box(res)
+                },
+                BatchSize::SmallInput,
+            )
+        });
+
+        let m = NonZero::random(&mut OsCsRng);
+        group.bench_function("power_of_f", |b| {
+            b.iter(|| {
+                black_box(SecretKeyShareCRTPrimeEncryptionKey::power_of_f(
+                    &m,
+                    &pp.setup_parameters.class_group_parameters,
+                ))
+            })
+        });
+
+        SecretKeyShareCRTPrimeEncryptionKey::benchmark_pow_h(group, &pp);
+        SecretKeyShareCRTPrimeEncryptionKey::benchmark_pow_pk(group, &pp);
+
+        SecretKeyShareCRTPrimeEncryptionKey::benchmark_encrypt(group, &encryption_key, &pp);
     }
 }

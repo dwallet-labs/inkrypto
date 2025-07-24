@@ -6,18 +6,20 @@
 use std::array;
 use std::collections::{HashMap, HashSet};
 
-use commitment::CommitmentSizedNumber;
-use crypto_bigint::rand_core::CryptoRngCore;
 use crypto_bigint::{ConstChoice, Encoding, Int, Uint};
+
+use commitment::CommitmentSizedNumber;
 use group::helpers::{DeduplicateAndSort, FlatMapResults};
 use group::{
-    bounded_integers_group, bounded_natural_numbers_group, GroupElement, PartyID,
+    bounded_integers_group, bounded_natural_numbers_group, CsRng, GroupElement, PartyID,
     PrimeGroupElement, Samplable,
 };
 use homomorphic_encryption::GroupsPublicParametersAccessors;
 use mpc::{AsynchronousRoundResult, HandleInvalidMessages};
 
+use crate::accelerator::MultiFoldNupowAccelerator;
 use crate::dkg::prove_encryption_of_discrete_log_per_crt_prime;
+use crate::equivalence_class::EquivalenceClassOps;
 use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
     CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, NUM_ENCRYPTION_OF_DECRYPTION_KEY_PRIMES,
     NUM_SECRET_SHARE_PRIMES,
@@ -29,7 +31,7 @@ use crate::reconfiguration::party::RoundResult;
 use crate::reconfiguration::{
     Message, Party, PublicInput, RANDOMIZER_LIMBS, RANDOMIZER_WITNESS_LIMBS,
 };
-use crate::setup::SetupParameters;
+use crate::setup::{DeriveFromPlaintextPublicParameters, SetupParameters};
 use crate::{
     equivalence_class, publicly_verifiable_secret_sharing, CiphertextSpaceGroupElement,
     CompactIbqf, EquivalenceClass, Error, Result,
@@ -59,8 +61,26 @@ where
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
 
     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-        Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        PublicParameters = equivalence_class::PublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
+    SetupParameters<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<GroupElement::Scalar>,
+    >: DeriveFromPlaintextPublicParameters<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<GroupElement::Scalar>,
     >,
     Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>: Encoding,
     GroupElement::Scalar: Default,
@@ -92,7 +112,7 @@ where
             GroupElement,
         >,
         randomizer_contribution_bits: u32,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<
         RoundResult<
             PLAINTEXT_SPACE_SCALAR_LIMBS,
@@ -176,7 +196,9 @@ where
         let threshold_encryption_key_per_crt_prime: [_; NUM_ENCRYPTION_OF_DECRYPTION_KEY_PRIMES] =
             public_input
                 .dkg_output
-                .threshold_encryption_scheme_public_parameters_per_crt_prime()?
+                .threshold_encryption_scheme_public_parameters_per_crt_prime(
+                    &public_input.setup_parameters_per_crt_prime,
+                )?
                 .map(|public_parameters| public_parameters.encryption_key);
 
         let threshold_encryption_of_randomizer_contribution_and_proof =
@@ -221,6 +243,7 @@ where
     /// had a discrete log which equals to the message under the threshold keys $\textsf{pk_{Q'_{m'}}}$
     #[allow(clippy::type_complexity)]
     pub(crate) fn handle_first_round_messages(
+        tangible_party_id: PartyID,
         public_input: &PublicInput<
             PLAINTEXT_SPACE_SCALAR_LIMBS,
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -244,6 +267,7 @@ where
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             GroupElement,
         >,
+        reconstruct_all: bool,
     ) -> Result<(
         Vec<PartyID>,
         HashSet<PartyID>,
@@ -374,10 +398,24 @@ where
                 })
                 .collect();
 
+        let virtual_subset = if reconstruct_all {
+            upcoming_virtual_parties_that_were_dealt_randomizer_shares
+        } else if let Some(upcoming_tangible_party_id) = public_input
+            .current_tangible_party_id_to_upcoming
+            .get(&tangible_party_id)
+            .unwrap_or(&None)
+        {
+            public_input
+                .upcoming_access_structure
+                .virtual_subset(HashSet::from([*upcoming_tangible_party_id]))?
+        } else {
+            HashSet::new()
+        };
+
         let reconstructed_commitments_to_randomizer_contribution_sharing_to_upcoming =
             randomizer_contribution_to_upcoming_pvss_party.reconstruct_commitment_to_sharing(
                 coefficients_contribution_commitments_to_upcoming.clone(),
-                upcoming_virtual_parties_that_were_dealt_randomizer_shares,
+                virtual_subset,
             );
 
         let (

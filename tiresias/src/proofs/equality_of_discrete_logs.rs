@@ -1,15 +1,13 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
-use crypto_bigint::{
-    modular::MontyParams, rand_core::CryptoRngCore, MultiExponentiateBoundedExp, NonZero, Odd,
-    RandomMod,
-};
+use crypto_bigint::{modular::MontyParams, MultiExponentiateBoundedExp, NonZero, Odd, RandomMod};
 use merlin::Transcript;
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "benchmarking")]
 pub(crate) use benches::benchmark_proof_of_equality_of_discrete_logs;
+use group::CsRng;
 use mpc::secret_sharing::shamir::over_the_integers::secret_key_share_size_upper_bound;
 
 use crate::{
@@ -68,7 +66,7 @@ impl ProofOfEqualityOfDiscreteLogs {
         public_verification_key: PaillierModulusSizedNumber,
         // Decryption share $\ct_j=\ct^{2n!d_j}$
         decryption_share: PaillierModulusSizedNumber,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> ProofOfEqualityOfDiscreteLogs {
         let (base, _, decryption_shares_and_bases, mut transcript) = Self::setup_protocol(
             n2,
@@ -100,7 +98,7 @@ impl ProofOfEqualityOfDiscreteLogs {
         base: PaillierModulusSizedNumber,
         decryption_share_base: PaillierModulusSizedNumber,
         transcript: &mut Transcript,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> ProofOfEqualityOfDiscreteLogs {
         let witness_size_upper_bound = secret_key_share_size_upper_bound(
             u32::from(number_of_parties),
@@ -175,7 +173,7 @@ impl ProofOfEqualityOfDiscreteLogs {
         public_verification_key: PaillierModulusSizedNumber,
         // The decryption share $\ct_j=\ct^{2n!d_j}$
         decryption_share: PaillierModulusSizedNumber,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<()> {
         let (base, public_verification_key, decryption_shares_and_bases, mut transcript) =
             Self::setup_protocol(
@@ -212,7 +210,7 @@ impl ProofOfEqualityOfDiscreteLogs {
         public_verification_key: PaillierModulusSizedNumber,
         decryption_share: PaillierModulusSizedNumber,
         transcript: &mut Transcript,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<()> {
         let witness_size_upper_bound = secret_key_share_size_upper_bound(
             u32::from(number_of_parties),
@@ -399,7 +397,7 @@ impl ProofOfEqualityOfDiscreteLogs {
         // are the ciphertexts to be decrypted and their matching decryption shares
         // ${\ct^i_j}_i = {{\tilde{h_i}^x}}_i$
         decryption_shares_and_bases: Vec<(PaillierModulusSizedNumber, PaillierModulusSizedNumber)>,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<ProofOfEqualityOfDiscreteLogs> {
         let (base, _, batched_decryption_share_base, _, mut transcript) =
             Self::setup_batch_protocol(
@@ -444,7 +442,7 @@ impl ProofOfEqualityOfDiscreteLogs {
         // are the ciphertexts to be decrypted and their matching decryption shares
         // ${\ct^i_j}_i = {{\tilde{h_i}^d}}_i$
         decryption_shares_and_bases: Vec<(PaillierModulusSizedNumber, PaillierModulusSizedNumber)>,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<()> {
         let (
             base,
@@ -558,8 +556,9 @@ impl Default for ProofOfEqualityOfDiscreteLogs {
 
 #[cfg(test)]
 mod tests {
+    use group::OsCsRng;
+
     use crate::test_helpers::{BASE, CIPHERTEXT, N, WITNESS};
-    use rand_core::OsRng;
 
     use super::*;
 
@@ -614,7 +613,7 @@ mod tests {
             decryption_share_base,
             public_verification_key,
             decryption_share,
-            &mut OsRng,
+            &mut OsCsRng,
         );
 
         assert!(proof
@@ -626,7 +625,7 @@ mod tests {
                 decryption_share_base,
                 public_verification_key,
                 decryption_share,
-                &mut OsRng,
+                &mut OsCsRng,
             )
             .is_ok());
     }
@@ -682,7 +681,7 @@ mod tests {
             base,
             public_verification_key,
             decryption_shares_and_bases.clone(),
-            &mut OsRng,
+            &mut OsCsRng,
         )
         .unwrap();
 
@@ -694,7 +693,7 @@ mod tests {
                 base,
                 public_verification_key,
                 decryption_shares_and_bases,
-                &mut OsRng,
+                &mut OsCsRng,
             )
             .is_ok());
 
@@ -729,7 +728,7 @@ mod tests {
             base,
             public_verification_key,
             decryption_shares_and_bases.clone(),
-            &mut OsRng,
+            &mut OsCsRng,
         )
         .unwrap();
 
@@ -741,7 +740,7 @@ mod tests {
                 base,
                 public_verification_key,
                 decryption_shares_and_bases,
-                &mut OsRng,
+                &mut OsCsRng,
             )
             .is_ok());
     }
@@ -788,7 +787,7 @@ mod tests {
                     decryption_share_base,
                     wrong_public_verification_key,
                     wrong_decryption_share,
-                    &mut OsRng,
+                    &mut OsCsRng,
                 )
                 .err()
                 .unwrap(),
@@ -804,7 +803,7 @@ mod tests {
                     base,
                     wrong_public_verification_key,
                     vec![(decryption_share_base, wrong_decryption_share)],
-                    &mut OsRng,
+                    &mut OsCsRng,
                 )
                 .err()
                 .unwrap(),
@@ -854,7 +853,7 @@ mod tests {
                     decryption_share_base,
                     PaillierModulusSizedNumber::ZERO,
                     PaillierModulusSizedNumber::ZERO,
-                    &mut OsRng,
+                    &mut OsCsRng,
                 )
                 .err()
                 .unwrap(),
@@ -870,7 +869,7 @@ mod tests {
                     base,
                     PaillierModulusSizedNumber::ZERO,
                     vec![(decryption_share_base, PaillierModulusSizedNumber::ZERO)],
-                    &mut OsRng,
+                    &mut OsCsRng,
                 )
                 .err()
                 .unwrap(),
@@ -898,7 +897,7 @@ mod tests {
                     decryption_share_base,
                     two_n,
                     two_n,
-                    &mut OsRng,
+                    &mut OsCsRng,
                 )
                 .err()
                 .unwrap(),
@@ -914,7 +913,7 @@ mod tests {
                     base,
                     two_n,
                     vec![(decryption_share_base, two_n)],
-                    &mut OsRng,
+                    &mut OsCsRng,
                 )
                 .err()
                 .unwrap(),
@@ -931,7 +930,7 @@ mod tests {
             decryption_share_base,
             public_verification_key,
             decryption_share,
-            &mut OsRng,
+            &mut OsCsRng,
         );
 
         let valid_batched_proof = ProofOfEqualityOfDiscreteLogs::batch_prove(
@@ -942,7 +941,7 @@ mod tests {
             base,
             public_verification_key,
             vec![(decryption_share_base, decryption_share)],
-            &mut OsRng,
+            &mut OsCsRng,
         )
         .unwrap();
 
@@ -957,7 +956,7 @@ mod tests {
                     decryption_share_base,
                     public_verification_key,
                     decryption_share,
-                    &mut OsRng,
+                    &mut OsCsRng,
                 )
                 .err()
                 .unwrap(),
@@ -973,7 +972,7 @@ mod tests {
                     wrong_base,
                     public_verification_key,
                     vec![(decryption_share_base, decryption_share)],
-                    &mut OsRng,
+                    &mut OsCsRng,
                 )
                 .err()
                 .unwrap(),
@@ -990,7 +989,7 @@ mod tests {
                     wrong_decryption_share_base,
                     public_verification_key,
                     decryption_share,
-                    &mut OsRng,
+                    &mut OsCsRng,
                 )
                 .err()
                 .unwrap(),
@@ -1006,7 +1005,7 @@ mod tests {
                     base,
                     public_verification_key,
                     vec![(wrong_decryption_share_base, decryption_share)],
-                    &mut OsRng,
+                    &mut OsCsRng,
                 )
                 .err()
                 .unwrap(),
@@ -1023,7 +1022,7 @@ mod tests {
                     decryption_share_base,
                     wrong_public_verification_key,
                     decryption_share,
-                    &mut OsRng,
+                    &mut OsCsRng,
                 )
                 .err()
                 .unwrap(),
@@ -1039,7 +1038,7 @@ mod tests {
                     base,
                     wrong_public_verification_key,
                     vec![(decryption_share_base, decryption_share)],
-                    &mut OsRng,
+                    &mut OsCsRng,
                 )
                 .err()
                 .unwrap(),
@@ -1056,7 +1055,7 @@ mod tests {
                     decryption_share_base,
                     public_verification_key,
                     wrong_decryption_share,
-                    &mut OsRng,
+                    &mut OsCsRng,
                 )
                 .err()
                 .unwrap(),
@@ -1072,7 +1071,7 @@ mod tests {
                     base,
                     public_verification_key,
                     vec![(decryption_share_base, wrong_decryption_share)],
-                    &mut OsRng,
+                    &mut OsCsRng,
                 )
                 .err()
                 .unwrap(),
@@ -1091,7 +1090,7 @@ mod tests {
                     decryption_share_base,
                     public_verification_key,
                     decryption_share,
-                    &mut OsRng,
+                    &mut OsCsRng,
                 )
                 .err()
                 .unwrap(),
@@ -1109,7 +1108,7 @@ mod tests {
                     base,
                     public_verification_key,
                     vec![(decryption_share_base, decryption_share)],
-                    &mut OsRng,
+                    &mut OsCsRng,
                 )
                 .err()
                 .unwrap(),
@@ -1128,7 +1127,7 @@ mod tests {
                     decryption_share_base,
                     public_verification_key,
                     decryption_share,
-                    &mut OsRng,
+                    &mut OsCsRng,
                 )
                 .err()
                 .unwrap(),
@@ -1146,7 +1145,7 @@ mod tests {
                     base,
                     public_verification_key,
                     vec![(decryption_share_base, decryption_share)],
-                    &mut OsRng,
+                    &mut OsCsRng,
                 )
                 .err()
                 .unwrap(),
@@ -1165,7 +1164,7 @@ mod tests {
                     decryption_share_base,
                     public_verification_key,
                     decryption_share,
-                    &mut OsRng,
+                    &mut OsCsRng,
                 )
                 .err()
                 .unwrap(),
@@ -1183,7 +1182,7 @@ mod tests {
                     base,
                     public_verification_key,
                     vec![(decryption_share_base, decryption_share)],
-                    &mut OsRng,
+                    &mut OsCsRng,
                 )
                 .err()
                 .unwrap(),
@@ -1197,7 +1196,8 @@ mod benches {
     use std::iter;
 
     use criterion::Criterion;
-    use rand_core::OsRng;
+
+    use group::OsCsRng;
 
     use crate::LargeBiPrimeSizedNumber;
 
@@ -1217,7 +1217,7 @@ mod benches {
                 PaillierModulusSizedNumber::BITS,
             );
             let witness = ProofOfEqualityOfDiscreteLogsRandomnessSizedNumber::random_mod(
-                &mut OsRng,
+                &mut OsCsRng,
                 &NonZero::new(
                     ProofOfEqualityOfDiscreteLogsRandomnessSizedNumber::ONE
                         .shl_vartime(witness_size_upper_bound),
@@ -1226,9 +1226,9 @@ mod benches {
             );
 
             let base =
-                PaillierModulusSizedNumber::random_mod(&mut OsRng, &NonZero::new(n2).unwrap());
+                PaillierModulusSizedNumber::random_mod(&mut OsCsRng, &NonZero::new(n2).unwrap());
             let ciphertext =
-                PaillierModulusSizedNumber::random_mod(&mut OsRng, &NonZero::new(n2).unwrap());
+                PaillierModulusSizedNumber::random_mod(&mut OsCsRng, &NonZero::new(n2).unwrap());
             let decryption_share_base = ciphertext
                 .as_ring_element(&n2)
                 .pow_bounded_exp(&PaillierModulusSizedNumber::from(2u8), 2)
@@ -1256,7 +1256,7 @@ mod benches {
                             decryption_share_base,
                             public_verification_key,
                             decryption_share,
-                            &mut OsRng,
+                            &mut OsCsRng,
                         )
                     });
                 },
@@ -1271,7 +1271,7 @@ mod benches {
                 decryption_share_base,
                 public_verification_key,
                 decryption_share,
-                &mut OsRng,
+                &mut OsCsRng,
             );
 
             g.bench_function(
@@ -1287,7 +1287,7 @@ mod benches {
                                 decryption_share_base,
                                 public_verification_key,
                                 decryption_share,
-                                &mut OsRng,
+                                &mut OsCsRng,
                             )
                             .is_ok());
                     });
@@ -1296,7 +1296,7 @@ mod benches {
 
             for batch_size in [10, 100, 1000] {
                 let decryption_share_bases = iter::repeat_with(|| {
-                    PaillierModulusSizedNumber::random_mod(&mut OsRng, &NonZero::new(n2).unwrap())
+                    PaillierModulusSizedNumber::random_mod(&mut OsCsRng, &NonZero::new(n2).unwrap())
                         .as_ring_element(&n2)
                         .pow_bounded_exp(&PaillierModulusSizedNumber::from(2u8), 2)
                         .as_natural_number()
@@ -1330,7 +1330,7 @@ mod benches {
                                 base,
                                 public_verification_key,
                                 decryption_shares_and_bases.clone(),
-                                &mut OsRng,
+                                &mut OsCsRng,
                             )
                         });
                     },
@@ -1344,7 +1344,7 @@ mod benches {
                     base,
                     public_verification_key,
                     decryption_shares_and_bases.clone(),
-                    &mut OsRng,
+                    &mut OsCsRng,
                 )
                 .unwrap();
 
@@ -1362,7 +1362,7 @@ mod benches {
                                     base,
                                     public_verification_key,
                                     decryption_shares_and_bases.clone(),
-                                    &mut OsRng,
+                                    &mut OsCsRng,
                                 )
                                 .is_ok());
                         });

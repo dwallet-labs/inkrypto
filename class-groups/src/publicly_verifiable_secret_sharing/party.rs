@@ -5,14 +5,13 @@ use std::array;
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 
-use crypto_bigint::rand_core::CryptoRngCore;
 use crypto_bigint::{Encoding, Int, Uint, U64};
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
 use commitment::CommitmentSizedNumber;
-use group::helpers::{FlatMapResults, TryCollectHashMap};
-use group::{bounded_integers_group, self_product, GroupElement, PrimeGroupElement};
+use group::helpers::{DeduplicateAndSort, FlatMapResults, TryCollectHashMap};
+use group::{bounded_integers_group, self_product, CsRng, GroupElement, PrimeGroupElement};
 use homomorphic_encryption::AdditivelyHomomorphicDecryptionKey;
 use mpc::secret_sharing::shamir::over_the_integers::{
     factorial, FactorialSizedNumber, MAX_PLAYERS, MAX_THRESHOLD,
@@ -20,7 +19,10 @@ use mpc::secret_sharing::shamir::over_the_integers::{
 use mpc::PartyID;
 use mpc::WeightedThresholdAccessStructure;
 
+use crate::accelerator::MultiFoldNupowAccelerator;
 use crate::dkg::prove_encryption_of_discrete_log_per_crt_prime;
+use crate::encryption_key::public_parameters::Instantiate;
+use crate::equivalence_class::EquivalenceClassOps;
 use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::*;
 use crate::publicly_verifiable_secret_sharing::{
     chinese_remainder_theorem, BaseProtocolContext, DealtSecretShare, EncryptionOfDiscreteLogProof,
@@ -56,8 +58,17 @@ pub struct Party<
 
     Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
-    EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>:
-        group::GroupElement<Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+    EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
 {
     pub(in crate::publicly_verifiable_secret_sharing) session_id: CommitmentSizedNumber,
     pub(in crate::publicly_verifiable_secret_sharing) dealer_tangible_party_id: PartyID,
@@ -89,7 +100,7 @@ pub struct Party<
         >,
     pub(in crate::publicly_verifiable_secret_sharing) base_protocol_context: BaseProtocolContext,
     pub(in crate::publicly_verifiable_secret_sharing) secret_bits: u32,
-    pub(in crate::publicly_verifiable_secret_sharing) parties_sending_invalid_encryption_keys:
+    pub(in crate::publicly_verifiable_secret_sharing) parties_without_valid_encryption_keys:
         Vec<PartyID>,
     pub(in crate::publicly_verifiable_secret_sharing) participating_and_dealers_match: bool,
     _group_choice: PhantomData<GroupElement>,
@@ -130,9 +141,16 @@ where
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
 
     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-        Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        PublicParameters = equivalence_class::PublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    >,
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -188,11 +206,34 @@ where
             &equivalence_class_public_parameters,
         )?;
 
+        let participating_tangible_parties: HashSet<_> = participating_parties_access_structure
+            .party_to_weight
+            .keys()
+            .copied()
+            .collect();
+        let parties_with_encryption_keys: HashSet<_> =
+            encryption_key_values_and_proofs_per_crt_prime
+                .keys()
+                .copied()
+                .collect();
+        if !participating_tangible_parties.is_superset(&parties_with_encryption_keys) {
+            return Err(Error::InvalidParameters);
+        }
+        let parties_without_encryption_keys: HashSet<_> = participating_tangible_parties
+            .difference(&parties_with_encryption_keys)
+            .copied()
+            .collect();
+
         let (parties_sending_invalid_encryption_keys, encryption_keys_and_proofs_per_crt_prime) =
             instantiate_encryption_keys_per_crt_prime(
                 &setup_parameters_per_crt_prime,
                 encryption_key_values_and_proofs_per_crt_prime,
             )?;
+
+        let parties_without_valid_encryption_keys = parties_without_encryption_keys
+            .into_iter()
+            .chain(parties_sending_invalid_encryption_keys)
+            .deduplicate_and_sort();
 
         let encryption_keys_per_crt_prime: HashMap<_, _> = encryption_keys_and_proofs_per_crt_prime
             .clone()
@@ -220,7 +261,7 @@ where
             encryption_keys_per_crt_prime,
             base_protocol_context,
             secret_bits,
-            parties_sending_invalid_encryption_keys,
+            parties_without_valid_encryption_keys,
             participating_and_dealers_match,
             _group_choice: PhantomData,
             _protocol_context_choice: PhantomData,
@@ -238,7 +279,7 @@ where
         participating_tangible_party_id: PartyID,
         participating_virtual_party_id: PartyID,
         discrete_log: bounded_integers_group::GroupElement<DISCRETE_LOG_WITNESS_LIMBS>,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<
         [(
             EncryptionOfDiscreteLogProof<
@@ -277,7 +318,8 @@ where
             &encryption_key_per_crt_prime,
             &self.setup_parameters_per_crt_prime,
             self.base_protocol_context.clone(),
-            self.secret_bits,
+            self.discrete_log_witness_group_public_parameters
+                .sample_bits,
             rng,
         )
     }
@@ -312,7 +354,8 @@ where
         reversed_coefficient_commitments.fold(
             last_coefficient_commitment,
             |partially_evaluated_polynomial, coefficient| {
-                partially_evaluated_polynomial.scale_vartime(&participating_party_id) + coefficient
+                (partially_evaluated_polynomial.scale_vartime(&participating_party_id))
+                    .add_vartime(&coefficient)
             },
         )
     }
@@ -331,54 +374,48 @@ where
             HashMap<PartyID, EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
         >,
     > {
-        coefficients_contribution_commitments
-            .clone()
-            .into_iter()
-            .map(
-                |(dealer_tangible_party_id, coefficients_contribution_commitments)| {
-                    let reconstructed_commitments_to_sharing =
-                        coefficients_contribution_commitments
-                            .into_iter()
-                            .map(
-                                |(
-                                     dealer_virtual_party_id,
-                                     coefficients_contribution_commitments,
-                                 )| {
-                                    // A mapping from *virtual* participant party id to the reconstructed commitment of its share.
-                                    let reconstructed_commitments_to_sharing: HashMap<_, _> =
-                                        virtual_subset
-                                            .iter()
-                                            .map(|participating_virtual_party_id| {
-                                                let commitment_to_share =
+        #[cfg(not(feature = "parallel"))]
+        let iter = coefficients_contribution_commitments.into_iter();
+        #[cfg(feature = "parallel")]
+        let iter = coefficients_contribution_commitments.into_par_iter();
 
-                                                    Self::reconstruct_commitment_to_share_in_the_exponent(
-                                                        self.participating_parties_n_factorial,
-                                                        *participating_virtual_party_id,
-                                                        coefficients_contribution_commitments.clone(),
-                                                    );
+        iter.map(
+            |(dealer_tangible_party_id, coefficients_contribution_commitments)| {
+                let reconstructed_commitments_to_sharing = coefficients_contribution_commitments
+                    .into_iter()
+                    .map(
+                        |(dealer_virtual_party_id, coefficients_contribution_commitments)| {
+                            // A mapping from *virtual* participant party id to the reconstructed commitment of its share.
+                            let reconstructed_commitments_to_sharing: HashMap<_, _> =
+                                virtual_subset
+                                    .iter()
+                                    .map(|participating_virtual_party_id| {
+                                        let commitment_to_share =
+                                            Self::reconstruct_commitment_to_share_in_the_exponent(
+                                                self.participating_parties_n_factorial,
+                                                *participating_virtual_party_id,
+                                                coefficients_contribution_commitments.clone(),
+                                            );
 
-                                                (
-                                                    *participating_virtual_party_id,
-                                                    commitment_to_share,
-                                                )
-                                            })
-                                            .collect();
+                                        (*participating_virtual_party_id, commitment_to_share)
+                                    })
+                                    .collect();
 
-                                    (
-                                        dealer_virtual_party_id,
-                                        reconstructed_commitments_to_sharing,
-                                    )
-                                },
+                            (
+                                dealer_virtual_party_id,
+                                reconstructed_commitments_to_sharing,
                             )
-                            .collect();
-
-                    (
-                        dealer_tangible_party_id,
-                        reconstructed_commitments_to_sharing,
+                        },
                     )
-                },
-            )
-            .collect()
+                    .collect();
+
+                (
+                    dealer_tangible_party_id,
+                    reconstructed_commitments_to_sharing,
+                )
+            },
+        )
+        .collect()
     }
 
     /// This function sums an additively shared secret and (per CRT-prime) returns a single encryption of the secret, per virtual party in `virtual_subset`.
@@ -442,7 +479,7 @@ where
                             })
                             .ok_or(Error::InvalidParameters)
                     })
-                    .reduce(|a, b| a.and_then(|a| b.map(|b| a + b)))
+                    .reduce(|a, b| a.and_then(|a| b.map(|b| a.add_vartime(&b))))
                     .ok_or(Error::InternalError)?
                     .map(<[_; NUM_PRIMES]>::from)
                     .map(|encryption| (participating_virtual_party_id, encryption))

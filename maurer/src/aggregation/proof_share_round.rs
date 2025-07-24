@@ -4,7 +4,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 
-use crypto_bigint::rand_core::CryptoRngCore;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -17,7 +16,7 @@ use crate::{
 };
 use commitment::Commitment;
 use group::helpers::DeduplicateAndSort;
-use group::{helpers::FlatMapResults, GroupElement, PartyID};
+use group::{helpers::FlatMapResults, CsRng, GroupElement, PartyID};
 use mpc::HandleInvalidMessages;
 use proof::aggregation::{process_incoming_messages, ProofShareRoundParty};
 use proof::GroupsPublicParametersAccessors;
@@ -66,7 +65,7 @@ impl<
     fn generate_proof_share(
         self,
         decommitments: HashMap<PartyID, Self::Decommitment>,
-        _rng: &mut impl CryptoRngCore,
+        _rng: &mut impl CsRng,
     ) -> Result<(Self::ProofShare, Self::ProofAggregationRoundParty)> {
         let decommitments =
             process_incoming_messages(self.party_id, self.provers.clone(), decommitments, true)?;

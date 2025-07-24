@@ -3,17 +3,16 @@
 
 #![allow(clippy::type_complexity)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::marker::PhantomData;
 
-use crypto_bigint::rand_core::CryptoRngCore;
 use crypto_bigint::{ConcatMixed, Uint};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use commitment::CommitmentSizedNumber;
 use group::{
-    direct_product, GroupElement, PartyID, PrimeGroupElement, StatisticalSecuritySizedNumber,
+    direct_product, CsRng, GroupElement, PartyID, PrimeGroupElement, StatisticalSecuritySizedNumber,
 };
 use homomorphic_encryption::AdditivelyHomomorphicEncryptionKey;
 use mpc::{AsynchronousRoundResult, AsynchronouslyAdvanceable, WeightedThresholdAccessStructure};
@@ -137,7 +136,7 @@ where
 }
 
 /// The public input of the DKG proof verification round.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct PublicInput<
     GroupElementValue,
     CiphertextSpaceValue,
@@ -280,7 +279,8 @@ where
         _messages: Vec<HashMap<PartyID, Self::Message>>,
         _private_input: Option<Self::PrivateInput>,
         public_input: &Self::PublicInput,
-        _rng: &mut impl CryptoRngCore,
+        _malicious_parties_by_round: HashMap<u64, HashSet<PartyID>>,
+        _rng: &mut impl CsRng,
     ) -> Result<
         AsynchronousRoundResult<Self::Message, Self::PrivateOutput, Self::PublicOutput>,
         Self::Error,
@@ -301,7 +301,7 @@ where
         })
     }
 
-    fn round_causing_threshold_not_reached(_failed_round: usize) -> Option<usize> {
+    fn round_causing_threshold_not_reached(_failed_round: u64) -> Option<u64> {
         // This is a 1-round protocol, that only receives a message from the user,
         // so no `ThresholdNotReached` error can occur.
         None

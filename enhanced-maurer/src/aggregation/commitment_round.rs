@@ -4,11 +4,10 @@
 use std::collections::HashSet;
 use std::fmt::Debug;
 
-use crypto_bigint::rand_core::CryptoRngCore;
 use serde::Serialize;
 
 use commitment::Commitment;
-use group::{PartyID, Samplable};
+use group::{CsRng, PartyID, Samplable};
 use proof::{range, AggregatableRangeProof};
 
 use crate::{
@@ -115,7 +114,7 @@ where
 
     fn commit_statements_and_statement_mask(
         self,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<(Self::Commitment, Self::DecommitmentRoundParty)> {
         let (maurer_commitment, maurer_decommitment_round_party) = self
             .maurer_commitment_round_party
@@ -184,7 +183,7 @@ impl<
                 Language,
             >,
         >,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<Self> {
         let (commitment_messages, commitment_randomnesses): (Vec<_>, Vec<_>) = witnesses
             .clone()

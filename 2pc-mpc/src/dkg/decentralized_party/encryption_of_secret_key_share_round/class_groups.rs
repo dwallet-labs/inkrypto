@@ -4,10 +4,11 @@
 //! This file implements the Encryption of Secret Key Share round party for Class Groups
 
 pub mod asynchronous {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::fmt::Debug;
     use std::marker::PhantomData;
 
+    use super::super::*;
     use crate::class_groups::{
         EncryptionOfSecretKeyShareAndPublicKeyShare, ProtocolPublicParameters,
     };
@@ -15,20 +16,20 @@ pub mod asynchronous {
         construct_encryption_of_discrete_log_public_parameters, EncryptionOfDiscreteLogProof,
     };
     use crate::Error;
+    use ::class_groups::equivalence_class::EquivalenceClassOps;
+    use ::class_groups::MultiFoldNupowAccelerator;
     use ::class_groups::{encryption_key, CiphertextSpaceGroupElement, EncryptionKey};
     use ::class_groups::{equivalence_class, RandomnessSpaceGroupElement};
     use ::class_groups::{CiphertextSpacePublicParameters, RandomnessSpacePublicParameters};
     use ::class_groups::{CompactIbqf, EquivalenceClass};
     use commitment::CommitmentSizedNumber;
-    use crypto_bigint::rand_core::CryptoRngCore;
     use crypto_bigint::{Encoding, Int, Uint};
-    use group::{GroupElement, PartyID, PrimeGroupElement};
+    use group::{PartyID, PrimeGroupElement};
     use mpc::{
         AsynchronousRoundResult, AsynchronouslyAdvanceable, WeightedThresholdAccessStructure,
     };
-    use serde::{Deserialize, Serialize};
 
-    use super::super::*;
+    use serde::{Deserialize, Serialize};
 
     #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
     pub struct Party<
@@ -125,6 +126,7 @@ pub mod asynchronous {
                 FUNDAMENTAL_DISCRIMINANT_LIMBS,
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
                 GroupElement,
+                ProtocolContext,
             >,
         >;
     }
@@ -149,11 +151,16 @@ pub mod asynchronous {
         Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
         Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
         EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-            PublicParameters = equivalence_class::PublicParameters<
+                Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+                PublicParameters = equivalence_class::PublicParameters<
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                >,
+            > + EquivalenceClassOps<
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                >,
             >,
-        >,
         EncryptionKey<
             SCALAR_LIMBS,
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -197,7 +204,8 @@ pub mod asynchronous {
             messages: Vec<HashMap<PartyID, Self::Message>>,
             _private_input: Option<Self::PrivateInput>,
             protocol_public_parameters: &Self::PublicInput,
-            rng: &mut impl CryptoRngCore,
+            malicious_parties_by_round: HashMap<u64, HashSet<PartyID>>,
+            rng: &mut impl CsRng,
         ) -> Result<AsynchronousRoundResult<Self::Message, Self::PrivateOutput, Self::PublicOutput>>
         {
             let private_input = match &messages[..] {
@@ -250,6 +258,7 @@ pub mod asynchronous {
                     FUNDAMENTAL_DISCRIMINANT_LIMBS,
                     NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
                     GroupElement,
+                    ProtocolContext,
                 >,
             > as AsynchronouslyAdvanceable>::advance(
                 session_id,
@@ -258,6 +267,7 @@ pub mod asynchronous {
                 messages,
                 private_input,
                 &aggregation_public_input,
+                malicious_parties_by_round,
                 rng,
             )? {
                 AsynchronousRoundResult::Advance {
@@ -287,13 +297,14 @@ pub mod asynchronous {
             }
         }
 
-        fn round_causing_threshold_not_reached(failed_round: usize) -> Option<usize> {
+        fn round_causing_threshold_not_reached(failed_round: u64) -> Option<u64> {
             <proof::aggregation::asynchronous::Party<
                 EncryptionOfDiscreteLogProof<
                     SCALAR_LIMBS,
                     FUNDAMENTAL_DISCRIMINANT_LIMBS,
                     NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
                     GroupElement,
+                    ProtocolContext,
                 >,
             > as AsynchronouslyAdvanceable>::round_causing_threshold_not_reached(
                 failed_round

@@ -17,10 +17,9 @@ use bulletproofs::{
     },
     BulletproofGens,
 };
-use crypto_bigint::rand_core::CryptoRngCore;
 use curve25519_dalek::{ristretto::RistrettoPoint, traits::Identity};
 use group::helpers::DeduplicateAndSort;
-use group::PartyID;
+use group::{CsRng, PartyID};
 
 use crate::{
     aggregation,
@@ -55,7 +54,7 @@ impl<const NUM_RANGE_CLAIMS: usize> DecommitmentRoundParty<super::Output<NUM_RAN
     fn decommit_statements_and_statement_mask(
         self,
         commitments: HashMap<PartyID, Self::Commitment>,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<(Self::Decommitment, Self::ProofShareRoundParty)> {
         let commitments =
             process_incoming_messages(self.party_id, self.provers.clone(), commitments, false)?;

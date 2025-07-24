@@ -12,17 +12,13 @@ mpc = { path = "../mpc" }
 thiserror = { workspace = true }
 
 # for test_helpers feature
-rand_core = { workspace = true, features = ["std"], optional = true }
-getrandom = { workspace = true, features = ["js"] }
-rand = { workspace = true, optional = true }
 rstest = { workspace = true, optional = true }
-criterion = { workspace = true, features = ["html_reports"], optional = true }
+criterion = { workspace = true, default-features = false, features = ["html_reports", "cargo_bench_support", "rayon"], optional = true }
 rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
 rstest = { workspace = true }
-rand_core = { workspace = true, features = ["std"] }
-rand = { workspace = true }
+group = { path = "../group", features = ["os_rng"] }
 
 [features]
-test_helpers = ["dep:rand_core", "dep:rand", "dep:rayon", "dep:rstest", "dep:criterion",]
+test_helpers = ["group/os_rng", "dep:rayon", "dep:rstest", "dep:criterion",]

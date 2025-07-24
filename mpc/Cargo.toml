@@ -5,28 +5,28 @@ edition = "2021"
 license = "CC-BY-NC-ND-4.0"
 
 [dependencies]
-crypto-bigint = { workspace = true, features = ["rand_core", "serde"], default-features = false }
+crypto-bigint = { workspace = true, features = ["serde"], default-features = false }
 gcd = { workspace = true }
+merlin = { workspace = true, default-features = false }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, default-features = false, features = ["alloc"] }
 group = { path = "../group" }
 commitment = { path = "../commitment" }
-thiserror = "1.0"
+thiserror = "2.0"
 itertools = { workspace = true }
-rand_core = { workspace = true, features = ["std"], optional = true }
-getrandom = { workspace = true, features = ["js"] }
-rand = { workspace = true }
+rand = { workspace = true, default-features = false,  features = ["alloc"] }
 rstest = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
-criterion = { workspace = true, features = ["html_reports"], optional = true }
+criterion = { workspace = true, default-features = false, features = ["html_reports", "cargo_bench_support", "rayon"], optional = true }
+rand_chacha = { workspace = true, default-features = false }
+bcs.workspace = true
 
 [dev-dependencies]
-rand_core = { workspace = true, features = ["std"] }
 rstest = { workspace = true }
-rand = { workspace = true, features = ["std"] }
+group = { path = "../group", features = ["os_rng"] }
 criterion = { workspace = true, features = ["html_reports"] }
 
 [features]
 default = []
-test_helpers = ["dep:rand_core", "rand/std", "dep:rstest", "dep:criterion"]
+test_helpers = ["group/os_rng", "dep:rstest", "dep:criterion"]
 parallel = ["dep:rayon"]

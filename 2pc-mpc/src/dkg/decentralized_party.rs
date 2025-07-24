@@ -7,6 +7,7 @@ use group::direct_product;
 
 pub mod encryption_of_secret_key_share_round;
 pub mod proof_verification_round;
+pub mod trusted_dealer;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Output<GroupElementValue, CiphertextSpaceValue> {

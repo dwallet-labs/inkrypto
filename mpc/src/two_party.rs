@@ -3,10 +3,9 @@
 
 use std::fmt::Debug;
 
-use crypto_bigint::rand_core::CryptoRngCore;
-use serde::{Deserialize, Serialize};
-
 use crate::Error;
+use group::CsRng;
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct RoundResult<OutgoingMessage, PrivateOutput, PublicOutput> {
@@ -19,7 +18,7 @@ pub struct RoundResult<OutgoingMessage, PrivateOutput, PublicOutput> {
 /// A round in a Two-Party Computation (2PC) Protocol.
 pub trait Round: Sized {
     /// An error in the protocol.
-    type Error: Send + Sync + Debug + Into<Error>;
+    type Error: Send + Sync + Debug + Into<Error> + Clone;
 
     /// The private input of the party for this round.
     type PrivateInput: Clone + Debug + PartialEq + Eq + Send + Sync;
@@ -80,7 +79,7 @@ pub trait Round: Sized {
         message: Self::IncomingMessage,
         private_input: &Self::PrivateInput,
         public_input: &Self::PublicInput,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<
         RoundResult<Self::OutgoingMessage, Self::PrivateOutput, Self::PublicOutput>,
         Self::Error,

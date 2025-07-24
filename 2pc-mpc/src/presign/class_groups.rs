@@ -13,6 +13,9 @@ use ::class_groups::{
     CiphertextSpacePublicParameters, CiphertextSpaceValue, CompactIbqf, EncryptionKey,
     EquivalenceClass, RandomnessSpaceGroupElement, RandomnessSpacePublicParameters,
 };
+use class_groups::encryption_key::public_parameters::Instantiate;
+use class_groups::equivalence_class::EquivalenceClassOps;
+use class_groups::MultiFoldNupowAccelerator;
 use group::{PrimeGroupElement, StatisticalSecuritySizedNumber};
 use homomorphic_encryption::AdditivelyHomomorphicEncryptionKey;
 
@@ -44,9 +47,16 @@ where
     Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-        Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        PublicParameters = equivalence_class::PublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    >,
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
     EncryptionKey<
         SCALAR_LIMBS,
         FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -77,6 +87,17 @@ where
             RandomnessSpacePublicParameters<FUNDAMENTAL_DISCRIMINANT_LIMBS>,
             CiphertextSpacePublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
         >,
+    >,
+    encryption_key::PublicParameters<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<GroupElement::Scalar>,
+    >: Instantiate<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<GroupElement::Scalar>,
     >,
     Uint<MESSAGE_LIMBS>: Encoding,
 {

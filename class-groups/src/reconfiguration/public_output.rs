@@ -1,9 +1,12 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
+use crate::accelerator::MultiFoldNupowAccelerator;
 use crate::dkg::compute_public_verification_keys_for_participating_party;
+use crate::encryption_key::public_parameters::Instantiate;
+use crate::equivalence_class::EquivalenceClassOps;
 use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
-    SecretKeyShareCRTPrimeSetupParameters, CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    construct_setup_parameters_per_crt_prime, CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS,
     CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, MAX_PRIMES, NUM_SECRET_SHARE_PRIMES,
     SECRET_SHARE_CRT_COEFFICIENTS, SECRET_SHARE_CRT_PRIMES_PRODUCT,
 };
@@ -36,7 +39,6 @@ pub struct PublicOutput<
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
 {
-    setup_parameters_per_crt_prime: [SecretKeyShareCRTPrimeSetupParameters; MAX_PRIMES],
     encryption_key: CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
     masked_decryption_key_by_n_factorial: SecretKeyShareSizedInteger,
     public_verification_keys: HashMap<PartyID, CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
@@ -65,9 +67,16 @@ where
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
 
     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-        Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        PublicParameters = equivalence_class::PublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    >,
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
 {
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::type_complexity)]
@@ -102,7 +111,6 @@ where
         >,
         encryption_key: CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
         public_verification_key_base: EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        setup_parameters_per_crt_prime: [SecretKeyShareCRTPrimeSetupParameters; MAX_PRIMES],
         n_factorial: FactorialSizedNumber,
     ) -> Result<Self>
     where
@@ -153,7 +161,6 @@ where
             .normalize_const_generic_values();
 
         Ok(Self {
-            setup_parameters_per_crt_prime,
             encryption_key,
             masked_decryption_key_by_n_factorial,
             public_verification_keys,
@@ -235,6 +242,17 @@ where
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             group::PublicParameters<GroupElement::Scalar>,
         >,
+        encryption_key::PublicParameters<
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >: Instantiate<
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >,
         GroupElement::Scalar: Default,
         group::PublicParameters<GroupElement::Scalar>: Default,
     {
@@ -274,6 +292,17 @@ where
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             group::PublicParameters<GroupElement::Scalar>,
         >,
+        encryption_key::PublicParameters<
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >: Instantiate<
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >,
         GroupElement::Scalar: Default,
     {
         let setup_parameters = SetupParameters::<
@@ -291,7 +320,10 @@ where
             setup_parameters.equivalence_class_public_parameters(),
         )?;
         let encryption_scheme_public_parameters =
-            encryption_key::PublicParameters::new(setup_parameters.clone(), encryption_key)?;
+            encryption_key::PublicParameters::new_maximally_accelerated(
+                setup_parameters.clone(),
+                encryption_key,
+            )?;
 
         Ok(encryption_scheme_public_parameters)
     }
@@ -318,6 +350,17 @@ where
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             group::PublicParameters<GroupElement::Scalar>,
         >: DeriveFromPlaintextPublicParameters<
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >,
+        encryption_key::PublicParameters<
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >: Instantiate<
             PLAINTEXT_SPACE_SCALAR_LIMBS,
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -358,6 +401,9 @@ where
     where
         GroupElement::Scalar: Default,
     {
+        let setup_parameters_per_crt_prime =
+            construct_setup_parameters_per_crt_prime(DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER)?;
+
         // Upcoming quorum output round:
         let virtual_subset = access_structure.virtual_subset(HashSet::from([tangible_party_id]))?;
 
@@ -370,7 +416,7 @@ where
                 let encryption_of_share_per_crt_prime = array::from_fn(|i| {
                     CiphertextSpaceGroupElement::<CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>::new(
                         encryption_of_share_per_crt_prime[i],
-                        self.setup_parameters_per_crt_prime[i].ciphertext_space_public_parameters(),
+                        setup_parameters_per_crt_prime[i].ciphertext_space_public_parameters(),
                     )
                 })
                 .flat_map_results()?;
@@ -388,7 +434,7 @@ where
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             GroupElement,
         >::decrypt_secrets(
-            self.setup_parameters_per_crt_prime.clone(),
+            setup_parameters_per_crt_prime.clone(),
             SECRET_SHARE_CRT_COEFFICIENTS,
             SECRET_SHARE_CRT_PRIMES_PRODUCT,
             encryptions_of_randomizer_shares_per_crt_prime,

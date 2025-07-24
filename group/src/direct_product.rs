@@ -1,15 +1,17 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
+use std::fmt::Debug;
 use std::ops::{Add, AddAssign, BitAnd, Mul, Neg, Sub, SubAssign};
 
-use crypto_bigint::{rand_core::CryptoRngCore, Encoding, Int, Uint};
+use crypto_bigint::{Encoding, Int, Uint};
 use serde::{Deserialize, Serialize};
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 
+use crate::CsRng;
 use crate::{
     bounded_integers_group, bounded_natural_numbers_group, GroupElement as _, LinearlyCombinable,
-    Samplable,
+    Samplable, Scale, Transcribeable,
 };
 
 /// An element of the Direct Product of the two Groups `FirstGroupElement` and `SecondGroupElement`.
@@ -39,11 +41,21 @@ impl<
 {
     fn sample(
         public_parameters: &Self::PublicParameters,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> crate::Result<Self> {
         Ok(Self(
             FirstGroupElement::sample(&public_parameters.0, rng)?,
             SecondGroupElement::sample(&public_parameters.1, rng)?,
+        ))
+    }
+
+    fn sample_randomizer(
+        public_parameters: &Self::PublicParameters,
+        rng: &mut impl CsRng,
+    ) -> crate::Result<Self> {
+        Ok(Self(
+            FirstGroupElement::sample_randomizer(&public_parameters.0, rng)?,
+            SecondGroupElement::sample_randomizer(&public_parameters.1, rng)?,
         ))
     }
 }
@@ -55,6 +67,35 @@ pub struct PublicParameters<FirstGroupPublicParameters, SecondGroupPublicParamet
     pub FirstGroupPublicParameters,
     pub SecondGroupPublicParameters,
 );
+
+/// The canonical representation of the public parameters of the Direct Product of the two Groups `FirstGroupElement` and
+/// `SecondGroupElement`.
+#[derive(Serialize)]
+pub struct CanonicalPublicParameters<
+    FirstGroupPublicParameters: Transcribeable,
+    SecondGroupPublicParameters: Transcribeable,
+>(
+    FirstGroupPublicParameters::CanonicalRepresentation,
+    SecondGroupPublicParameters::CanonicalRepresentation,
+);
+
+impl<FirstGroupPublicParameters: Transcribeable, SecondGroupPublicParameters: Transcribeable>
+    From<PublicParameters<FirstGroupPublicParameters, SecondGroupPublicParameters>>
+    for CanonicalPublicParameters<FirstGroupPublicParameters, SecondGroupPublicParameters>
+{
+    fn from(
+        value: PublicParameters<FirstGroupPublicParameters, SecondGroupPublicParameters>,
+    ) -> Self {
+        Self(value.0.into(), value.1.into())
+    }
+}
+
+impl<FirstGroupPublicParameters: Transcribeable, SecondGroupPublicParameters: Transcribeable>
+    Transcribeable for PublicParameters<FirstGroupPublicParameters, SecondGroupPublicParameters>
+{
+    type CanonicalRepresentation =
+        CanonicalPublicParameters<FirstGroupPublicParameters, SecondGroupPublicParameters>;
+}
 
 pub type ThreeWayPublicParameters<
     FirstGroupPublicParameters,
@@ -227,23 +268,109 @@ impl<FirstGroupElement: crate::GroupElement, SecondGroupElement: crate::GroupEle
         )
     }
 
+    fn scale_bounded_vartime<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        scalar_bits: u32,
+    ) -> Self {
+        Self(
+            self.0.scale_bounded_vartime(scalar, scalar_bits),
+            self.1.scale_bounded_vartime(scalar, scalar_bits),
+        )
+    }
+
+    fn add_randomized(self, other: &Self) -> Self {
+        Self(
+            self.0.add_randomized(&other.0),
+            self.1.add_randomized(&other.1),
+        )
+    }
+
+    fn add_vartime(self, other: &Self) -> Self {
+        Self(self.0.add_vartime(&other.0), self.1.add_vartime(&other.1))
+    }
+
     fn double(&self) -> Self {
         Self(self.0.double(), self.1.double())
+    }
+    fn double_vartime(&self) -> Self {
+        Self(self.0.double_vartime(), self.1.double_vartime())
+    }
+}
+
+impl<V, FirstGroupElement: crate::GroupElement, SecondGroupElement: crate::GroupElement> Scale<V>
+    for GroupElement<FirstGroupElement, SecondGroupElement>
+where
+    V: Serialize
+        + for<'r> Deserialize<'r>
+        + Clone
+        + Debug
+        + PartialEq
+        + Eq
+        + ConstantTimeEq
+        + ConditionallySelectable
+        + Copy,
+    FirstGroupElement: Scale<V>,
+    SecondGroupElement: Scale<V>,
+{
+    fn scale_randomized_accelerated(
+        &self,
+        scalar: &V,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .scale_randomized_accelerated(scalar, &public_parameters.0),
+            self.1
+                .scale_randomized_accelerated(scalar, &public_parameters.1),
+        )
+    }
+
+    fn scale_vartime_accelerated(
+        &self,
+        scalar: &V,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .scale_vartime_accelerated(scalar, &public_parameters.0),
+            self.1
+                .scale_vartime_accelerated(scalar, &public_parameters.1),
+        )
+    }
+
+    fn scale_randomized_bounded_accelerated(
+        &self,
+        scalar: &V,
+        public_parameters: &Self::PublicParameters,
+        scalar_bits: u32,
+    ) -> Self {
+        Self(
+            self.0
+                .scale_randomized_bounded_accelerated(scalar, &public_parameters.0, scalar_bits),
+            self.1
+                .scale_randomized_bounded_accelerated(scalar, &public_parameters.1, scalar_bits),
+        )
+    }
+
+    fn scale_bounded_vartime_accelerated(
+        &self,
+        scalar: &V,
+        public_parameters: &Self::PublicParameters,
+        scalar_bits: u32,
+    ) -> Self {
+        Self(
+            self.0
+                .scale_bounded_vartime_accelerated(scalar, &public_parameters.0, scalar_bits),
+            self.1
+                .scale_bounded_vartime_accelerated(scalar, &public_parameters.1, scalar_bits),
+        )
     }
 }
 
 impl<FirstGroupElement: crate::GroupElement, SecondGroupElement: crate::GroupElement>
     From<GroupElement<FirstGroupElement, SecondGroupElement>>
     for Value<FirstGroupElement::Value, SecondGroupElement::Value>
-{
-    fn from(value: GroupElement<FirstGroupElement, SecondGroupElement>) -> Self {
-        Self(value.0.into(), value.1.into())
-    }
-}
-
-impl<FirstGroupElement: crate::GroupElement, SecondGroupElement: crate::GroupElement>
-    From<GroupElement<FirstGroupElement, SecondGroupElement>>
-    for PublicParameters<FirstGroupElement::PublicParameters, SecondGroupElement::PublicParameters>
 {
     fn from(value: GroupElement<FirstGroupElement, SecondGroupElement>) -> Self {
         Self(value.0.into(), value.1.into())
@@ -399,11 +526,10 @@ impl<
 }
 
 impl<
-        'r,
         const LIMBS: usize,
         FirstGroupElement: crate::GroupElement,
         SecondGroupElement: crate::GroupElement,
-    > Mul<Uint<LIMBS>> for &'r GroupElement<FirstGroupElement, SecondGroupElement>
+    > Mul<Uint<LIMBS>> for &GroupElement<FirstGroupElement, SecondGroupElement>
 {
     type Output = GroupElement<FirstGroupElement, SecondGroupElement>;
 

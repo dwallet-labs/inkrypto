@@ -8,10 +8,13 @@ use serde::{Deserialize, Serialize};
 
 use group::{
     helpers::{const_generic_array_serialization, FlatMapResults},
-    self_product, BoundedGroupElement, HashToGroup, PrimeGroupElement, Samplable,
+    self_product, BoundedGroupElement, HashToGroup, PrimeGroupElement, Samplable, Transcribeable,
 };
 
-use crate::{GroupsPublicParameters, GroupsPublicParametersAccessors, HomomorphicCommitmentScheme};
+use crate::{
+    CanonicalGroupsPublicParameters, GroupsPublicParameters, GroupsPublicParametersAccessors,
+    HomomorphicCommitmentScheme,
+};
 
 /// A Batched Pedersen Commitment:
 /// $$\Com_\pp(m;\rho):=\Ped.\Com_{\GG,G,H,q}(\vec{m},\rho)=
@@ -186,7 +189,7 @@ impl<
                 GroupElement::generator_from_public_parameters(&group_public_parameters)
             } else {
                 GroupElement::hash_to_group(
-                    format!("commitment/pedersen: message generator #{:?}", i).as_bytes(),
+                    format!("commitment/pedersen: message generator #{i:?}").as_bytes(),
                 )
             }
         })
@@ -298,22 +301,102 @@ impl<const BATCH_SIZE: usize, GroupElementValue, ScalarPublicParameters, GroupPu
     }
 }
 
+/// The Canonical Representation of the Public Parameters of a Pedersen Commitment.
+#[derive(Serialize)]
+pub struct CanonicalPublicParameters<
+    const BATCH_SIZE: usize,
+    GroupElementValue: Serialize,
+    ScalarPublicParameters: Transcribeable,
+    GroupPublicParameters: Transcribeable,
+> {
+    canonical_groups_public_parameters: CanonicalGroupsPublicParameters<
+        self_product::PublicParameters<BATCH_SIZE, ScalarPublicParameters>,
+        ScalarPublicParameters,
+        GroupPublicParameters,
+    >,
+    #[serde(with = "const_generic_array_serialization")]
+    message_generators: [GroupElementValue; BATCH_SIZE],
+    randomness_generator: GroupElementValue,
+}
+
+impl<
+        const BATCH_SIZE: usize,
+        GroupElementValue: Serialize,
+        ScalarPublicParameters: Transcribeable,
+        GroupPublicParameters: Transcribeable,
+    >
+    From<
+        PublicParameters<
+            BATCH_SIZE,
+            GroupElementValue,
+            ScalarPublicParameters,
+            GroupPublicParameters,
+        >,
+    >
+    for CanonicalPublicParameters<
+        BATCH_SIZE,
+        GroupElementValue,
+        ScalarPublicParameters,
+        GroupPublicParameters,
+    >
+{
+    fn from(
+        value: PublicParameters<
+            BATCH_SIZE,
+            GroupElementValue,
+            ScalarPublicParameters,
+            GroupPublicParameters,
+        >,
+    ) -> Self {
+        Self {
+            canonical_groups_public_parameters: value.groups_public_parameters.into(),
+            message_generators: value.message_generators,
+            randomness_generator: value.randomness_generator,
+        }
+    }
+}
+
+impl<
+        const BATCH_SIZE: usize,
+        GroupElementValue: Serialize,
+        ScalarPublicParameters: Transcribeable + Serialize,
+        GroupPublicParameters: Transcribeable + Serialize,
+    > Transcribeable
+    for PublicParameters<
+        BATCH_SIZE,
+        GroupElementValue,
+        ScalarPublicParameters,
+        GroupPublicParameters,
+    >
+{
+    type CanonicalRepresentation = CanonicalPublicParameters<
+        BATCH_SIZE,
+        GroupElementValue,
+        ScalarPublicParameters,
+        GroupPublicParameters,
+    >;
+}
+
 #[cfg(test)]
 mod tests {
     use bulletproofs::PedersenGens;
-    use rand_core::OsRng;
 
-    use group::ristretto;
+    use group::{ristretto, OsCsRng};
 
     use super::*;
+    use group::test_helpers::{
+        generate_expected_transcribed_self_product_public_parameters, RISTRETTO_GROUP_PP,
+        RISTRETTO_SCALAR_GROUP_PP,
+    };
 
     #[test]
     fn commits() {
         let scalar_public_parameters = ristretto::scalar::PublicParameters::default();
         let group_public_parameters = ristretto::group_element::PublicParameters::default();
 
-        let message = ristretto::Scalar::sample(&scalar_public_parameters, &mut OsRng).unwrap();
-        let randomness = ristretto::Scalar::sample(&scalar_public_parameters, &mut OsRng).unwrap();
+        let message = ristretto::Scalar::sample(&scalar_public_parameters, &mut OsCsRng).unwrap();
+        let randomness =
+            ristretto::Scalar::sample(&scalar_public_parameters, &mut OsCsRng).unwrap();
 
         let commitment_generators = PedersenGens::default();
 
@@ -369,5 +452,53 @@ mod tests {
                 group::secp256k1::GroupElement,
             >,
         >(&public_parameters);
+    }
+
+    #[test]
+    fn transcribes() {
+        let scalar_public_parameters = ristretto::scalar::PublicParameters::default();
+        let group_public_parameters = ristretto::group_element::PublicParameters::default();
+
+        let commitment_generators = PedersenGens::default();
+
+        let commitment_scheme_public_parameters = crate::PublicParameters::<
+            { ristretto::SCALAR_LIMBS },
+            Pedersen<1, { ristretto::SCALAR_LIMBS }, ristretto::Scalar, ristretto::GroupElement>,
+        >::new::<
+            { ristretto::SCALAR_LIMBS },
+            ristretto::Scalar,
+            ristretto::GroupElement,
+        >(
+            scalar_public_parameters,
+            group_public_parameters,
+            [commitment_generators.B.compress().try_into().unwrap()],
+            commitment_generators
+                .B_blinding
+                .compress()
+                .try_into()
+                .unwrap(),
+        );
+
+        let expected_transcribed_pp = format!(
+            "{{\"canonical_groups_public_parameters\": {{\"canonical_message_space_public_parameters\": {}, \"canonical_randomness_space_public_parameters\": {}, \"canonical_commitment_space_public_parameters\": {}}}, \"message_generators\": {}, \"randomness_generator\": {}}}",
+            generate_expected_transcribed_self_product_public_parameters(RISTRETTO_SCALAR_GROUP_PP, 1),
+            RISTRETTO_SCALAR_GROUP_PP,
+            RISTRETTO_GROUP_PP,
+            serde_json::to_string_pretty(&commitment_scheme_public_parameters.message_generators).unwrap(),
+            serde_json::to_string_pretty(&commitment_scheme_public_parameters.randomness_generator).unwrap(),
+        )
+            .into_bytes();
+        let transcribed_pp = commitment_scheme_public_parameters.transcribe().unwrap();
+
+        assert_eq!(
+            transcribed_pp
+                .into_iter()
+                .filter(|c| !c.is_ascii_whitespace())
+                .collect::<Vec<_>>(),
+            expected_transcribed_pp
+                .into_iter()
+                .filter(|c| !c.is_ascii_whitespace())
+                .collect::<Vec<_>>()
+        );
     }
 }

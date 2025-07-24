@@ -3,9 +3,9 @@
 
 use crypto_bigint::{
     modular::{MontyForm, MontyParams},
-    rand_core::CryptoRngCore,
     MultiExponentiateBoundedExp, Random, Uint,
 };
+use group::CsRng;
 
 #[derive(thiserror::Error, Debug, PartialEq)]
 pub enum Error {
@@ -45,7 +45,7 @@ pub fn batch_verification<
     exponents_lhs: Vec<(Uint<EXP_LIMBS>, u32)>,
     exponents_rhs: Vec<(Uint<EXP_LIMBS>, u32)>,
     residue_params: MontyParams<LIMBS>,
-    rng: &mut impl CryptoRngCore,
+    rng: &mut impl CsRng,
 ) -> Result<()> {
     let number_of_equations = bases_lhs.len();
 
@@ -130,9 +130,9 @@ mod tests {
         modular::{MontyForm, MontyParams},
         Odd, U128, U256,
     };
-    use rand_core::OsRng;
 
     use crate::batch_verification::batch_verification;
+    use group::OsCsRng;
 
     #[test]
     fn verifies() {
@@ -175,7 +175,7 @@ mod tests {
                 vec![(first_exponent, 3), (second_exponent, 128)],
                 vec![(rhs_exponent1, 256), (rhs_exponent2, 256)],
                 residue_params,
-                &mut OsRng,
+                &mut OsCsRng,
             )
             .is_ok()
         );

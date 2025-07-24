@@ -4,15 +4,14 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 
-use crypto_bigint::rand_core::CryptoRngCore;
 use serde::Serialize;
 
 use crate::aggregation::proof_share_round::ProofShare;
 use crate::aggregation::Output;
 use crate::{Error, Proof, Result};
 use group::helpers::{DeduplicateAndSort, FlatMapResults};
-use group::PartyID;
 use group::{ComputationalSecuritySizedNumber, GroupElement};
+use group::{CsRng, PartyID};
 use mpc::HandleInvalidMessages;
 use proof::aggregation::{process_incoming_messages, ProofAggregationRoundParty};
 use proof::GroupsPublicParametersAccessors;
@@ -53,7 +52,7 @@ impl<
     fn aggregate_proof_shares(
         self,
         proof_shares: HashMap<PartyID, Self::ProofShare>,
-        _rng: &mut impl CryptoRngCore,
+        _rng: &mut impl CsRng,
     ) -> Result<Output<REPETITIONS, Language, ProtocolContext>> {
         let proof_shares =
             process_incoming_messages(self.party_id, self.provers, proof_shares, true)?;

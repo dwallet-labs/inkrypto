@@ -3,10 +3,8 @@
 
 #![allow(clippy::type_complexity, clippy::too_many_arguments)]
 
-use crypto_bigint::rand_core::CryptoRngCore;
-
 use commitment::{MultiPedersen, Pedersen};
-use group::{self_product, KnownOrderGroupElement, PrimeGroupElement};
+use group::{self_product, CsRng, KnownOrderGroupElement, PrimeGroupElement};
 use maurer::UC_PROOFS_REPETITIONS;
 use maurer::{
     commitment_of_discrete_log, encryption_of_discrete_log, encryption_of_tuple,
@@ -25,6 +23,28 @@ pub mod paillier;
 
 /// The dimension of the Committed Affine Evaluation language used in the signing protocol.
 pub const DIMENSION: usize = 2;
+
+/// Knowledge of Discrete Log Maurer Language $L_DCom$.
+pub type KnowledgeOfDiscreteLogLanguage<const SCALAR_LIMBS: usize, GroupElement> =
+    knowledge_of_discrete_log::Language<
+        <GroupElement as KnownOrderGroupElement<SCALAR_LIMBS>>::Scalar,
+        GroupElement,
+    >;
+
+/// The Public Parameters of the Knowledge of Discrete Log Maurer Language $L_{\textsf{DCom}}$.
+pub type KnowledgeOfDiscreteLogPublicParameters<const SCALAR_LIMBS: usize, GroupElement> =
+    language::PublicParameters<
+        SOUND_PROOFS_REPETITIONS,
+        KnowledgeOfDiscreteLogLanguage<SCALAR_LIMBS, GroupElement>,
+    >;
+
+/// A Knowledge of Discrete Log Maurer Proof $\Pi_{\textsf{zk}}^{L_{\sf{DL}}[(\mathbb{G},
+/// G,q)]}(x\cdot G;x)$
+pub type KnowledgeOfDiscreteLogProof<const SCALAR_LIMBS: usize, GroupElement> = maurer::Proof<
+    SOUND_PROOFS_REPETITIONS,
+    KnowledgeOfDiscreteLogLanguage<SCALAR_LIMBS, GroupElement>,
+    ProtocolContext,
+>;
 
 /// Knowledge of Discrete Log UC Maurer Language $L_DCom$.
 pub type KnowledgeOfDiscreteLogUCLanguage<const SCALAR_LIMBS: usize, GroupElement> =
@@ -279,7 +299,7 @@ pub fn prove_knowledge_of_decommitment<
         Pedersen<1, SCALAR_LIMBS, GroupElement::Scalar, GroupElement>,
     >,
     protocol_context: &ProtocolContext,
-    rng: &mut impl CryptoRngCore,
+    rng: &mut impl CsRng,
 ) -> Result<(
     KnowledgeOfDecommitmentProof<SCALAR_LIMBS, GroupElement>,
     GroupElement,
@@ -359,7 +379,7 @@ pub fn uc_prove_knowledge_of_decommitment<
         Pedersen<1, SCALAR_LIMBS, GroupElement::Scalar, GroupElement>,
     >,
     protocol_context: &ProtocolContext,
-    rng: &mut impl CryptoRngCore,
+    rng: &mut impl CsRng,
 ) -> Result<(
     KnowledgeOfDecommitmentUCProof<SCALAR_LIMBS, GroupElement>,
     GroupElement,
@@ -404,6 +424,80 @@ pub fn verify_uc_knowledge_of_decommitment<
 }
 
 /// Construct $L_{\textsf{DCom}}$ language parameters.
+pub fn construct_knowledge_of_discrete_log_public_parameters<
+    const SCALAR_LIMBS: usize,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+>(
+    scalar_group_public_parameters: group::PublicParameters<GroupElement::Scalar>,
+    group_public_parameters: GroupElement::PublicParameters,
+) -> KnowledgeOfDiscreteLogPublicParameters<SCALAR_LIMBS, GroupElement> {
+    let generator = GroupElement::generator_value_from_public_parameters(&group_public_parameters);
+
+    knowledge_of_discrete_log::PublicParameters::new::<GroupElement::Scalar, GroupElement>(
+        scalar_group_public_parameters,
+        group_public_parameters,
+        generator,
+        None,
+    )
+}
+
+/// Run the protocols $\Pi_{\textsf{zk}}^{L_{\sf{DL}}[(\mathbb{G}, G,q)]}(x\cdot G;x)$
+pub fn prove_knowledge_of_discrete_log<
+    const SCALAR_LIMBS: usize,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+>(
+    discrete_log: GroupElement::Scalar,
+    scalar_group_public_parameters: group::PublicParameters<GroupElement::Scalar>,
+    group_public_parameters: GroupElement::PublicParameters,
+    protocol_context: &ProtocolContext,
+    rng: &mut impl CsRng,
+) -> Result<(
+    KnowledgeOfDiscreteLogProof<SCALAR_LIMBS, GroupElement>,
+    GroupElement,
+)> {
+    let language_public_parameters = construct_knowledge_of_discrete_log_public_parameters::<
+        SCALAR_LIMBS,
+        GroupElement,
+    >(scalar_group_public_parameters, group_public_parameters);
+
+    let (proof, statement) = KnowledgeOfDiscreteLogProof::<SCALAR_LIMBS, GroupElement>::prove(
+        protocol_context,
+        &language_public_parameters,
+        vec![discrete_log],
+        rng,
+    )?;
+
+    let base_by_discrete_log = *statement.first().ok_or(Error::InternalError)?;
+
+    Ok((proof, base_by_discrete_log))
+}
+
+/// Verify $\Pi_{\textsf{zk}}^{L_{\sf{DL}}[(\mathbb{G}, G,q)]}(x\cdot G;x)$
+pub fn verify_knowledge_of_discrete_log<
+    const SCALAR_LIMBS: usize,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+>(
+    base_by_discrete_log: GroupElement,
+    scalar_group_public_parameters: group::PublicParameters<GroupElement::Scalar>,
+    group_public_parameters: GroupElement::PublicParameters,
+    protocol_context: &ProtocolContext,
+    proof: KnowledgeOfDiscreteLogProof<SCALAR_LIMBS, GroupElement>,
+) -> Result<()> {
+    let language_public_parameters = construct_knowledge_of_discrete_log_public_parameters::<
+        SCALAR_LIMBS,
+        GroupElement,
+    >(scalar_group_public_parameters, group_public_parameters);
+
+    proof.verify(
+        protocol_context,
+        &language_public_parameters,
+        vec![base_by_discrete_log],
+    )?;
+
+    Ok(())
+}
+
+/// Construct $L_{\textsf{DCom}}$ language parameters.
 pub fn construct_uc_knowledge_of_discrete_log_public_parameters<
     const SCALAR_LIMBS: usize,
     GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
@@ -417,6 +511,7 @@ pub fn construct_uc_knowledge_of_discrete_log_public_parameters<
         scalar_group_public_parameters,
         group_public_parameters,
         generator,
+        None,
     )
 }
 
@@ -430,7 +525,7 @@ pub fn uc_prove_knowledge_of_discrete_log<
     scalar_group_public_parameters: group::PublicParameters<GroupElement::Scalar>,
     group_public_parameters: GroupElement::PublicParameters,
     protocol_context: &ProtocolContext,
-    rng: &mut impl CryptoRngCore,
+    rng: &mut impl CsRng,
 ) -> Result<(
     KnowledgeOfDiscreteLogUCProof<SCALAR_LIMBS, GroupElement>,
     GroupElement,
@@ -520,7 +615,7 @@ pub fn prove_commitment_of_discrete_log<
     scalar_group_public_parameters: group::PublicParameters<GroupElement::Scalar>,
     group_public_parameters: GroupElement::PublicParameters,
     protocol_context: &ProtocolContext,
-    rng: &mut impl CryptoRngCore,
+    rng: &mut impl CsRng,
 ) -> Result<(
     CommitmentOfDiscreteLogProof<SCALAR_LIMBS, GroupElement>,
     GroupElement,
@@ -635,7 +730,7 @@ pub fn prove_equality_between_commitments_with_different_public_parameters<
         Pedersen<1, SCALAR_LIMBS, GroupElement::Scalar, GroupElement>,
     >,
     protocol_context: &ProtocolContext,
-    rng: &mut impl CryptoRngCore,
+    rng: &mut impl CsRng,
 ) -> Result<(
     EqualityBetweenCommitmentsWithDifferentPublicParametersProof<SCALAR_LIMBS, GroupElement>,
     GroupElement,
@@ -759,7 +854,7 @@ pub fn prove_vector_commitment_of_discrete_log<
     scalar_group_public_parameters: group::PublicParameters<GroupElement::Scalar>,
     group_public_parameters: GroupElement::PublicParameters,
     protocol_context: &ProtocolContext,
-    rng: &mut impl CryptoRngCore,
+    rng: &mut impl CsRng,
 ) -> Result<(
     VectorCommitmentOfDiscreteLogProof<SCALAR_LIMBS, GroupElement>,
     GroupElement,

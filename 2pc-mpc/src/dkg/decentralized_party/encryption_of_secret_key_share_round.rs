@@ -3,23 +3,23 @@
 
 #![allow(clippy::type_complexity)]
 
-#[cfg(feature = "class_groups")]
-pub mod class_groups;
-#[cfg(all(feature = "paillier", feature = "bulletproofs"))]
-pub mod paillier;
-
 use std::fmt::Debug;
 
-use crypto_bigint::{rand_core::CryptoRngCore, Uint};
+use crypto_bigint::Uint;
 use serde::{Deserialize, Serialize};
 
 use commitment::CommitmentSizedNumber;
-use group::{GroupElement as _, PrimeGroupElement, Samplable};
+use group::{CsRng, GroupElement as _, PrimeGroupElement, Samplable};
 use homomorphic_encryption::{AdditivelyHomomorphicEncryptionKey, GroupsPublicParametersAccessors};
 use maurer::encryption_of_discrete_log;
 
 use crate::Party::DecentralizedParty;
 use crate::{ProtocolContext, ProtocolPublicParameters, Result};
+
+#[cfg(feature = "class_groups")]
+pub mod class_groups;
+#[cfg(all(feature = "paillier", feature = "bulletproofs"))]
+pub mod paillier;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Party {}
@@ -39,7 +39,7 @@ impl Party {
             GroupElement::PublicParameters,
             EncryptionKey::PublicParameters,
         >,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<
         Vec<
             encryption_of_discrete_log::WitnessSpaceGroupElement<

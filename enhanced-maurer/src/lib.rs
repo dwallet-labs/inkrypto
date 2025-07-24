@@ -17,7 +17,7 @@ pub mod proof;
 pub mod scaling_of_discrete_log;
 
 /// Maurer error.
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Debug, Clone)]
 pub enum Error {
     #[error("group error")]
     Group(#[from] group::Error),
@@ -29,8 +29,8 @@ pub enum Error {
     ProofAggregation(#[from] ::proof::aggregation::Error),
     #[error("maurer error")]
     Maurer(#[from] maurer::Error),
-    #[error("serialization/deserialization error")]
-    Serialization(#[from] serde_json::Error),
+    #[error("serialization/deserialization error: {0:?}")]
+    Serialization(String),
     #[error("randomizer(s) out of range: proof verification failed")]
     OutOfRange,
     #[error(
@@ -43,6 +43,12 @@ pub enum Error {
     InvalidParameters,
     #[error("an internal error that should never have happened and signifies a bug")]
     InternalError,
+}
+
+impl From<serde_json::Error> for Error {
+    fn from(e: serde_json::Error) -> Self {
+        Error::Serialization(e.to_string())
+    }
 }
 
 /// Maurer result.
@@ -84,7 +90,7 @@ impl From<Error> for ::mpc::Error {
             Error::InternalError => mpc::Error::InternalError,
             Error::InvalidParameters => mpc::Error::InvalidParameters,
             Error::InvalidPublicParameters => mpc::Error::InvalidParameters,
-            e => mpc::Error::Consumer(format!("enhanced maurer error {:?}", e)),
+            e => mpc::Error::Consumer(format!("enhanced maurer error {e:?}")),
         }
     }
 }

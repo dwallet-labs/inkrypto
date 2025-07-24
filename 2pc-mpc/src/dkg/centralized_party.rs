@@ -6,12 +6,11 @@
 use std::fmt::Debug;
 use std::marker::PhantomData;
 
-use crypto_bigint::rand_core::CryptoRngCore;
 use crypto_bigint::{ConcatMixed, Uint};
 use serde::{Deserialize, Serialize};
 
 use commitment::CommitmentSizedNumber;
-use group::{GroupElement, PrimeGroupElement, Samplable, StatisticalSecuritySizedNumber};
+use group::{CsRng, GroupElement, PrimeGroupElement, Samplable, StatisticalSecuritySizedNumber};
 use homomorphic_encryption::AdditivelyHomomorphicEncryptionKey;
 use mpc::two_party::RoundResult;
 
@@ -19,6 +18,8 @@ use crate::dkg::decentralized_party::EncryptionOfSecretKeyShareAndPublicKeyShare
 use crate::dkg::derive_randomized_decentralized_party_public_key_share_and_encryption_of_secret_key_share;
 use crate::Party::CentralizedParty;
 use crate::{languages, languages::KnowledgeOfDiscreteLogUCProof, Error, ProtocolContext};
+
+pub mod trusted_dealer;
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SecretKeyShare<GroupElementValue>(pub(crate) GroupElementValue);
@@ -95,7 +96,7 @@ where
         decentralized_party_public_key_share_second_part: GroupElement::Value,
         protocol_public_parameters: &ProtocolPublicParameters,
         session_id: CommitmentSizedNumber,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> crate::Result<(
         PublicKeyShareAndProof<
             GroupElement::Value,
@@ -183,7 +184,7 @@ pub(super) fn protocol_context(session_id: CommitmentSizedNumber) -> ProtocolCon
 }
 
 /// The public input of the DKG proof verification round.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct PublicInput<ProtocolPublicParameters> {
     pub protocol_public_parameters: ProtocolPublicParameters,
     pub session_id: CommitmentSizedNumber,
@@ -250,7 +251,7 @@ where
         encryption_of_secret_key_share_and_public_key_share_parts: Self::IncomingMessage,
         _private_input: &Self::PrivateInput,
         public_input: &Self::PublicInput,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<
         RoundResult<Self::OutgoingMessage, Self::PrivateOutput, Self::PublicOutput>,
         Self::Error,

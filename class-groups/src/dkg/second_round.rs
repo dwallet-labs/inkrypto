@@ -3,14 +3,15 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crypto_bigint::rand_core::CryptoRngCore;
 use crypto_bigint::{Encoding, Int, Uint};
 
-use group::{PartyID, PrimeGroupElement};
+use group::{CsRng, PartyID, PrimeGroupElement};
 use mpc::{AsynchronousRoundResult, HandleInvalidMessages, WeightedThresholdAccessStructure};
 
+use crate::accelerator::MultiFoldNupowAccelerator;
 use crate::dkg::party::RoundResult;
 use crate::dkg::{Message, Party};
+use crate::equivalence_class::EquivalenceClassOps;
 use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
     SecretKeyShareCRTPrimeSetupParameters, MAX_PRIMES, NUM_SECRET_SHARE_PRIMES,
 };
@@ -43,9 +44,16 @@ where
     Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-        Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        PublicParameters = equivalence_class::PublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    >,
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
     SetupParameters<
         PLAINTEXT_SPACE_SCALAR_LIMBS,
         FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -80,7 +88,7 @@ where
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             >,
         >,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<
         RoundResult<
             PLAINTEXT_SPACE_SCALAR_LIMBS,

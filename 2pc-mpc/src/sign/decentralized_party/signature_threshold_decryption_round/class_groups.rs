@@ -6,14 +6,18 @@
 use crypto_bigint::{Encoding, Int};
 
 use ::class_groups::equivalence_class;
+use ::class_groups::equivalence_class::EquivalenceClassOps;
+use ::class_groups::MultiFoldNupowAccelerator;
+use ::class_groups::{decryption_key_share, SecretKeyShareSizedInteger};
 use ::class_groups::{encryption_key, CompactIbqf, EquivalenceClass};
 use ::class_groups::{CiphertextSpaceGroupElement, DecryptionKeyShare, EncryptionKey};
 use ::class_groups::{
     CiphertextSpacePublicParameters, RandomnessSpaceGroupElement, RandomnessSpacePublicParameters,
 };
 use ::class_groups::{DecryptionKey, DiscreteLogInF};
-use group::{GroupElement, HashToGroup};
+use group::{CsRng, GroupElement, HashToGroup};
 use homomorphic_encryption::GroupsPublicParametersAccessors;
+use mpc::secret_sharing::shamir::over_the_integers::AdjustedLagrangeCoefficientSizedNumber;
 
 use crate::class_groups::DecryptionShare;
 use crate::class_groups::{
@@ -75,11 +79,16 @@ impl Party {
         Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
         Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
         EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-            PublicParameters = equivalence_class::PublicParameters<
+                Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+                PublicParameters = equivalence_class::PublicParameters<
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                >,
+            > + EquivalenceClassOps<
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                >,
             >,
-        >,
         EncryptionKey<
             SCALAR_LIMBS,
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -123,6 +132,33 @@ impl Party {
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             GroupElement,
+        >,
+        DecryptionKeyShare<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >: AdditivelyHomomorphicDecryptionKeyShare<
+            SCALAR_LIMBS,
+            EncryptionKey<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+            PublicParameters = decryption_key_share::PublicParameters<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                group::PublicParameters<GroupElement::Scalar>,
+            >,
+            SecretKeyShare = SecretKeyShareSizedInteger,
+            PartialDecryptionProof = decryption_key_share::PartialDecryptionProof<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+            DecryptionShare = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            LagrangeCoefficient = AdjustedLagrangeCoefficientSizedNumber,
+            Error = ::class_groups::Error,
         >,
         Uint<MESSAGE_LIMBS>: Encoding,
     {
@@ -223,7 +259,7 @@ impl Party {
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             GroupElement,
         >,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> crate::Result<(Vec<PartyID>, (GroupElement::Scalar, GroupElement::Scalar))>
     where
         Int<SCALAR_LIMBS>: Encoding,
@@ -233,11 +269,16 @@ impl Party {
         Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
         Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
         EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-            PublicParameters = equivalence_class::PublicParameters<
+                Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+                PublicParameters = equivalence_class::PublicParameters<
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                >,
+            > + EquivalenceClassOps<
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                >,
             >,
-        >,
         EncryptionKey<
             SCALAR_LIMBS,
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -281,6 +322,33 @@ impl Party {
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             GroupElement,
+        >,
+        DecryptionKeyShare<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >: AdditivelyHomomorphicDecryptionKeyShare<
+            SCALAR_LIMBS,
+            EncryptionKey<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+            PublicParameters = decryption_key_share::PublicParameters<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                group::PublicParameters<GroupElement::Scalar>,
+            >,
+            SecretKeyShare = SecretKeyShareSizedInteger,
+            PartialDecryptionProof = decryption_key_share::PartialDecryptionProof<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+            DecryptionShare = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            LagrangeCoefficient = AdjustedLagrangeCoefficientSizedNumber,
+            Error = ::class_groups::Error,
         >,
         Uint<MESSAGE_LIMBS>: Encoding,
     {

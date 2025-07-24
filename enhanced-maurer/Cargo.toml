@@ -5,7 +5,7 @@ edition = "2021"
 license = "CC-BY-NC-ND-4.0"
 
 [dependencies]
-crypto-bigint = { workspace = true, features = ["rand_core", "serde"], default-features = false }
+crypto-bigint = { workspace = true, features = ["serde"], default-features = false }
 merlin = { workspace = true, default-features = false }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, default-features = false, features = ["alloc"] }
@@ -19,26 +19,24 @@ tiresias = { path = "../tiresias" }
 thiserror = { workspace = true }
 
 # For Benchmarking.
-criterion = { workspace = true, features = ["html_reports"], optional = true }
-rand_core = { workspace = true, features = ["std"], optional = true }
-getrandom = { workspace = true, features = ["js"] }
+criterion = { workspace = true, default-features = false, features = ["html_reports", "cargo_bench_support", "rayon"], optional = true }
 rstest = { workspace = true, optional = true }
 class_groups = { path = "../class-groups", features = ["test_helpers"], optional = true }
 
 [dev-dependencies]
-bulletproofs = { git = "https://github.com/ycscaly/bulletproofs.git" }
-curve25519-dalek = { workspace = true, features = ["u64_backend", "serde"] }
-rand_core = { workspace = true, features = ["std"] }
+bulletproofs = { workspace = true }
+curve25519-dalek = { workspace = true, features = ["serde"] }
 rstest = { workspace = true }
 proof = { path = "../proof", features = ["test_helpers"] }
 maurer = { path = "../maurer", features = ["test_helpers"] }
 mpc = { path = "../mpc", features = ["test_helpers"] }
 class_groups = { path = "../class-groups", features = ["test_helpers"] }
 criterion = { workspace = true, features = ["html_reports"] }
+group = { path = "../group", features = ["os_rng"] }
 
 [features]
 default = []
-test_helpers = ["dep:criterion", "dep:rand_core", "dep:rstest", "proof/test_helpers", "maurer/test_helpers", "dep:class_groups", "tiresias/test_helpers"]
+test_helpers = ["group/os_rng", "dep:criterion", "dep:rstest", "proof/test_helpers", "maurer/test_helpers", "dep:class_groups", "tiresias/test_helpers"]
 benchmarking = ["test_helpers", "mpc/parallel", "proof/parallel"]
 
 [[bench]]

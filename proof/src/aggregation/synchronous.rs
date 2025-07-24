@@ -15,13 +15,13 @@ use std::{
     fmt::Debug,
 };
 
-use crypto_bigint::rand_core::CryptoRngCore;
 use group::helpers::DeduplicateAndSort;
-use group::PartyID;
+use group::{CsRng, PartyID};
+
 use serde::{Deserialize, Serialize};
 
 /// Proof aggregation error.
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Debug, Clone)]
 pub enum Error {
     #[error(
         "this party was not selected as part of the participating parties in the current session"
@@ -81,7 +81,7 @@ impl From<Error> for mpc::Error {
 /// The commitment round party of a proof aggregation protocol.
 pub trait CommitmentRoundParty<Output>: Sized + Send + Sync {
     /// Commitment error.
-    type Error: Debug + TryInto<Error, Error = Self::Error> + From<Error>;
+    type Error: Debug + TryInto<Error, Error = Self::Error> + From<Error> + Clone;
 
     /// The output of the commitment round.
     type Commitment: Serialize
@@ -105,14 +105,14 @@ pub trait CommitmentRoundParty<Output>: Sized + Send + Sync {
     /// instantiated only via a valid state transition.
     fn commit_statements_and_statement_mask(
         self,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> std::result::Result<(Self::Commitment, Self::DecommitmentRoundParty), Self::Error>;
 }
 
 /// The decommitment round party of a proof aggregation protocol.
 pub trait DecommitmentRoundParty<Output>: Sized + Send + Sync {
     /// Decommitment error.
-    type Error: Debug + TryInto<Error, Error = Self::Error> + From<Error>;
+    type Error: Debug + TryInto<Error, Error = Self::Error> + From<Error> + Clone;
 
     /// The output of the round preceding the decommitment round.
     type Commitment: Serialize
@@ -146,14 +146,14 @@ pub trait DecommitmentRoundParty<Output>: Sized + Send + Sync {
     fn decommit_statements_and_statement_mask(
         self,
         commitments: HashMap<PartyID, Self::Commitment>,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> std::result::Result<(Self::Decommitment, Self::ProofShareRoundParty), Self::Error>;
 }
 
 /// The proof share round party of a proof aggregation protocol.
 pub trait ProofShareRoundParty<Output>: Sized + Send + Sync {
     /// Proof share error.
-    type Error: Debug + TryInto<Error, Error = Self::Error> + From<Error>;
+    type Error: Debug + TryInto<Error, Error = Self::Error> + From<Error> + Clone;
 
     /// The output of the round preceding the proof share round.
     type Decommitment: Serialize
@@ -187,14 +187,14 @@ pub trait ProofShareRoundParty<Output>: Sized + Send + Sync {
     fn generate_proof_share(
         self,
         decommitments: HashMap<PartyID, Self::Decommitment>,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> std::result::Result<(Self::ProofShare, Self::ProofAggregationRoundParty), Self::Error>;
 }
 
 /// The proof aggregation round party of a proof aggregation protocol.
 pub trait ProofAggregationRoundParty<Output>: Sized + Send + Sync {
     /// Aggregation error.
-    type Error: Debug + TryInto<Error, Error = Self::Error> + From<Error>;
+    type Error: Debug + TryInto<Error, Error = Self::Error> + From<Error> + Clone;
 
     /// The output of the round preceding the proof aggregation round.
     type ProofShare: Serialize
@@ -211,7 +211,7 @@ pub trait ProofAggregationRoundParty<Output>: Sized + Send + Sync {
     fn aggregate_proof_shares(
         self,
         proof_shares: HashMap<PartyID, Self::ProofShare>,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> std::result::Result<Output, Self::Error>;
 }
 
@@ -257,9 +257,9 @@ pub mod test_helpers {
 
     use criterion::measurement::{Measurement, WallTime};
     use rand::seq::IteratorRandom;
-    use rand_core::OsRng;
 
     use super::*;
+    use group::OsCsRng;
 
     pub fn commitment_round<Output, P: CommitmentRoundParty<Output>>(
         commitment_round_parties: HashMap<PartyID, P>,
@@ -272,7 +272,7 @@ pub mod test_helpers {
                 .into_iter()
                 .map(|(party_id, party)| {
                     party
-                        .commit_statements_and_statement_mask(&mut OsRng)
+                        .commit_statements_and_statement_mask(&mut OsCsRng)
                         .map(|res| (party_id, res))
                         .map_err(|e| e.try_into().unwrap())
                 })
@@ -298,7 +298,7 @@ pub mod test_helpers {
                 .into_iter()
                 .map(|(party_id, party)| {
                     party
-                        .decommit_statements_and_statement_mask(commitments.clone(), &mut OsRng)
+                        .decommit_statements_and_statement_mask(commitments.clone(), &mut OsCsRng)
                         .map(|res| (party_id, res))
                         .map_err(|e| e.try_into().unwrap())
                 })
@@ -327,7 +327,7 @@ pub mod test_helpers {
                 .into_iter()
                 .map(|(party_id, party)| {
                     party
-                        .generate_proof_share(decommitments.clone(), &mut OsRng)
+                        .generate_proof_share(decommitments.clone(), &mut OsCsRng)
                         .map(|res| (party_id, res))
                         .map_err(|e| e.try_into().unwrap())
                 })
@@ -368,7 +368,7 @@ pub mod test_helpers {
         let mut miscommitting_parties = provers
             .clone()
             .into_iter()
-            .choose_multiple(&mut OsRng, number_of_miscommitting_parties);
+            .choose_multiple(&mut OsCsRng, number_of_miscommitting_parties);
 
         miscommitting_parties.sort();
 
@@ -403,7 +403,7 @@ pub mod test_helpers {
                     // No reason to check malicious party reported malicious behavior.
                     true
                 } else {
-                    let res = party.generate_proof_share(decommitments.clone(), &mut OsRng);
+                    let res = party.generate_proof_share(decommitments.clone(), &mut OsCsRng);
                     matches!(
                         res.err().unwrap().try_into().unwrap(),
                         Error::WrongDecommitment(parties) if parties == miscommitting_parties
@@ -443,7 +443,7 @@ pub mod test_helpers {
         let mut misproving_parties = provers
             .clone()
             .into_iter()
-            .choose_multiple(&mut OsRng, number_of_misproving_parties);
+            .choose_multiple(&mut OsCsRng, number_of_misproving_parties);
 
         misproving_parties.sort();
 
@@ -478,7 +478,7 @@ pub mod test_helpers {
                     // No reason to check malicious party reported malicious behavior.
                     true
                 } else {
-                    let res = party.aggregate_proof_shares(proof_shares.clone(), &mut OsRng);
+                    let res = party.aggregate_proof_shares(proof_shares.clone(), &mut OsCsRng);
                     matches!(
                         res.err().unwrap().try_into().unwrap(),
                         Error::ProofShareVerification(parties) if parties == misproving_parties
@@ -505,7 +505,7 @@ pub mod test_helpers {
         let mut unresponsive_parties = provers
             .clone()
             .into_iter()
-            .choose_multiple(&mut OsRng, number_of_unresponsive_parties);
+            .choose_multiple(&mut OsCsRng, number_of_unresponsive_parties);
 
         unresponsive_parties.sort();
 
@@ -527,7 +527,7 @@ pub mod test_helpers {
                 } else {
                     let res = party.decommit_statements_and_statement_mask(
                         filtered_commitments.clone(),
-                        &mut OsRng,
+                        &mut OsCsRng,
                     );
                     matches!(
                         res.err().unwrap().try_into().unwrap(),
@@ -555,7 +555,7 @@ pub mod test_helpers {
                     true
                 } else {
                     let res =
-                        party.generate_proof_share(filtered_decommitments.clone(), &mut OsRng);
+                        party.generate_proof_share(filtered_decommitments.clone(), &mut OsCsRng);
                     matches!(
                         res.err().unwrap().try_into().unwrap(),
                         Error::UnresponsiveParties(parties) if parties == unresponsive_parties
@@ -581,7 +581,7 @@ pub mod test_helpers {
                     true
                 } else {
                     let res =
-                        party.aggregate_proof_shares(filtered_proof_shares.clone(), &mut OsRng);
+                        party.aggregate_proof_shares(filtered_proof_shares.clone(), &mut OsCsRng);
                     matches!(
                         res.err().unwrap().try_into().unwrap(),
                         Error::UnresponsiveParties(parties) if parties == unresponsive_parties
@@ -645,7 +645,7 @@ pub mod test_helpers {
                         .into_iter()
                         .map(|party| {
                             party
-                                .commit_statements_and_statement_mask(&mut OsRng)
+                                .commit_statements_and_statement_mask(&mut OsCsRng)
                                 .unwrap()
                         })
                         .collect();
@@ -686,7 +686,7 @@ pub mod test_helpers {
                             party
                                 .decommit_statements_and_statement_mask(
                                     commitments[i].clone(),
-                                    &mut OsRng,
+                                    &mut OsCsRng,
                                 )
                                 .unwrap()
                         })
@@ -728,7 +728,7 @@ pub mod test_helpers {
                         .enumerate()
                         .map(|(i, (_, party))| {
                             party
-                                .generate_proof_share(decommitments[i].clone(), &mut OsRng)
+                                .generate_proof_share(decommitments[i].clone(), &mut OsCsRng)
                                 .unwrap()
                         })
                         .collect();
@@ -773,7 +773,7 @@ pub mod test_helpers {
             .enumerate()
             .map(|(i, proof_aggregation_round_party)| {
                 proof_aggregation_round_party
-                    .aggregate_proof_shares(proof_shares[i].clone(), &mut OsRng)
+                    .aggregate_proof_shares(proof_shares[i].clone(), &mut OsCsRng)
                     .unwrap()
             })
             .collect();

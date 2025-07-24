@@ -1,8 +1,10 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
-use crypto_bigint::rand_core::CryptoRngCore;
+use std::fmt::Debug;
+
 use crypto_bigint::{CheckedAdd, CheckedMul, Uint};
+use serde::Serialize;
 
 use commitment::GroupsPublicParametersAccessors as _;
 use commitment::MultiPedersen;
@@ -10,18 +12,20 @@ use enhanced_maurer::language::{composed_witness_upper_bound, EnhancedLanguageSt
 use enhanced_maurer::{EnhancedLanguage, EnhancedPublicParameters};
 use group::helpers::FlatMapResults;
 use group::{
-    bounded_natural_numbers_group, direct_product, self_product, GroupElement,
-    KnownOrderGroupElement, PrimeGroupElement, Samplable,
+    bounded_natural_numbers_group, direct_product, self_product, CsRng, GroupElement,
+    KnownOrderGroupElement, PrimeGroupElement, Samplable, Scale,
 };
 use homomorphic_encryption::AdditivelyHomomorphicEncryptionKey;
 use homomorphic_encryption::GroupsPublicParametersAccessors as _;
-use maurer::committed_linear_evaluation::StatementAccessors;
+use maurer::committed_linear_evaluation::StatementAccessors as _;
+use maurer::encryption_of_discrete_log::StatementAccessors as _;
 use maurer::SOUND_PROOFS_REPETITIONS;
 use maurer::{
     committed_linear_evaluation, encryption_of_discrete_log, encryption_of_tuple,
     scaling_of_discrete_log,
 };
 use proof::range::PublicParametersAccessors;
+use tiresias::{CiphertextSpaceValue, LargeBiPrimeSizedNumber};
 
 use crate::bulletproofs::{RangeProof, COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS};
 use crate::paillier::bulletproofs::UnboundedDComEvalWitness;
@@ -167,6 +171,7 @@ pub type EncryptionOfDiscreteLogProof<
     const SCALAR_LIMBS: usize,
     const RANGE_CLAIMS_PER_SCALAR: usize,
     GroupElement,
+    PC,
 > = enhanced_maurer::Proof<
     SOUND_PROOFS_REPETITIONS,
     RANGE_CLAIMS_PER_SCALAR,
@@ -179,7 +184,7 @@ pub type EncryptionOfDiscreteLogProof<
         GroupElement,
         EncryptionKey,
     >,
-    ProtocolContext,
+    PC,
 >;
 
 /// The Scaling of Discrete Log Enhanced Language $L_{\textsf{EncDL}}$.
@@ -339,7 +344,7 @@ pub fn construct_committed_linear_evaluation_public_parameters<
     const RANGE_CLAIMS_PER_SCALAR: usize,
     const RANGE_CLAIMS_PER_MASK: usize,
     const NUM_RANGE_CLAIMS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Scale<LargeBiPrimeSizedNumber>,
 >(
     first_ciphertext: homomorphic_encryption::CiphertextSpaceValue<
         PLAINTEXT_SPACE_SCALAR_LIMBS,
@@ -503,7 +508,7 @@ pub fn prove_committed_linear_evaluation<
     const RANGE_CLAIMS_PER_SCALAR: usize,
     const RANGE_CLAIMS_PER_MASK: usize,
     const NUM_RANGE_CLAIMS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Scale<LargeBiPrimeSizedNumber>,
 >(
     first_ciphertext: homomorphic_encryption::CiphertextSpaceValue<
         PLAINTEXT_SPACE_SCALAR_LIMBS,
@@ -537,7 +542,7 @@ pub fn prove_committed_linear_evaluation<
     >,
     protocol_context: &ProtocolContext,
     is_rerandomized: bool,
-    rng: &mut impl CryptoRngCore,
+    rng: &mut impl CsRng,
 ) -> crate::Result<(
     CommittedLinearEvaluationProof<
         SCALAR_LIMBS,
@@ -697,7 +702,7 @@ pub fn verify_committed_linear_evaluation<
     const RANGE_CLAIMS_PER_SCALAR: usize,
     const RANGE_CLAIMS_PER_MASK: usize,
     const NUM_RANGE_CLAIMS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Scale<LargeBiPrimeSizedNumber>,
 >(
     first_ciphertext: homomorphic_encryption::CiphertextSpaceValue<
         PLAINTEXT_SPACE_SCALAR_LIMBS,
@@ -756,7 +761,7 @@ pub fn verify_committed_linear_evaluation<
     >,
     protocol_context: &ProtocolContext,
     is_rerandomized: bool,
-    rng: &mut impl CryptoRngCore,
+    rng: &mut impl CsRng,
 ) -> crate::Result<()> {
     let language_public_parameters = construct_committed_linear_evaluation_public_parameters::<
         SCALAR_LIMBS,
@@ -814,7 +819,7 @@ pub fn verify_committed_linear_evaluation<
 pub fn construct_encryption_of_discrete_log_public_parameters<
     const SCALAR_LIMBS: usize,
     const RANGE_CLAIMS_PER_SCALAR: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Scale<LargeBiPrimeSizedNumber>,
 >(
     group_public_parameters: GroupElement::PublicParameters,
     encryption_scheme_public_parameters: homomorphic_encryption::PublicParameters<
@@ -871,11 +876,173 @@ pub fn construct_encryption_of_discrete_log_public_parameters<
     Ok(enhanced_language_public_parameters)
 }
 
+/// Prove $\Pi_{\textsf{zk}}^{L_{\textsf{EncDL}$.
+pub fn prove_encryption_of_discrete_log<
+    const SCALAR_LIMBS: usize,
+    const RANGE_CLAIMS_PER_SCALAR: usize,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Scale<LargeBiPrimeSizedNumber>,
+    PC: Clone + Serialize + Debug + PartialEq + Eq + Send + Sync,
+>(
+    group_public_parameters: GroupElement::PublicParameters,
+    encryption_scheme_public_parameters: homomorphic_encryption::PublicParameters<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        EncryptionKey,
+    >,
+    unbounded_encdl_witness_public_parameters: group::PublicParameters<UnboundedEncDLWitness>,
+    range_proof_public_parameters: proof::range::PublicParameters<
+        COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
+        RANGE_CLAIMS_PER_SCALAR,
+        RangeProof,
+    >,
+    protocol_context: &PC,
+    discrete_log: GroupElement::Scalar,
+    rng: &mut impl CsRng,
+) -> crate::Result<(
+    EncryptionOfDiscreteLogProof<SCALAR_LIMBS, RANGE_CLAIMS_PER_SCALAR, GroupElement, PC>,
+    proof::range::CommitmentSchemeCommitmentSpaceGroupElement<
+        COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
+        RANGE_CLAIMS_PER_SCALAR,
+        RangeProof,
+    >,
+    CiphertextSpaceGroupElement,
+)> {
+    let language_public_parameters = construct_encryption_of_discrete_log_public_parameters::<
+        SCALAR_LIMBS,
+        RANGE_CLAIMS_PER_SCALAR,
+        GroupElement,
+    >(
+        group_public_parameters,
+        encryption_scheme_public_parameters.clone(),
+        unbounded_encdl_witness_public_parameters,
+        range_proof_public_parameters,
+    )?;
+
+    let encryption_randomness = RandomnessSpaceGroupElement::sample(
+        encryption_scheme_public_parameters.randomness_space_public_parameters(),
+        rng,
+    )?;
+
+    let discrete_log: Uint<SCALAR_LIMBS> = discrete_log.into();
+
+    let discrete_log = PlaintextSpaceGroupElement::new(
+        Uint::<PLAINTEXT_SPACE_SCALAR_LIMBS>::from(&discrete_log),
+        encryption_scheme_public_parameters.plaintext_space_public_parameters(),
+    )?;
+
+    let witness = EnhancedLanguage::<
+        SOUND_PROOFS_REPETITIONS,
+        RANGE_CLAIMS_PER_SCALAR,
+        COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
+        RangeProof,
+        UnboundedEncDLWitness,
+        EncryptionOfDiscreteLogLanguage<
+            SCALAR_LIMBS,
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            GroupElement,
+            EncryptionKey,
+        >,
+    >::generate_witness(
+        (discrete_log, encryption_randomness).into(),
+        &language_public_parameters,
+        rng,
+    )?;
+
+    let (proof, statement) = EncryptionOfDiscreteLogProof::<
+        SCALAR_LIMBS,
+        RANGE_CLAIMS_PER_SCALAR,
+        GroupElement,
+        PC,
+    >::prove(
+        protocol_context,
+        &language_public_parameters,
+        vec![witness],
+        rng,
+    )?;
+
+    let statement = statement.first().ok_or(crate::Error::InternalError)?;
+
+    let range_proof_commitment = *statement.range_proof_commitment();
+    let encryption_of_discrete_log = *statement.language_statement().encryption_of_discrete_log();
+
+    Ok((proof, range_proof_commitment, encryption_of_discrete_log))
+}
+
+/// Verify $\Pi_{\textsf{zk}}^{L_{\textsf{EncDL}$.
+pub fn verify_encryption_of_discrete_log<
+    const SCALAR_LIMBS: usize,
+    const RANGE_CLAIMS_PER_SCALAR: usize,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Scale<LargeBiPrimeSizedNumber>,
+    PC: Clone + Serialize + Debug + PartialEq + Eq + Send + Sync,
+>(
+    group_public_parameters: GroupElement::PublicParameters,
+    encryption_scheme_public_parameters: homomorphic_encryption::PublicParameters<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        EncryptionKey,
+    >,
+    unbounded_encdl_witness_public_parameters: group::PublicParameters<UnboundedEncDLWitness>,
+    range_proof_public_parameters: proof::range::PublicParameters<
+        COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
+        RANGE_CLAIMS_PER_SCALAR,
+        RangeProof,
+    >,
+    protocol_context: &PC,
+    proof: EncryptionOfDiscreteLogProof<SCALAR_LIMBS, RANGE_CLAIMS_PER_SCALAR, GroupElement, PC>,
+    base_by_discrete_log: GroupElement::Value,
+    range_proof_commitment: proof::range::CommitmentSchemeCommitmentSpaceValue<
+        COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
+        RANGE_CLAIMS_PER_SCALAR,
+        RangeProof,
+    >,
+    encryption_of_discrete_log: CiphertextSpaceValue,
+    rng: &mut impl CsRng,
+) -> crate::Result<()> {
+    let base_by_discrete_log = GroupElement::new(base_by_discrete_log, &group_public_parameters)?;
+    let encryption_of_discrete_log = CiphertextSpaceGroupElement::new(
+        encryption_of_discrete_log,
+        encryption_scheme_public_parameters.ciphertext_space_public_parameters(),
+    )?;
+
+    let language_public_parameters = construct_encryption_of_discrete_log_public_parameters::<
+        SCALAR_LIMBS,
+        RANGE_CLAIMS_PER_SCALAR,
+        GroupElement,
+    >(
+        group_public_parameters,
+        encryption_scheme_public_parameters.clone(),
+        unbounded_encdl_witness_public_parameters,
+        range_proof_public_parameters.clone(),
+    )?;
+
+    let range_proof_commitment = proof::range::CommitmentSchemeCommitmentSpaceGroupElement::<
+        COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
+        RANGE_CLAIMS_PER_SCALAR,
+        RangeProof,
+    >::new(
+        range_proof_commitment,
+        range_proof_public_parameters
+            .commitment_scheme_public_parameters()
+            .commitment_space_public_parameters(),
+    )?;
+
+    proof.verify(
+        protocol_context,
+        &language_public_parameters,
+        vec![(
+            range_proof_commitment,
+            (encryption_of_discrete_log, base_by_discrete_log).into(),
+        )
+            .into()],
+        rng,
+    )?;
+
+    Ok(())
+}
+
 /// Construct $L_ScaleDL$ language parameters.
 pub fn construct_scaling_of_discrete_log_public_parameters<
     const SCALAR_LIMBS: usize,
     const RANGE_CLAIMS_PER_SCALAR: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Scale<LargeBiPrimeSizedNumber>,
 >(
     ciphertext: homomorphic_encryption::CiphertextSpaceValue<
         PLAINTEXT_SPACE_SCALAR_LIMBS,
@@ -946,7 +1113,7 @@ pub fn construct_scaling_of_discrete_log_public_parameters<
 pub fn construct_encryption_of_tuple_public_parameters<
     const SCALAR_LIMBS: usize,
     const RANGE_CLAIMS_PER_SCALAR: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Scale<LargeBiPrimeSizedNumber>,
 >(
     ciphertext: homomorphic_encryption::CiphertextSpaceValue<
         PLAINTEXT_SPACE_SCALAR_LIMBS,

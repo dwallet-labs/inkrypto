@@ -1,23 +1,24 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
-use crypto_bigint::rand_core::CryptoRngCore;
-use crypto_bigint::{NonZero, Uint};
-use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fmt::Debug;
 use std::{collections::HashMap, ops::Neg};
 
-use crate::{dkg, sign::verify_signature, Error, ProtocolPublicParameters};
+use crypto_bigint::{NonZero, Uint};
+use serde::{Deserialize, Serialize};
+
 use group::helpers::DeduplicateAndSort;
 use group::{
-    AffineXCoordinate, GroupElement, Invert, KnownOrderGroupElement, PartyID, PrimeGroupElement,
-    Reduce,
+    AffineXCoordinate, CsRng, GroupElement, Invert, KnownOrderGroupElement, PartyID,
+    PrimeGroupElement, Reduce,
 };
 use homomorphic_encryption::{
     AdditivelyHomomorphicDecryptionKeyShare, AdditivelyHomomorphicEncryptionKey,
 };
 use mpc::WeightedThresholdAccessStructure;
+
+use crate::{dkg, sign::verify_signature, Error, ProtocolPublicParameters};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Party {}
@@ -127,7 +128,7 @@ impl Party {
             EncryptionKey::PublicParameters,
         >,
         access_structure: &WeightedThresholdAccessStructure,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> crate::Result<(Vec<PartyID>, (GroupElement::Scalar, GroupElement::Scalar))>
     where
         Error: From<DecryptionKeyShare::Error>,

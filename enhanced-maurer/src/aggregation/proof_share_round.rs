@@ -4,10 +4,9 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 
-use crypto_bigint::rand_core::CryptoRngCore;
 use serde::Serialize;
 
-use group::{PartyID, Samplable};
+use group::{CsRng, PartyID, Samplable};
 use proof::{range, AggregatableRangeProof};
 
 use crate::{
@@ -145,7 +144,7 @@ where
     fn generate_proof_share(
         self,
         decommitments: HashMap<PartyID, Self::Decommitment>,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<(Self::ProofShare, Self::ProofAggregationRoundParty), Self::Error> {
         let (maurer_decommitments, range_proof_decommitments) = decommitments
             .into_iter()

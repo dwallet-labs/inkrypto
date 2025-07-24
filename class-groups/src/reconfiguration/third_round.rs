@@ -1,24 +1,24 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
-use crypto_bigint::rand_core::CryptoRngCore;
-use homomorphic_encryption::AdditivelyHomomorphicDecryptionKeyShare;
 use std::array;
 use std::collections::{HashMap, HashSet};
 
-use commitment::CommitmentSizedNumber;
 use crypto_bigint::{Encoding, Int, Uint};
-use group::helpers::{DeduplicateAndSort, FlatMapResults, TryCollectHashMap};
-use group::{bounded_integers_group, GroupElement, PartyID, PrimeGroupElement};
-use itertools::{multiunzip, Itertools};
-use mpc::{
-    AsynchronousRoundResult, HandleInvalidMessages, MajorityVote, WeightedThresholdAccessStructure,
-};
+use itertools::Itertools;
 
+use commitment::CommitmentSizedNumber;
+use group::helpers::{DeduplicateAndSort, FlatMapResults, TryCollectHashMap};
+use group::{bounded_integers_group, CsRng, GroupElement, PartyID, PrimeGroupElement};
+use homomorphic_encryption::AdditivelyHomomorphicDecryptionKeyShare;
+use mpc::{AsynchronousRoundResult, HandleInvalidMessages, WeightedThresholdAccessStructure};
+
+use crate::accelerator::MultiFoldNupowAccelerator;
 use crate::dkg::{
     prove_equality_of_discrete_log, verify_encryptions_of_secrets_per_crt_prime,
     ProveEqualityOfDiscreteLog, ProveEqualityOfDiscreteLogMessage,
 };
+use crate::equivalence_class::EquivalenceClassOps;
 use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
     SecretKeyShareCRTPrimeDecryptionKeyShare,
     SecretKeyShareCRTPrimeDecryptionKeySharePublicParameters,
@@ -32,7 +32,7 @@ use crate::publicly_verifiable_secret_sharing::{BaseProtocolContext, DealtSecret
 use crate::reconfiguration::party::RoundResult;
 use crate::reconfiguration::RANDOMIZER_WITNESS_LIMBS;
 use crate::reconfiguration::{Message, Party, PublicInput};
-use crate::setup::SetupParameters;
+use crate::setup::{DeriveFromPlaintextPublicParameters, SetupParameters};
 use crate::{
     equivalence_class, publicly_verifiable_secret_sharing, CiphertextSpaceGroupElement,
     CompactIbqf, EquivalenceClass, Error, Result, SecretKeyShareSizedInteger,
@@ -62,10 +62,28 @@ where
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
 
     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-        Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        PublicParameters = equivalence_class::PublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    >,
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
     Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>: Encoding,
+    SetupParameters<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<GroupElement::Scalar>,
+    >: DeriveFromPlaintextPublicParameters<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<GroupElement::Scalar>,
+    >,
     GroupElement::Scalar: Default,
 {
     #[allow(clippy::too_many_arguments)]
@@ -113,9 +131,9 @@ where
             >,
         >,
         decryption_key_shares: HashMap<PartyID, SecretKeyShareSizedInteger>,
-        secret_key_share_upper_bound_bits: u32,
+        current_decryption_key_share_bits: u32,
         randomizer_contribution_bits: u32,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<
         RoundResult<
             PLAINTEXT_SPACE_SCALAR_LIMBS,
@@ -132,9 +150,11 @@ where
             encryptions_of_randomizer_contribution_shares_and_proofs_to_upcoming,
             threshold_encryption_of_randomizer_contribution_and_proof,
         ) = Self::handle_first_round_messages(
+            tangible_party_id,
             public_input,
             deal_randomizer_messages.clone(),
             randomizer_contribution_to_upcoming_pvss_party,
+            true,
         )?;
 
         let (second_round_malicious_parties, verified_dealers_to_upcoming) =
@@ -184,7 +204,9 @@ where
         let threshold_encryption_scheme_public_parameters_per_crt_prime: [_;
             NUM_ENCRYPTION_OF_DECRYPTION_KEY_PRIMES] = public_input
             .dkg_output
-            .threshold_encryption_scheme_public_parameters_per_crt_prime()?;
+            .threshold_encryption_scheme_public_parameters_per_crt_prime(
+                &public_input.setup_parameters_per_crt_prime,
+            )?;
 
         let parties_sending_invalid_threshold_encryption_of_randomizer_contribution_proofs =
             verify_encryptions_of_secrets_per_crt_prime::<
@@ -213,9 +235,6 @@ where
             .chain(parties_sending_invalid_threshold_encryption_of_randomizer_contribution_proofs)
             .deduplicate_and_sort();
 
-        let malicious_randomizer_dealers: HashSet<_> =
-            malicious_parties.clone().into_iter().collect();
-
         // Note: `sum_threshold_encryptions_of_randomizer_contributions()` also checks that the honest subset is authorized.
         let threshold_encryption_of_randomizer =
             Self::sum_threshold_encryptions_of_randomizer_contributions(
@@ -226,7 +245,9 @@ where
 
         let threshold_encryption_of_decryption_key_per_crt_prime = public_input
             .dkg_output
-            .threshold_encryption_of_decryption_key_per_crt_prime()?;
+            .threshold_encryption_of_decryption_key_per_crt_prime(
+                &public_input.setup_parameters_per_crt_prime,
+            )?;
 
         let masked_decryption_key_decryption_shares_and_proofs = decryption_key_shares
             .clone()
@@ -251,6 +272,7 @@ where
                         dealer_virtual_party_id,
                         decryption_key_share,
                         &decryption_key_share_public_parameters,
+                        rng,
                     )?;
 
                     // The parties add the encryptions of the mask to the encryptions of the key per CRT prime.
@@ -285,7 +307,7 @@ where
         // Then they use this verification key to prove correct decryption as typicaly happens in threshold decryption.
         let discrete_log_public_parameters =
             bounded_integers_group::PublicParameters::new_with_randomizer_upper_bound(
-                secret_key_share_upper_bound_bits,
+                current_decryption_key_share_bits,
             )?;
 
         let prove_public_verification_keys_messages = decryption_key_shares
@@ -314,7 +336,7 @@ where
                     decryption_key_share,
                     &public_input.setup_parameters_per_crt_prime,
                     setup_parameters,
-                    secret_key_share_upper_bound_bits,
+                    current_decryption_key_share_bits,
                     rng,
                 )?;
 
@@ -328,7 +350,6 @@ where
         Ok(AsynchronousRoundResult::Advance {
             malicious_parties,
             message: Message::ThresholdDecryptShares {
-                malicious_randomizer_dealers,
                 masked_decryption_key_decryption_shares_and_proofs,
                 prove_public_verification_keys_messages,
             },
@@ -353,7 +374,6 @@ where
             >,
         >,
     ) -> Result<(
-        Vec<PartyID>,
         Vec<PartyID>,
         HashMap<
             PartyID,
@@ -380,7 +400,6 @@ where
                 .map(|(dealer_tangible_party_id, message)| {
                     let res = match message {
                         Message::ThresholdDecryptShares {
-                            malicious_randomizer_dealers,
                             masked_decryption_key_decryption_shares_and_proofs,
                             prove_public_verification_keys_messages,
                         } => {
@@ -399,7 +418,6 @@ where
                                         == virtual_subset
                                 {
                                     Ok((
-                                        malicious_randomizer_dealers.deduplicate_and_sort(),
                                         masked_decryption_key_decryption_shares_and_proofs,
                                         prove_public_verification_keys_messages,
                                     ))
@@ -418,21 +436,19 @@ where
                 .handle_invalid_messages_async();
 
         let (
-            malicious_randomizer_dealers,
             masked_decryption_key_decryption_shares_and_proofs,
             prove_public_verification_keys_messages,
-        ): (HashMap<_, _>, HashMap<_, _>, HashMap<_, _>) =
-            multiunzip(threshold_decrypt_messages.into_iter().map(
+        ): (HashMap<_, _>, HashMap<_, _>) = threshold_decrypt_messages
+            .into_iter()
+            .map(
                 |(
                     dealer_tangible_party_id,
                     (
-                        malicious_randomizer_dealers,
                         masked_decryption_key_decryption_shares_and_proofs,
                         prove_public_verification_keys_messages,
                     ),
                 )| {
                     (
-                        (dealer_tangible_party_id, malicious_randomizer_dealers),
                         (
                             dealer_tangible_party_id,
                             masked_decryption_key_decryption_shares_and_proofs,
@@ -443,10 +459,8 @@ where
                         ),
                     )
                 },
-            ));
-
-        let (malicious_voters, malicious_randomizer_dealers) =
-            malicious_randomizer_dealers.weighted_majority_vote(current_access_structure)?;
+            )
+            .unzip();
 
         let (parties_sending_invalid_prove_public_verification_keys_messages, threshold_public_verification_keys_and_proofs) = prove_public_verification_keys_messages.into_iter()
             .map(
@@ -474,14 +488,11 @@ where
 
         let third_round_malicious_parties: Vec<_> = parties_sending_invalid_third_round_messages
             .into_iter()
-            .chain(malicious_voters)
-            .chain(malicious_randomizer_dealers.clone())
             .chain(parties_sending_invalid_prove_public_verification_keys_messages)
             .deduplicate_and_sort();
 
         Ok((
             third_round_malicious_parties,
-            malicious_randomizer_dealers,
             masked_decryption_key_decryption_shares_and_proofs
                 .into_values()
                 .flatten()

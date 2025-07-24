@@ -8,12 +8,13 @@ use crypto_bigint::{Encoding, NonZero, Uint};
 use serde::{Deserialize, Serialize};
 
 use commitment::{HomomorphicCommitmentScheme, MultiPedersen};
+use group::bounded_natural_numbers_group::MAURER_RANDOMIZER_DIFF_BITS;
 use group::helpers::FlatMapResults;
-use group::Reduce;
 use group::{
     bounded_natural_numbers_group, direct_product, self_product, GroupElement as _,
     KnownOrderGroupElement,
 };
+use group::{Reduce, Transcribeable};
 use homomorphic_encryption::{AdditivelyHomomorphicEncryptionKey, GroupsPublicParametersAccessors};
 use proof::GroupsPublicParameters;
 
@@ -188,6 +189,8 @@ where
     fn homomorphose(
         witness: &Self::WitnessSpaceGroupElement,
         language_public_parameters: &Self::PublicParameters,
+        is_randomizer: bool,
+        is_verify: bool,
     ) -> crate::Result<Self::StatementSpaceGroupElement> {
         if SCALAR_LIMBS > PLAINTEXT_SPACE_SCALAR_LIMBS {
             return Err(Error::InvalidPublicParameters);
@@ -225,14 +228,34 @@ where
         let coefficients: &[_; DIMENSION] = witness.coefficients().into();
         let coefficients: [Uint<MESSAGE_LIMBS>; DIMENSION] =
             coefficients.map(|coefficient| coefficient.value());
+
+        let coefficient_upper_bound_bits: u32 = if is_verify {
+            *coefficients
+                .map(|coefficient| coefficient.bits_vartime())
+                .iter()
+                .max()
+                .ok_or(Error::InvalidParameters)?
+        } else if is_randomizer {
+            language_public_parameters
+                .message_group_public_parameters()
+                .sample_bits
+                + MAURER_RANDOMIZER_DIFF_BITS
+        } else {
+            language_public_parameters
+                .message_group_public_parameters()
+                .sample_bits
+        };
+
         let evaluated_ciphertext = encryption_key
             .securely_evaluate_linear_combination_with_randomness(
                 &coefficients,
+                coefficient_upper_bound_bits,
                 ciphertexts_and_encoded_messages_upper_bounds,
                 &((&group_order).into()),
                 witness.mask(),
                 witness.encryption_randomness(),
                 &language_public_parameters.encryption_scheme_public_parameters,
+                is_verify,
             )
             .map_err(|_| crate::Error::InvalidPublicParameters)?;
 
@@ -459,7 +482,7 @@ where
             .witness_space_public_parameters)
             .into();
 
-        &scalar_group_public_parameters.public_parameters
+        &scalar_group_public_parameters.0
     }
 
     pub fn group_public_parameters(&self) -> &GroupPublicParameters {
@@ -468,7 +491,7 @@ where
             .statement_space_public_parameters)
             .into();
 
-        &group_public_parameters.public_parameters
+        &group_public_parameters.0
     }
 
     pub fn message_group_public_parameters(
@@ -479,7 +502,126 @@ where
             .witness_space_public_parameters)
             .into();
 
-        &message_group_public_parameters.public_parameters
+        &message_group_public_parameters.0
+    }
+}
+
+impl<
+        const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
+        const MESSAGE_LIMBS: usize,
+        const DIMENSION: usize,
+        ScalarPublicParameters: Transcribeable + Serialize,
+        GroupPublicParameters: Transcribeable + Serialize,
+        GroupElementValue: Serialize,
+        PlaintextSpacePublicParameters: Transcribeable + Serialize,
+        RandomnessSpacePublicParameters: Transcribeable + Serialize,
+        CiphertextSpacePublicParameters: Transcribeable + Serialize,
+        CiphertextSpaceValue: Serialize,
+        EncryptionKeyPublicParameters: Transcribeable,
+    > Transcribeable
+    for private::PublicParameters<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        MESSAGE_LIMBS,
+        DIMENSION,
+        ScalarPublicParameters,
+        GroupPublicParameters,
+        GroupElementValue,
+        PlaintextSpacePublicParameters,
+        RandomnessSpacePublicParameters,
+        CiphertextSpacePublicParameters,
+        CiphertextSpaceValue,
+        EncryptionKeyPublicParameters,
+    >
+where
+    Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>: Encoding,
+    Uint<MESSAGE_LIMBS>: Encoding,
+{
+    type CanonicalRepresentation = private::CanonicalPublicParameters<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        MESSAGE_LIMBS,
+        DIMENSION,
+        ScalarPublicParameters,
+        GroupPublicParameters,
+        GroupElementValue,
+        PlaintextSpacePublicParameters,
+        RandomnessSpacePublicParameters,
+        CiphertextSpacePublicParameters,
+        CiphertextSpaceValue,
+        EncryptionKeyPublicParameters,
+    >;
+}
+
+impl<
+        const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
+        const MESSAGE_LIMBS: usize,
+        const DIMENSION: usize,
+        ScalarPublicParameters: Transcribeable + Serialize,
+        GroupPublicParameters: Transcribeable + Serialize,
+        GroupElementValue: Serialize,
+        PlaintextSpacePublicParameters: Transcribeable + Serialize,
+        RandomnessSpacePublicParameters: Transcribeable + Serialize,
+        CiphertextSpacePublicParameters: Transcribeable + Serialize,
+        CiphertextSpaceValue: Serialize,
+        EncryptionKeyPublicParameters: Transcribeable,
+    >
+    From<
+        private::PublicParameters<
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            MESSAGE_LIMBS,
+            DIMENSION,
+            ScalarPublicParameters,
+            GroupPublicParameters,
+            GroupElementValue,
+            PlaintextSpacePublicParameters,
+            RandomnessSpacePublicParameters,
+            CiphertextSpacePublicParameters,
+            CiphertextSpaceValue,
+            EncryptionKeyPublicParameters,
+        >,
+    >
+    for private::CanonicalPublicParameters<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        MESSAGE_LIMBS,
+        DIMENSION,
+        ScalarPublicParameters,
+        GroupPublicParameters,
+        GroupElementValue,
+        PlaintextSpacePublicParameters,
+        RandomnessSpacePublicParameters,
+        CiphertextSpacePublicParameters,
+        CiphertextSpaceValue,
+        EncryptionKeyPublicParameters,
+    >
+where
+    Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>: Encoding,
+    Uint<MESSAGE_LIMBS>: Encoding,
+{
+    fn from(
+        value: private::PublicParameters<
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            MESSAGE_LIMBS,
+            DIMENSION,
+            ScalarPublicParameters,
+            GroupPublicParameters,
+            GroupElementValue,
+            PlaintextSpacePublicParameters,
+            RandomnessSpacePublicParameters,
+            CiphertextSpacePublicParameters,
+            CiphertextSpaceValue,
+            EncryptionKeyPublicParameters,
+        >,
+    ) -> Self {
+        Self {
+            canonical_groups_public_parameters: value.groups_public_parameters.into(),
+            canonical_encryption_scheme_public_parameters: value
+                .encryption_scheme_public_parameters
+                .into(),
+            canonical_commitment_scheme_public_parameters: value
+                .commitment_scheme_public_parameters
+                .into(),
+            ciphertexts_and_encoded_messages_upper_bounds: value
+                .ciphertexts_and_encoded_messages_upper_bounds,
+        }
     }
 }
 
@@ -577,9 +719,10 @@ impl<
 }
 
 pub(super) mod private {
-    use commitment::multipedersen;
-
     use super::*;
+    use commitment::multipedersen;
+    use group::Transcribeable;
+    use proof::CanonicalGroupsPublicParameters;
 
     #[derive(Clone, Debug, PartialEq, Serialize, Eq)]
     pub struct PublicParameters<
@@ -624,6 +767,54 @@ pub(super) mod private {
 
         #[serde(with = "group::helpers::const_generic_array_serialization")]
         pub ciphertexts_and_encoded_messages_upper_bounds:
+            [(CiphertextSpaceValue, Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>); DIMENSION],
+    }
+
+    #[derive(Serialize)]
+    pub struct CanonicalPublicParameters<
+        const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
+        const MESSAGE_LIMBS: usize,
+        const DIMENSION: usize,
+        ScalarPublicParameters: Transcribeable + Serialize,
+        GroupPublicParameters: Transcribeable + Serialize,
+        GroupElementValue: Serialize,
+        PlaintextSpacePublicParameters: Transcribeable + Serialize,
+        RandomnessSpacePublicParameters: Transcribeable + Serialize,
+        CiphertextSpacePublicParameters: Transcribeable + Serialize,
+        CiphertextSpaceValue: Serialize,
+        EncryptionKeyPublicParameters: Transcribeable,
+    >
+    where
+        Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>: Encoding,
+        Uint<MESSAGE_LIMBS>: Encoding,
+    {
+        pub(super) canonical_groups_public_parameters: CanonicalGroupsPublicParameters<
+            direct_product::FourWayPublicParameters<
+                self_product::PublicParameters<
+                    DIMENSION,
+                    bounded_natural_numbers_group::PublicParameters<MESSAGE_LIMBS>,
+                >,
+                self_product::PublicParameters<DIMENSION, ScalarPublicParameters>,
+                PlaintextSpacePublicParameters,
+                RandomnessSpacePublicParameters,
+            >,
+            direct_product::PublicParameters<
+                CiphertextSpacePublicParameters,
+                self_product::PublicParameters<DIMENSION, GroupPublicParameters>,
+            >,
+        >,
+        pub(super) canonical_encryption_scheme_public_parameters:
+            EncryptionKeyPublicParameters::CanonicalRepresentation,
+        pub(super) canonical_commitment_scheme_public_parameters:
+            multipedersen::CanonicalPublicParameters<
+                DIMENSION,
+                GroupElementValue,
+                ScalarPublicParameters,
+                GroupPublicParameters,
+            >,
+
+        #[serde(with = "group::helpers::const_generic_array_serialization")]
+        pub(super) ciphertexts_and_encoded_messages_upper_bounds:
             [(CiphertextSpaceValue, Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>); DIMENSION],
     }
 }

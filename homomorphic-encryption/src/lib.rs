@@ -1,11 +1,15 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
-use crypto_bigint::{rand_core::CryptoRngCore, subtle::CtOption, Uint};
-use group::{GroupElement, KnownOrderScalar, PartyID, Samplable};
-use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::{collections::HashMap, fmt::Debug};
+
+use crypto_bigint::{subtle::CtOption, Uint};
+use serde::{Deserialize, Serialize};
+
+use group::{
+    CsRng, GroupElement, KnownOrderScalar, LinearlyCombinable, PartyID, Samplable, Transcribeable,
+};
 
 /// An error in encryption-related operations.
 #[derive(thiserror::Error, Clone, Debug, PartialEq)]
@@ -47,7 +51,8 @@ pub trait AdditivelyHomomorphicEncryptionKey<const PLAINTEXT_SPACE_SCALAR_LIMBS:
                 RandomnessSpacePublicParameters<PLAINTEXT_SPACE_SCALAR_LIMBS, Self>,
                 CiphertextSpacePublicParameters<PLAINTEXT_SPACE_SCALAR_LIMBS, Self>,
             >,
-        > + Serialize
+        > + Transcribeable
+        + Serialize
         + for<'r> Deserialize<'r>
         + PartialEq
         + Clone
@@ -69,6 +74,7 @@ pub trait AdditivelyHomomorphicEncryptionKey<const PLAINTEXT_SPACE_SCALAR_LIMBS:
         plaintext: &Self::PlaintextSpaceGroupElement,
         randomness: &Self::RandomnessSpaceGroupElement,
         public_parameters: &Self::PublicParameters,
+        is_vartime: bool,
     ) -> Self::CiphertextSpaceGroupElement;
 
     /// $\Enc(pk, \pt)$: a probabilistic algorithm that first uniformly samples `randomness`
@@ -79,7 +85,8 @@ pub trait AdditivelyHomomorphicEncryptionKey<const PLAINTEXT_SPACE_SCALAR_LIMBS:
         &self,
         plaintext: &Self::PlaintextSpaceGroupElement,
         public_parameters: &Self::PublicParameters,
-        rng: &mut impl CryptoRngCore,
+        is_vartime: bool,
+        rng: &mut impl CsRng,
     ) -> Result<(
         Self::RandomnessSpaceGroupElement,
         Self::CiphertextSpaceGroupElement,
@@ -89,7 +96,8 @@ pub trait AdditivelyHomomorphicEncryptionKey<const PLAINTEXT_SPACE_SCALAR_LIMBS:
             rng,
         )?;
 
-        let ciphertext = self.encrypt_with_randomness(plaintext, &randomness, public_parameters);
+        let ciphertext =
+            self.encrypt_with_randomness(plaintext, &randomness, public_parameters, is_vartime);
 
         Ok((randomness, ciphertext))
     }
@@ -103,20 +111,30 @@ pub trait AdditivelyHomomorphicEncryptionKey<const PLAINTEXT_SPACE_SCALAR_LIMBS:
     /// For circuit private implementation, use [`Self::securely_evaluate_linear_combination`].
     fn evaluate_linear_combination<const MESSAGE_LIMBS: usize, const DIMENSION: usize>(
         coefficients: &[Uint<MESSAGE_LIMBS>; DIMENSION],
+        coefficient_upper_bound_bits: u32,
         ciphertexts: &[Self::CiphertextSpaceGroupElement; DIMENSION],
+        _public_parameters: &Self::PublicParameters,
+        is_vartime: bool,
     ) -> Result<Self::CiphertextSpaceGroupElement> {
-        if DIMENSION == 0 {
-            return Err(Error::ZeroDimension);
-        }
-
-        let neutral = ciphertexts[0].neutral();
-
-        Ok(coefficients
+        let bases_and_multiplicands = ciphertexts
             .iter()
-            .zip(ciphertexts.iter())
-            .fold(neutral, |curr, (coefficient, ciphertext)| {
-                curr + ciphertext.scale(coefficient)
-            }))
+            .copied()
+            .zip(coefficients.iter().copied())
+            .collect();
+
+        let linear_combination = if is_vartime {
+            Self::CiphertextSpaceGroupElement::linearly_combine_bounded_vartime(
+                bases_and_multiplicands,
+                coefficient_upper_bound_bits,
+            )?
+        } else {
+            Self::CiphertextSpaceGroupElement::linearly_combine_bounded(
+                bases_and_multiplicands,
+                coefficient_upper_bound_bits,
+            )?
+        };
+
+        Ok(linear_combination)
     }
 
     /// $\Eval(pk,f, \ct_1,\ldots,\ct_\ell; \omega, \eta)$: Secure function evaluation.
@@ -173,12 +191,14 @@ pub trait AdditivelyHomomorphicEncryptionKey<const PLAINTEXT_SPACE_SCALAR_LIMBS:
     /// skipped.
     ///
     /// See: Definition $2.1, B.2, B.3, D.1$ in "2PC-MPC: Threshold ECDSA in $\calO(1)$".
+    #[allow(clippy::too_many_arguments)]
     fn securely_evaluate_linear_combination_with_randomness<
         const MESSAGE_LIMBS: usize,
         const DIMENSION: usize,
     >(
         &self,
         coefficients: &[Uint<MESSAGE_LIMBS>; DIMENSION],
+        coefficient_upper_bound_bits: u32,
         ciphertexts_and_encoded_messages_upper_bounds: [(
             Self::CiphertextSpaceGroupElement,
             Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>,
@@ -187,6 +207,7 @@ pub trait AdditivelyHomomorphicEncryptionKey<const PLAINTEXT_SPACE_SCALAR_LIMBS:
         mask: &Self::PlaintextSpaceGroupElement,
         randomness: &Self::RandomnessSpaceGroupElement,
         public_parameters: &Self::PublicParameters,
+        is_vartime: bool,
     ) -> Result<Self::CiphertextSpaceGroupElement>;
 
     /// Samples the mask $\omega$ is uniformly from $[0,2^s\PTsum)$, as required for secure function
@@ -202,23 +223,26 @@ pub trait AdditivelyHomomorphicEncryptionKey<const PLAINTEXT_SPACE_SCALAR_LIMBS:
         ); DIMENSION],
         modulus: &Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>,
         public_parameters: &Self::PublicParameters,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<Self::PlaintextSpaceGroupElement>;
 
     /// $\Eval(pk,f, \ct_1,\ldots,\ct_t; \eta_{\sf eval})$: Secure function evaluation.
     ///
     /// This is the probabilistic linear combination algorithm that samples `mask` and `randomness`
     /// from `rng` and calls [`Self::securely_evaluate_linear_combination_with_randomness()`].
+    #[allow(clippy::too_many_arguments)]
     fn securely_evaluate_linear_combination<const MESSAGE_LIMBS: usize, const DIMENSION: usize>(
         &self,
         coefficients: &[Uint<MESSAGE_LIMBS>; DIMENSION],
+        coefficient_upper_bound_bits: u32,
         ciphertexts_and_encoded_messages_upper_bounds: [(
             Self::CiphertextSpaceGroupElement,
             Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>,
         ); DIMENSION],
         modulus: &Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>,
         public_parameters: &Self::PublicParameters,
-        rng: &mut impl CryptoRngCore,
+        is_vartime: bool,
+        rng: &mut impl CsRng,
     ) -> Result<(
         Self::PlaintextSpaceGroupElement,
         Self::RandomnessSpaceGroupElement,
@@ -241,11 +265,13 @@ pub trait AdditivelyHomomorphicEncryptionKey<const PLAINTEXT_SPACE_SCALAR_LIMBS:
 
         let evaluated_ciphertext = self.securely_evaluate_linear_combination_with_randomness(
             coefficients,
+            coefficient_upper_bound_bits,
             ciphertexts_and_encoded_messages_upper_bounds,
             modulus,
             &mask,
             &randomness,
             public_parameters,
+            is_vartime,
         )?;
 
         Ok((mask, randomness, evaluated_ciphertext))
@@ -322,7 +348,7 @@ pub trait AdditivelyHomomorphicDecryptionKeyShare<
         + Sync;
 
     /// An error in threshold decryption.
-    type Error: Debug + Send + Sync;
+    type Error: Debug + Send + Sync + Clone;
 
     /// Instantiate the decryption key share from the public parameters of the threshold decryption
     /// scheme, and the secret key share.
@@ -330,6 +356,7 @@ pub trait AdditivelyHomomorphicDecryptionKeyShare<
         party_id: PartyID,
         secret_key_share: Self::SecretKeyShare,
         public_parameters: &Self::PublicParameters,
+        rng: &mut impl CsRng,
     ) -> std::result::Result<Self, Self::Error>;
 
     /// The party id $j$ of the decryption key share $x_j$.
@@ -362,7 +389,7 @@ pub trait AdditivelyHomomorphicDecryptionKeyShare<
         &self,
         ciphertexts: Vec<EncryptionKey::CiphertextSpaceGroupElement>,
         public_parameters: &Self::PublicParameters,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> CtOption<(Vec<Self::DecryptionShare>, Self::PartialDecryptionProof)>;
 
     /// Finalizes the Threshold Decryption protocol by combining decryption shares. This is the
@@ -387,7 +414,7 @@ pub trait AdditivelyHomomorphicDecryptionKeyShare<
             (Vec<Self::DecryptionShare>, Self::PartialDecryptionProof),
         >,
         public_parameters: &Self::PublicParameters,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> std::result::Result<Vec<PartyID>, Self::Error>;
 
     /// In case that the happy flow ('semi-honest' like threshold decryption without zk-proofs) failed we need to identify which party has caused the failure.
@@ -413,7 +440,7 @@ pub trait AdditivelyHomomorphicDecryptionKeyShare<
             (Vec<Self::DecryptionShare>, Self::PartialDecryptionProof),
         >,
         public_parameters: &Self::PublicParameters,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> std::result::Result<
         (Vec<PartyID>, Vec<EncryptionKey::PlaintextSpaceGroupElement>),
         Self::Error,
@@ -542,18 +569,74 @@ group::Value<<E as AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIM
 pub type PublicParameters<const PLAINTEXT_SPACE_SCALAR_LIMBS: usize, E> =
     <E as AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>>::PublicParameters;
 
+#[derive(Serialize)]
+pub struct CanonicalGroupsPublicParameters<
+    PlaintextSpacePublicParameters: Transcribeable + Serialize,
+    RandomnessSpacePublicParameters: Transcribeable + Serialize,
+    CiphertextSpacePublicParameters: Transcribeable + Serialize,
+> {
+    pub canonical_plaintext_space_public_parameters:
+        PlaintextSpacePublicParameters::CanonicalRepresentation,
+    pub canonical_randomness_space_public_parameters:
+        RandomnessSpacePublicParameters::CanonicalRepresentation,
+    pub canonical_ciphertext_space_public_parameters:
+        CiphertextSpacePublicParameters::CanonicalRepresentation,
+}
+
+impl<
+        PlaintextSpacePublicParameters: Transcribeable + Serialize,
+        RandomnessSpacePublicParameters: Transcribeable + Serialize,
+        CiphertextSpacePublicParameters: Transcribeable + Serialize,
+    >
+    From<
+        GroupsPublicParameters<
+            PlaintextSpacePublicParameters,
+            RandomnessSpacePublicParameters,
+            CiphertextSpacePublicParameters,
+        >,
+    >
+    for CanonicalGroupsPublicParameters<
+        PlaintextSpacePublicParameters,
+        RandomnessSpacePublicParameters,
+        CiphertextSpacePublicParameters,
+    >
+{
+    fn from(
+        value: GroupsPublicParameters<
+            PlaintextSpacePublicParameters,
+            RandomnessSpacePublicParameters,
+            CiphertextSpacePublicParameters,
+        >,
+    ) -> Self {
+        Self {
+            canonical_plaintext_space_public_parameters: value
+                .plaintext_space_public_parameters
+                .into(),
+            canonical_randomness_space_public_parameters: value
+                .randomness_space_public_parameters
+                .into(),
+            canonical_ciphertext_space_public_parameters: value
+                .ciphertext_space_public_parameters
+                .into(),
+        }
+    }
+}
+
 #[allow(clippy::erasing_op)]
 #[allow(clippy::identity_op)]
 #[cfg(feature = "test_helpers")]
 pub mod test_helpers {
-    use super::*;
-    use criterion::{black_box, Criterion};
+    use std::hint::black_box;
+
+    use criterion::Criterion;
     use crypto_bigint::{NonZero, Uint, U64};
-    use group::helpers::DeduplicateAndSort;
-    use group::{GroupElement, KnownOrderGroupElement, Value};
-    use rand_core::OsRng;
     use rayon::iter::IntoParallelRefIterator;
     use rayon::iter::ParallelIterator;
+
+    use group::helpers::DeduplicateAndSort;
+    use group::{GroupElement, KnownOrderGroupElement, OsCsRng, Value};
+
+    use super::*;
 
     pub fn encrypt_decrypts<
         const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
@@ -562,7 +645,7 @@ pub mod test_helpers {
     >(
         decryption_key: DecryptionKey,
         public_parameters: &EncryptionKey::PublicParameters,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) {
         let encryption_key = decryption_key.as_ref();
 
@@ -575,7 +658,7 @@ pub mod test_helpers {
             .unwrap();
 
         let (_, ciphertext) = encryption_key
-            .encrypt(&plaintext, public_parameters, rng)
+            .encrypt(&plaintext, public_parameters, true, rng)
             .unwrap();
 
         assert_eq!(
@@ -594,7 +677,7 @@ pub mod test_helpers {
             .unwrap();
 
         let (_, ciphertext) = encryption_key
-            .encrypt(&plaintext, public_parameters, rng)
+            .encrypt(&plaintext, public_parameters, true, rng)
             .unwrap();
 
         assert_eq!(
@@ -617,7 +700,7 @@ pub mod test_helpers {
         decryption_key: DecryptionKey,
         evaluation_group_public_parameters: &EvaluationGroupElement::PublicParameters,
         public_parameters: &PublicParameters<PLAINTEXT_SPACE_SCALAR_LIMBS, EncryptionKey>,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) {
         let encryption_key = decryption_key.as_ref();
 
@@ -660,15 +743,15 @@ pub mod test_helpers {
         .unwrap();
 
         let (_, encryption_of_two) = encryption_key
-            .encrypt(&two, public_parameters, rng)
+            .encrypt(&two, public_parameters, true, rng)
             .unwrap();
 
         let (_, encryption_of_five) = encryption_key
-            .encrypt(&five, public_parameters, rng)
+            .encrypt(&five, public_parameters, true, rng)
             .unwrap();
 
         let (_, encryption_of_seven) = encryption_key
-            .encrypt(&seven, public_parameters, rng)
+            .encrypt(&seven, public_parameters, true, rng)
             .unwrap();
 
         let evaluated_ciphertext = encryption_of_five.scale(&U64::from(1u64))
@@ -730,11 +813,13 @@ pub mod test_helpers {
         let privately_evaluated_ciphertext = encryption_key
             .securely_evaluate_linear_combination_with_randomness(
                 &coefficients,
+                Uint::<EVALUATION_GROUP_SCALAR_LIMBS>::BITS,
                 ciphertexts_and_encoded_messages_upper_bounds,
                 &evaluation_order,
                 &mask,
                 &secure_evaluation_randomness,
                 public_parameters,
+                true,
             )
             .unwrap();
 
@@ -758,15 +843,16 @@ pub mod test_helpers {
         );
 
         let (first_zero_encryption_randomness, first_encryption_of_zero) = encryption_key
-            .encrypt(&zero, public_parameters, rng)
+            .encrypt(&zero, public_parameters, true, rng)
             .unwrap();
         let (second_zero_encryption_randomness, second_encryption_of_zero) = encryption_key
-            .encrypt(&zero, public_parameters, rng)
+            .encrypt(&zero, public_parameters, true, rng)
             .unwrap();
         let encryption_of_zero_with_sum_randomness = encryption_key.encrypt_with_randomness(
             &zero,
             &(first_zero_encryption_randomness + second_zero_encryption_randomness),
             public_parameters,
+            true,
         );
 
         assert_eq!(
@@ -803,10 +889,13 @@ pub mod test_helpers {
                 .value()
                 .into();
 
-        let (m1_encryption_randomness, encryption_of_m1) =
-            encryption_key.encrypt(&m1, public_parameters, rng).unwrap();
+        let (m1_encryption_randomness, encryption_of_m1) = encryption_key
+            .encrypt(&m1, public_parameters, true, rng)
+            .unwrap();
 
-        let (_, encryption_of_m2) = encryption_key.encrypt(&m2, public_parameters, rng).unwrap();
+        let (_, encryption_of_m2) = encryption_key
+            .encrypt(&m2, public_parameters, true, rng)
+            .unwrap();
 
         let evaluated_ciphertext = encryption_of_m1 + encryption_of_m2;
 
@@ -880,11 +969,13 @@ pub mod test_helpers {
         let privately_evaluted_ciphertext = encryption_key
             .securely_evaluate_linear_combination_with_randomness(
                 &[s.value().into()],
+                Uint::<EVALUATION_GROUP_SCALAR_LIMBS>::BITS,
                 ciphertexts_and_encoded_messages_upper_bounds,
                 &evaluation_order,
                 &mask,
                 &secure_evaluation_randomness,
                 public_parameters,
+                true,
             )
             .unwrap();
 
@@ -898,11 +989,13 @@ pub mod test_helpers {
         let privately_evaluted_ciphertext = encryption_key
             .securely_evaluate_linear_combination_with_randomness(
                 &[s.value().into()],
+                Uint::<EVALUATION_GROUP_SCALAR_LIMBS>::BITS,
                 ciphertexts_and_encoded_messages_upper_bounds,
                 &evaluation_order,
                 &mask,
                 &secure_evaluation_randomness,
                 public_parameters,
+                true,
             )
             .unwrap();
 
@@ -928,6 +1021,7 @@ pub mod test_helpers {
             &pt,
             &((m1_encryption_randomness.scale(&s_value)) + secure_evaluation_randomness),
             public_parameters,
+            true,
         );
         assert_eq!(
             privately_evaluted_ciphertext, expected_evaluation_result,
@@ -944,7 +1038,7 @@ pub mod test_helpers {
         batch_size: usize,
         decryption_key_shares: HashMap<PartyID, DecryptionKeyShare>,
         public_parameters: &DecryptionKeyShare::PublicParameters,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) {
         let number_of_parties = DecryptionKeyShare::number_of_parties(public_parameters);
         let encryption_key = decryption_key_shares
@@ -966,7 +1060,7 @@ pub mod test_helpers {
             .iter()
             .map(|plaintext| {
                 let (_, ciphertext) = encryption_key
-                    .encrypt(plaintext, encryption_scheme_public_parameters, rng)
+                    .encrypt(plaintext, encryption_scheme_public_parameters, true, rng)
                     .unwrap();
 
                 ciphertext
@@ -1153,7 +1247,7 @@ pub mod test_helpers {
         public_parameters: &DecryptionKeyShare::PublicParameters,
         encryption_scheme_name: &str,
         c: &mut Criterion,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) {
         let encryption_key = decryption_key_shares
             .values()
@@ -1174,7 +1268,7 @@ pub mod test_helpers {
             .iter()
             .map(|plaintext| {
                 let (_, ciphertext) = encryption_key
-                    .encrypt(plaintext, encryption_scheme_public_parameters, rng)
+                    .encrypt(plaintext, encryption_scheme_public_parameters, true, rng)
                     .unwrap();
 
                 ciphertext
@@ -1205,7 +1299,7 @@ pub mod test_helpers {
                 let decryption_shares = decryption_key_share.generate_decryption_shares(
                     ciphertexts.clone(),
                     public_parameters,
-                    &mut OsRng,
+                    &mut OsCsRng,
                 );
 
                 assert_eq!(
@@ -1271,7 +1365,7 @@ pub mod test_helpers {
         expected_case: bool,
         encryption_scheme_name: &str,
         c: &mut Criterion,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) {
         let encryption_key = decryption_key_shares
             .values()
@@ -1292,7 +1386,7 @@ pub mod test_helpers {
             .iter()
             .map(|plaintext| {
                 let (_, ciphertext) = encryption_key
-                    .encrypt(plaintext, encryption_scheme_public_parameters, rng)
+                    .encrypt(plaintext, encryption_scheme_public_parameters, true, rng)
                     .unwrap();
 
                 ciphertext

@@ -1,10 +1,11 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
-use crypto_bigint::{Encoding, Int, Uint};
-use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
+
+use crypto_bigint::{Encoding, Int, Uint};
+use serde::{Deserialize, Serialize};
 
 use chinese_remainder_theorem::*;
 use commitment::CommitmentSizedNumber;
@@ -19,9 +20,11 @@ use mpc::PartyID;
 use mpc::WeightedThresholdAccessStructure;
 pub(crate) use party::Party;
 
+use crate::accelerator::MultiFoldNupowAccelerator;
+use crate::equivalence_class::EquivalenceClassOps;
 use crate::{
-    CiphertextSpaceGroupElement, CiphertextSpaceValue, CompactIbqf, EncryptionKey,
-    EquivalenceClass, Error, Result,
+    equivalence_class, CiphertextSpaceGroupElement, CiphertextSpaceValue, CompactIbqf,
+    EncryptionKey, EquivalenceClass, Error, Result,
 };
 
 pub mod chinese_remainder_theorem;
@@ -94,8 +97,18 @@ pub struct DealtSecretShareMessage<
 where
     Int<DISCRETE_LOG_WITNESS_LIMBS>: Encoding,
     Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
-    EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>:
-        group::GroupElement<Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>;
+    Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >;
 
 /// The instantiated message sent by a dealer to share a secret to a single participating party:
 /// * The encryption of the share dealt for this party, modulo each CRT prime.
@@ -139,8 +152,17 @@ pub struct DealSecretMessage<
     Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
 
-    EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>:
-        group::GroupElement<Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+    EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
 {
     pub coefficients_contribution_commitments: Vec<CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
     pub encryptions_of_secret_shares_and_proofs: HashMap<
@@ -232,10 +254,9 @@ mod tests {
     use std::ops::Neg;
 
     use crypto_bigint::Random;
-    use rand_core::OsRng;
 
     use commitment::CommitmentSizedNumber;
-    use group::{secp256k1, GroupElement};
+    use group::{secp256k1, GroupElement, OsCsRng};
     use homomorphic_encryption::GroupsPublicParametersAccessors;
     use mpc::secret_sharing::shamir::over_the_integers::secret_key_share_size_upper_bound;
 
@@ -257,7 +278,7 @@ mod tests {
 
     #[test]
     fn decrypts_and_crt_reconstructs() {
-        let session_id = CommitmentSizedNumber::random(&mut OsRng);
+        let session_id = CommitmentSizedNumber::random(&mut OsCsRng);
 
         let threshold = 4;
         let party_to_weight = HashMap::from([(1, 2), (2, 1), (3, 3)]);
@@ -301,7 +322,7 @@ mod tests {
         .unwrap();
 
         let (encryption_scheme_public_parameters, decryption_key) =
-            Secp256k1DecryptionKey::generate(setup_parameters.clone(), &mut OsRng).unwrap();
+            Secp256k1DecryptionKey::generate(setup_parameters.clone(), &mut OsCsRng).unwrap();
 
         let (_, decryption_key_shares) = deal_trusted_shares::<
             SECP256K1_SCALAR_LIMBS,
@@ -364,7 +385,7 @@ mod tests {
                 2,
                 3,
                 decryption_key_share_group_element,
-                &mut OsRng,
+                &mut OsCsRng,
             )
             .unwrap()
             .map(|(_, encryption)| encryption);
@@ -405,7 +426,7 @@ mod tests {
                 2,
                 3,
                 decryption_key_share_group_element.neg(),
-                &mut OsRng,
+                &mut OsCsRng,
             )
             .unwrap()
             .map(|(_, encryption)| encryption);

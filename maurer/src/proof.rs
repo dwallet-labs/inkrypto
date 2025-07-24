@@ -4,14 +4,13 @@
 use std::fmt::Debug;
 use std::{array, iter, marker::PhantomData};
 
-use crypto_bigint::rand_core::CryptoRngCore;
-use crypto_bigint::{Concat, Random};
+use crypto_bigint::Random;
 use merlin::Transcript;
 use serde::{Deserialize, Serialize};
 
 use group::{
-    helpers::FlatMapResults, self_product, ComputationalSecuritySizedNumber, GroupElement,
-    LinearlyCombinable, Samplable,
+    helpers::FlatMapResults, self_product, ComputationalSecuritySizedNumber, CsRng, GroupElement,
+    LinearlyCombinable, Samplable, StatisticalSecuritySizedNumber,
 };
 use proof::{GroupsPublicParametersAccessors, TranscriptProtocol};
 
@@ -75,11 +74,20 @@ impl<
         protocol_context: &ProtocolContext,
         language_public_parameters: &Language::PublicParameters,
         witnesses: Vec<Language::WitnessSpaceGroupElement>,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<(Self, Vec<Language::StatementSpaceGroupElement>)> {
+        let is_randomizer = false;
+        let is_verify = false;
         let statements: Result<Vec<Language::StatementSpaceGroupElement>> = witnesses
             .iter()
-            .map(|witness| Language::homomorphose(witness, language_public_parameters))
+            .map(|witness| {
+                Language::homomorphose(
+                    witness,
+                    language_public_parameters,
+                    is_randomizer,
+                    is_verify,
+                )
+            })
             .collect();
         let statements = statements?;
 
@@ -105,9 +113,18 @@ impl<
         randomizers: [Language::WitnessSpaceGroupElement; REPETITIONS],
         statement_masks: [Language::StatementSpaceGroupElement; REPETITIONS],
     ) -> Result<(Self, Vec<Language::StatementSpaceGroupElement>)> {
+        let is_randomizer = false;
+        let is_verify = false;
         let statements: Result<Vec<Language::StatementSpaceGroupElement>> = witnesses
             .iter()
-            .map(|witness| Language::homomorphose(witness, language_public_parameters))
+            .map(|witness| {
+                Language::homomorphose(
+                    witness,
+                    language_public_parameters,
+                    is_randomizer,
+                    is_verify,
+                )
+            })
             .collect();
         let statements = statements?;
 
@@ -127,7 +144,7 @@ impl<
         language_public_parameters: &Language::PublicParameters,
         witnesses: Vec<Language::WitnessSpaceGroupElement>,
         statements: Vec<Language::StatementSpaceGroupElement>,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<Self> {
         let (randomizers, statement_masks) =
             Self::sample_randomizers_and_statement_masks(language_public_parameters, rng)?;
@@ -267,8 +284,17 @@ impl<
             })
             .flat_map_results()?;
 
+        let is_randomizer = false;
+        let is_verify = true;
         let response_statements: [Language::StatementSpaceGroupElement; REPETITIONS] = responses
-            .map(|response| Language::homomorphose(&response, language_public_parameters))
+            .map(|response| {
+                Language::homomorphose(
+                    &response,
+                    language_public_parameters,
+                    is_randomizer,
+                    is_verify,
+                )
+            })
             .flat_map_results()?;
 
         let challenge_bit_size = Language::challenge_bits()?;
@@ -308,14 +334,14 @@ impl<
         protocol_contexts: Vec<ProtocolContext>,
         language_public_parameters: &Language::PublicParameters,
         statements: Vec<Vec<Language::StatementSpaceGroupElement>>,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<()> {
         if REPETITIONS == 0 || REPETITIONS > MAX_REPETITIONS {
             return Err(Error::UnsupportedRepetitions);
         }
 
         let challenge_bit_size = Language::challenge_bits()?
-            .checked_add(ComputationalSecuritySizedNumber::BITS)
+            .checked_add(StatisticalSecuritySizedNumber::BITS)
             .ok_or(Error::InternalError)?;
 
         let number_of_proofs = proofs.len();
@@ -379,15 +405,13 @@ impl<
             .unzip();
 
         // Sample the batch verification challenges $\set{s_i^k}$
-        let batch_verification_challenges: Vec<[ComputationalSecuritySizedNumber; REPETITIONS]> =
-            iter::repeat_with(|| array::from_fn(|_| ComputationalSecuritySizedNumber::random(rng)))
+        let batch_verification_challenges: Vec<[StatisticalSecuritySizedNumber; REPETITIONS]> =
+            iter::repeat_with(|| array::from_fn(|_| StatisticalSecuritySizedNumber::random(rng)))
                 .take(number_of_proofs)
                 .collect();
 
         // Compute $\set{s_i^k*e_{ij}^k}$
-        let challenges: Vec<
-            [Vec<<ComputationalSecuritySizedNumber as Concat>::Output>; REPETITIONS],
-        > = challenges
+        let challenges: Vec<[Vec<_>; REPETITIONS]> = challenges
             .into_iter()
             .zip(batch_verification_challenges.clone())
             .map(|(challenges, batch_verification_challenges)| {
@@ -400,7 +424,7 @@ impl<
                     challenges[k]
                         .clone()
                         .into_iter()
-                        .map(|challenge| challenge.widening_mul(&batch_verification_challenge))
+                        .map(|challenge| challenge.concatenating_mul(&batch_verification_challenge))
                         .collect()
                 })
             })
@@ -424,10 +448,19 @@ impl<
         })
         .flat_map_results()?;
 
+        let is_randomizer = false;
+        let is_verify = true;
         // Compute the response statements $\varphi(\sum{s_i^k*z_i^k})$
         let response_statements: [Language::StatementSpaceGroupElement; REPETITIONS] =
             batched_responses
-                .map(|response| Language::homomorphose(&response, language_public_parameters))
+                .map(|response| {
+                    Language::homomorphose(
+                        &response,
+                        language_public_parameters,
+                        is_randomizer,
+                        is_verify,
+                    )
+                })
                 .flat_map_results()?;
 
         // $\sum{s_i^k*R_i^k}$
@@ -461,8 +494,7 @@ impl<
                     .flat_map(
                         |(statements, challenges): (
                             Vec<Language::StatementSpaceGroupElement>,
-                            [Vec<<ComputationalSecuritySizedNumber as Concat>::Output>;
-                                REPETITIONS],
+                            [Vec<_>; REPETITIONS],
                         )| {
                             // Safe to dereference `challenges` here as we are iterating the indices of the `REPETITIONS` sized array with `k`.
                             statements.into_iter().zip(challenges[k].clone())
@@ -479,9 +511,9 @@ impl<
 
         // $\sum{s_i^k*R_i^k} + \sum{s_i^k*e_{ij}^k*X_{ij}}$
         let reconstructed_response_statements: [Language::StatementSpaceGroupElement; REPETITIONS] =
-            (self_product::GroupElement::from(batched_statement_masks)
-                + self_product::GroupElement::from(batched_statements))
-            .into();
+            self_product::GroupElement::from(batched_statement_masks)
+                .add_vartime(&self_product::GroupElement::from(batched_statements))
+                .into();
 
         if response_statements == reconstructed_response_statements {
             return Ok(());
@@ -493,7 +525,7 @@ impl<
     #[allow(clippy::type_complexity)]
     pub fn sample_randomizers_and_statement_masks(
         language_public_parameters: &Language::PublicParameters,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<(
         [Language::WitnessSpaceGroupElement; REPETITIONS],
         [Language::StatementSpaceGroupElement; REPETITIONS],
@@ -506,8 +538,17 @@ impl<
         })
         .flat_map_results()?;
 
+        let is_randomizer = true;
+        let is_verify = false;
         let statement_masks = randomizers
-            .map(|randomizer| Language::homomorphose(&randomizer, language_public_parameters))
+            .map(|randomizer| {
+                Language::homomorphose(
+                    &randomizer,
+                    language_public_parameters,
+                    is_randomizer,
+                    is_verify,
+                )
+            })
             .flat_map_results()?;
 
         Ok((randomizers, statement_masks))
@@ -523,19 +564,10 @@ impl<
 
         transcript.serialize_to_transcript_as_json(b"protocol context", protocol_context)?;
 
-        transcript.serialize_to_transcript_as_json(
+        // Note: the language public parameters include in themselves the group public parameters for both the witness and statement spaces.
+        transcript.transcribe(
             b"language public parameters",
-            language_public_parameters,
-        )?;
-
-        transcript.serialize_to_transcript_as_json(
-            b"witness space public parameters",
-            language_public_parameters.witness_space_public_parameters(),
-        )?;
-
-        transcript.serialize_to_transcript_as_json(
-            b"statement space public parameters",
-            language_public_parameters.statement_space_public_parameters(),
+            language_public_parameters.clone(),
         )?;
 
         if statements.iter().any(|statement| {
@@ -596,7 +628,7 @@ impl<
         protocol_context: &Self::ProtocolContext,
         language_public_parameters: &Self::PublicParameters,
         witnesses: Vec<Self::WitnessSpaceGroupElement>,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> std::result::Result<(Self, Vec<Self::StatementSpaceGroupElement>), Self::Error> {
         Proof::prove(protocol_context, language_public_parameters, witnesses, rng)
     }
@@ -606,7 +638,7 @@ impl<
         protocol_context: &Self::ProtocolContext,
         language_public_parameters: &Self::PublicParameters,
         statements: Vec<Self::StatementSpaceGroupElement>,
-        _rng: &mut impl CryptoRngCore,
+        _rng: &mut impl CsRng,
     ) -> std::result::Result<(), Self::Error> {
         self.verify(protocol_context, language_public_parameters, statements)
     }
@@ -616,9 +648,9 @@ impl<
         protocol_contexts: Vec<Self::ProtocolContext>,
         public_parameters: &Self::PublicParameters,
         statements: Vec<Vec<Self::StatementSpaceGroupElement>>,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> std::result::Result<(), Self::Error> {
-        Self::verify_batch(
+        Proof::verify_batch(
             proofs,
             protocol_contexts,
             public_parameters,
@@ -641,13 +673,13 @@ impl<
 #[allow(unused_imports)]
 pub(super) mod test_helpers {
     use std::collections::HashMap;
+    use std::hint::black_box;
     use std::marker::PhantomData;
 
     use criterion::measurement::{Measurement, WallTime};
-    use rand_core::OsRng;
 
     use commitment::CommitmentSizedNumber;
-    use group::PartyID;
+    use group::{OsCsRng, PartyID};
     use mpc::{Weight, WeightedThresholdAccessStructure};
 
     use crate::test_helpers::{sample_witness, sample_witnesses};
@@ -661,7 +693,7 @@ pub(super) mod test_helpers {
     >(
         language_public_parameters: &Language::PublicParameters,
         witnesses: Vec<Language::WitnessSpaceGroupElement>,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> (
         Proof<REPETITIONS, Language, PhantomData<()>>,
         Vec<Language::StatementSpaceGroupElement>,
@@ -675,7 +707,7 @@ pub(super) mod test_helpers {
     >(
         language_public_parameters: &Language::PublicParameters,
         batch_size: usize,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) {
         let witnesses =
             sample_witnesses::<REPETITIONS, Language>(language_public_parameters, batch_size, rng);
@@ -693,7 +725,7 @@ pub(super) mod test_helpers {
     >(
         language_public_parameters: &Language::PublicParameters,
         witnesses: Vec<Language::WitnessSpaceGroupElement>,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) {
         let (proof, statements) = generate_valid_proof::<REPETITIONS, Language>(
             language_public_parameters,
@@ -713,7 +745,7 @@ pub(super) mod test_helpers {
         proofs: Vec<Proof<REPETITIONS, Language, PhantomData<()>>>,
         statements: Vec<Vec<Language::StatementSpaceGroupElement>>,
         language_public_parameters: &Language::PublicParameters,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) {
         let number_of_proofs = proofs.len();
         let res = Proof::verify_batch(
@@ -737,7 +769,7 @@ pub(super) mod test_helpers {
             vec![PhantomData; number_of_proofs],
             language_public_parameters,
             invalid_statements,
-            &mut OsRng,
+            &mut OsCsRng,
         );
 
         assert!(res.is_err(), "non-valid proofs shouldn't batch verify");
@@ -754,7 +786,7 @@ pub(super) mod test_helpers {
             vec![PhantomData; number_of_proofs],
             language_public_parameters,
             statements,
-            &mut OsRng,
+            &mut OsCsRng,
         );
 
         assert!(res.is_err(), "non-valid proofs shouldn't batch verify");
@@ -769,7 +801,7 @@ pub(super) mod test_helpers {
         threshold: PartyID,
         party_to_weight: HashMap<PartyID, Weight>,
         batch_size: usize,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) {
         let session_id = CommitmentSizedNumber::random(rng);
         let access_structure =
@@ -815,7 +847,7 @@ pub(super) mod test_helpers {
         invalid_statement_space_value: Option<StatementSpaceValue<REPETITIONS, Language>>,
         language_public_parameters: &Language::PublicParameters,
         batch_size: usize,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) {
         let witnesses =
             sample_witnesses::<REPETITIONS, Language>(language_public_parameters, batch_size, rng);
@@ -830,7 +862,8 @@ pub(super) mod test_helpers {
             sample_witness::<REPETITIONS, Language>(language_public_parameters, rng);
 
         let wrong_statement =
-            Language::homomorphose(&wrong_witness, language_public_parameters).unwrap();
+            Language::homomorphose(&wrong_witness, language_public_parameters, false, false)
+                .unwrap();
 
         assert!(
             matches!(
@@ -940,7 +973,7 @@ pub(super) mod test_helpers {
         prover_language_public_parameters: &Language::PublicParameters,
         verifier_language_public_parameters: &Language::PublicParameters,
         batch_size: usize,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) {
         let witnesses = sample_witnesses::<REPETITIONS, Language>(
             verifier_language_public_parameters,
@@ -995,26 +1028,14 @@ pub(super) mod test_helpers {
                 .unwrap()
         }
 
-        language_public_parameters.map(|language_public_parameters| {
+        if let Some(language_public_parameters) = language_public_parameters {
             transcript
-                .serialize_to_transcript_as_json(
+                .transcribe(
                     b"language public parameters",
-                    &language_public_parameters,
+                    language_public_parameters.clone(),
                 )
                 .unwrap();
-
-            transcript
-                .serialize_to_transcript_as_json(
-                    b"witness space public parameters",
-                    &language_public_parameters.witness_space_public_parameters(),
-                )
-                .unwrap();
-
-            transcript.serialize_to_transcript_as_json(
-                b"statement space public parameters",
-                &language_public_parameters.statement_space_public_parameters(),
-            )
-        });
+        };
 
         if let Some(statements) = statements {
             statements.iter().for_each(|statement| {
@@ -1042,7 +1063,7 @@ pub(super) mod test_helpers {
     >(
         language_public_parameters: &Language::PublicParameters,
         batch_size: usize,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) {
         let witnesses =
             sample_witnesses::<REPETITIONS, Language>(language_public_parameters, batch_size, rng);
@@ -1190,7 +1211,8 @@ pub(super) mod test_helpers {
         batch_sizes: Option<Vec<usize>>,
     ) {
         let witness =
-            sample_witnesses::<REPETITIONS, Language>(language_public_parameters, 1, &mut OsRng)[0];
+            sample_witnesses::<REPETITIONS, Language>(language_public_parameters, 1, &mut OsCsRng)
+                [0];
 
         benchmark_proof_internal::<REPETITIONS, Language>(
             language_public_parameters,
@@ -1224,14 +1246,16 @@ pub(super) mod test_helpers {
             let now = measurement.start();
             let statements: Result<Vec<_>> = witnesses
                 .iter()
-                .map(|witness| Language::homomorphose(witness, language_public_parameters))
+                .map(|witness| {
+                    Language::homomorphose(witness, language_public_parameters, false, false)
+                })
                 .collect();
 
             let statements = statements.unwrap();
             let statements_time = measurement.end(now);
 
             let now = measurement.start();
-            criterion::black_box(Language::StatementSpaceGroupElement::batch_normalize(
+            black_box(Language::StatementSpaceGroupElement::batch_normalize(
                 statements.clone(),
             ));
             let normalize_time = measurement.end(now);
@@ -1239,7 +1263,7 @@ pub(super) mod test_helpers {
             let statements_values: Vec<_> = statements.iter().map(|x| x.value()).collect();
 
             let now = measurement.start();
-            criterion::black_box(
+            black_box(
                 Proof::<REPETITIONS, Language, PhantomData<()>>::setup_transcript(
                     &PhantomData,
                     language_public_parameters,
@@ -1257,7 +1281,7 @@ pub(super) mod test_helpers {
                 &PhantomData,
                 language_public_parameters,
                 witnesses.clone(),
-                &mut OsRng,
+                &mut OsCsRng,
             )
             .unwrap();
             let prove_time = measurement.end(now);
@@ -1287,7 +1311,7 @@ pub(super) mod test_helpers {
                         vec![PhantomData; batch_size],
                         language_public_parameters,
                         statements,
-                        &mut OsRng,
+                        &mut OsCsRng,
                     )
                     .unwrap();
 

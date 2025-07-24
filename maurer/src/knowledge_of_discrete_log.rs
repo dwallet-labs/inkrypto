@@ -1,12 +1,17 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
+
 use std::ops::Mul;
 
 use serde::Serialize;
 
+use group::bounded_natural_numbers_group::MAURER_RANDOMIZER_DIFF_BITS;
+use group::{Samplable, Scale, Transcribeable};
+use proof::{
+    CanonicalGroupsPublicParameters, GroupsPublicParameters, GroupsPublicParametersAccessors,
+};
+
 use crate::{Result, SOUND_PROOFS_REPETITIONS};
-use group::Samplable;
-use proof::GroupsPublicParameters;
 
 /// Schnorr's Knowledge of Discrete Log Maurer Language.
 ///
@@ -34,7 +39,7 @@ impl<
             + Mul<GroupElement, Output = GroupElement>
             + for<'r> Mul<&'r GroupElement, Output = GroupElement>
             + Copy,
-        GroupElement: group::GroupElement,
+        GroupElement: group::GroupElement + Scale<Scalar::Value>,
     > crate::Language<REPETITIONS> for private::Language<REPETITIONS, Scalar, GroupElement>
 {
     type WitnessSpaceGroupElement = Scalar;
@@ -51,6 +56,8 @@ impl<
     fn homomorphose(
         witness: &Self::WitnessSpaceGroupElement,
         language_public_parameters: &Self::PublicParameters,
+        is_randomizer: bool,
+        is_verify: bool,
     ) -> Result<Self::StatementSpaceGroupElement> {
         let generator = GroupElement::new(
             language_public_parameters.base,
@@ -59,7 +66,32 @@ impl<
                 .statement_space_public_parameters,
         )?;
 
-        Ok(*witness * generator)
+        if is_verify {
+            Ok(generator.scale_vartime_accelerated(
+                &witness.value(),
+                language_public_parameters.statement_space_public_parameters(),
+            ))
+        } else if let Some(discrete_log_upper_bound_bits) = language_public_parameters
+            .discrete_log_sample_bits
+            .map(|discrete_log_upper_sample_bits| {
+                if is_randomizer {
+                    discrete_log_upper_sample_bits + MAURER_RANDOMIZER_DIFF_BITS
+                } else {
+                    discrete_log_upper_sample_bits
+                }
+            })
+        {
+            Ok(generator.scale_randomized_bounded_accelerated(
+                &witness.value(),
+                language_public_parameters.statement_space_public_parameters(),
+                discrete_log_upper_bound_bits,
+            ))
+        } else {
+            Ok(generator.scale_randomized_accelerated(
+                &witness.value(),
+                language_public_parameters.statement_space_public_parameters(),
+            ))
+        }
     }
 }
 
@@ -69,6 +101,18 @@ pub struct PublicParameters<ScalarPublicParameters, GroupPublicParameters, Group
     pub groups_public_parameters:
         GroupsPublicParameters<ScalarPublicParameters, GroupPublicParameters>,
     pub base: GroupElementValue,
+    pub discrete_log_sample_bits: Option<u32>,
+}
+
+impl<
+        ScalarPublicParameters: Transcribeable + Serialize,
+        GroupPublicParameters: Transcribeable + Serialize,
+        GroupElementValue: Serialize,
+    > Transcribeable
+    for PublicParameters<ScalarPublicParameters, GroupPublicParameters, GroupElementValue>
+{
+    type CanonicalRepresentation =
+        CanonicalPublicParameters<ScalarPublicParameters, GroupPublicParameters, GroupElementValue>;
 }
 
 impl<ScalarPublicParameters, GroupPublicParameters, GroupElementValue>
@@ -78,6 +122,7 @@ impl<ScalarPublicParameters, GroupPublicParameters, GroupElementValue>
         scalar_group_public_parameters: Scalar::PublicParameters,
         group_public_parameters: GroupElement::PublicParameters,
         base: GroupElementValue,
+        discrete_log_sample_bits: Option<u32>,
     ) -> Self
     where
         Scalar: group::GroupElement<PublicParameters = ScalarPublicParameters>
@@ -97,6 +142,7 @@ impl<ScalarPublicParameters, GroupPublicParameters, GroupElementValue>
                 statement_space_public_parameters: group_public_parameters,
             },
             base,
+            discrete_log_sample_bits,
         }
     }
 }
@@ -107,6 +153,37 @@ impl<ScalarPublicParameters, GroupPublicParameters, GroupElementValue>
 {
     fn as_ref(&self) -> &GroupsPublicParameters<ScalarPublicParameters, GroupPublicParameters> {
         &self.groups_public_parameters
+    }
+}
+
+/// The Canonical Representation of the Public Parameters of Schnorr's Knowledge of Discrete Log Maurer Language.
+#[derive(Serialize)]
+pub struct CanonicalPublicParameters<
+    ScalarPublicParameters: Transcribeable + Serialize,
+    GroupPublicParameters: Transcribeable + Serialize,
+    GroupElementValue: Serialize,
+> {
+    canonical_groups_public_parameters:
+        CanonicalGroupsPublicParameters<ScalarPublicParameters, GroupPublicParameters>,
+    base: GroupElementValue,
+    discrete_log_sample_bits: Option<u32>,
+}
+
+impl<
+        ScalarPublicParameters: Transcribeable + Serialize,
+        GroupPublicParameters: Transcribeable + Serialize,
+        GroupElementValue: Serialize,
+    > From<PublicParameters<ScalarPublicParameters, GroupPublicParameters, GroupElementValue>>
+    for CanonicalPublicParameters<ScalarPublicParameters, GroupPublicParameters, GroupElementValue>
+{
+    fn from(
+        value: PublicParameters<ScalarPublicParameters, GroupPublicParameters, GroupElementValue>,
+    ) -> Self {
+        Self {
+            canonical_groups_public_parameters: value.groups_public_parameters.into(),
+            base: value.base,
+            discrete_log_sample_bits: value.discrete_log_sample_bits,
+        }
     }
 }
 
@@ -128,8 +205,9 @@ pub(super) mod private {
 #[cfg(any(test, feature = "test_helpers"))]
 #[allow(clippy::type_complexity)]
 pub mod test_helpers {
-    use crate::language;
     use group::secp256k1;
+
+    use crate::language;
 
     use super::*;
 
@@ -148,6 +226,7 @@ pub mod test_helpers {
             secp256k1_scalar_public_parameters,
             secp256k1_group_public_parameters.clone(),
             secp256k1_group_public_parameters.generator,
+            None,
         )
     }
 }
@@ -160,16 +239,15 @@ mod tests {
     use std::marker::PhantomData;
 
     use crypto_bigint::U256;
-    use rand_core::OsRng;
     use rstest::rstest;
 
-    use group::{secp256k1, GroupElement, PartyID};
+    use group::CyclicGroupElement;
+    use group::{secp256k1, GroupElement, OsCsRng, PartyID};
     use mpc::Weight;
 
     use crate::language::StatementSpaceGroupElement;
     use crate::test_helpers;
     use crate::test_helpers::{batch_verifies, generate_valid_proof, sample_witnesses};
-    use group::CyclicGroupElement;
 
     use super::test_helpers::*;
     use super::*;
@@ -184,7 +262,7 @@ mod tests {
         test_helpers::valid_proof_verifies::<SOUND_PROOFS_REPETITIONS, Lang>(
             &language_public_parameters,
             batch_size,
-            &mut OsRng,
+            &mut OsCsRng,
         )
     }
 
@@ -202,15 +280,20 @@ mod tests {
             let witnesses = sample_witnesses::<SOUND_PROOFS_REPETITIONS, Lang>(
                 &language_public_parameters,
                 batch_size,
-                &mut OsRng,
+                &mut OsCsRng,
             );
 
-            generate_valid_proof(&language_public_parameters, witnesses, &mut OsRng)
+            generate_valid_proof(&language_public_parameters, witnesses, &mut OsCsRng)
         })
         .take(number_of_proofs)
         .unzip();
 
-        batch_verifies(proofs, statements, &language_public_parameters, &mut OsRng);
+        batch_verifies(
+            proofs,
+            statements,
+            &language_public_parameters,
+            &mut OsCsRng,
+        );
     }
 
     #[test]
@@ -218,13 +301,13 @@ mod tests {
         let language_public_parameters32 = language_public_parameters::<32>();
         test_helpers::valid_fischlin_proof_verifies::<32, FischlinLang<32>>(
             &language_public_parameters32,
-            &mut OsRng,
+            &mut OsCsRng,
         );
 
         let language_public_parameters16 = language_public_parameters::<16>();
         test_helpers::valid_fischlin_proof_verifies::<16, FischlinLang<16>>(
             &language_public_parameters16,
-            &mut OsRng,
+            &mut OsCsRng,
         );
     }
 
@@ -234,13 +317,13 @@ mod tests {
 
         test_helpers::invalid_fischlin_proof_fails_verification::<16, FischlinLang<16>>(
             &language_public_parameters16,
-            &mut OsRng,
+            &mut OsCsRng,
         );
 
         let language_public_parameters22 = language_public_parameters::<22>();
         test_helpers::invalid_fischlin_proof_fails_verification::<22, FischlinLang<22>>(
             &language_public_parameters22,
-            &mut OsRng,
+            &mut OsCsRng,
         );
     }
 
@@ -259,7 +342,7 @@ mod tests {
             None,
             &language_public_parameters,
             batch_size,
-            &mut OsRng,
+            &mut OsCsRng,
         )
     }
 
@@ -290,7 +373,7 @@ mod tests {
             &prover_public_parameters,
             &verifier_public_parameters,
             batch_size,
-            &mut OsRng,
+            &mut OsCsRng,
         );
 
         let mut prover_public_parameters = verifier_public_parameters.clone();
@@ -306,7 +389,7 @@ mod tests {
             &prover_public_parameters,
             &verifier_public_parameters,
             batch_size,
-            &mut OsRng,
+            &mut OsCsRng,
         );
     }
 
@@ -320,7 +403,7 @@ mod tests {
         test_helpers::proof_with_incomplete_transcript_fails::<SOUND_PROOFS_REPETITIONS, Lang>(
             &language_public_parameters,
             batch_size,
-            &mut OsRng,
+            &mut OsCsRng,
         )
     }
 
@@ -357,7 +440,7 @@ mod tests {
             threshold,
             party_to_weight,
             batch_size,
-            &mut OsRng,
+            &mut OsCsRng,
         );
     }
 

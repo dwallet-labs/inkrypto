@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use group::{
     BoundedGroupElement, ComputationalSecuritySizedNumber, GroupElement, PartyID, Samplable,
+    Transcribeable,
 };
 pub use multipedersen::MultiPedersen;
 pub use pedersen::Pedersen;
@@ -98,7 +99,8 @@ pub trait HomomorphicCommitmentScheme<const MESSAGE_SPACE_SCALAR_LIMBS: usize>:
                 RandomnessSpacePublicParameters<MESSAGE_SPACE_SCALAR_LIMBS, Self>,
                 CommitmentSpacePublicParameters<MESSAGE_SPACE_SCALAR_LIMBS, Self>,
             >,
-        > + Serialize
+        > + Transcribeable
+        + Serialize
         + for<'r> Deserialize<'r>
         + Clone
         + PartialEq
@@ -221,11 +223,61 @@ pub type CommitmentSpaceValue<const MESSAGE_SPACE_SCALAR_LIMBS: usize, C> = grou
     <C as HomomorphicCommitmentScheme<MESSAGE_SPACE_SCALAR_LIMBS>>::CommitmentSpaceGroupElement,
 >;
 
+#[derive(Serialize)]
+pub struct CanonicalGroupsPublicParameters<
+    MessageSpacePublicParameters: Transcribeable,
+    RandomnessSpacePublicParameters: Transcribeable,
+    CommitmentSpacePublicParameters: Transcribeable,
+> {
+    pub canonical_message_space_public_parameters:
+        MessageSpacePublicParameters::CanonicalRepresentation,
+    pub canonical_randomness_space_public_parameters:
+        RandomnessSpacePublicParameters::CanonicalRepresentation,
+    pub canonical_commitment_space_public_parameters:
+        CommitmentSpacePublicParameters::CanonicalRepresentation,
+}
+
+impl<
+        MessageSpacePublicParameters: Transcribeable,
+        RandomnessSpacePublicParameters: Transcribeable,
+        CommitmentSpacePublicParameters: Transcribeable,
+    >
+    From<
+        GroupsPublicParameters<
+            MessageSpacePublicParameters,
+            RandomnessSpacePublicParameters,
+            CommitmentSpacePublicParameters,
+        >,
+    >
+    for CanonicalGroupsPublicParameters<
+        MessageSpacePublicParameters,
+        RandomnessSpacePublicParameters,
+        CommitmentSpacePublicParameters,
+    >
+{
+    fn from(
+        value: GroupsPublicParameters<
+            MessageSpacePublicParameters,
+            RandomnessSpacePublicParameters,
+            CommitmentSpacePublicParameters,
+        >,
+    ) -> Self {
+        Self {
+            canonical_message_space_public_parameters: value.message_space_public_parameters.into(),
+            canonical_randomness_space_public_parameters: value
+                .randomness_space_public_parameters
+                .into(),
+            canonical_commitment_space_public_parameters: value
+                .commitment_space_public_parameters
+                .into(),
+        }
+    }
+}
+
 #[cfg(any(test, feature = "test_helpers"))]
 pub mod test_helpers {
-    use rand_core::OsRng;
-
     use super::*;
+    use group::OsCsRng;
 
     pub fn test_homomorphic_commitment_scheme<
         const MESSAGE_SPACE_SCALAR_LIMBS: usize,
@@ -235,23 +287,23 @@ pub mod test_helpers {
     ) {
         let first_message = CommitmentScheme::MessageSpaceGroupElement::sample(
             public_parameters.message_space_public_parameters(),
-            &mut OsRng,
+            &mut OsCsRng,
         )
         .unwrap();
         let second_message = CommitmentScheme::MessageSpaceGroupElement::sample(
             public_parameters.message_space_public_parameters(),
-            &mut OsRng,
+            &mut OsCsRng,
         )
         .unwrap();
 
         let first_randomness = CommitmentScheme::RandomnessSpaceGroupElement::sample(
             public_parameters.randomness_space_public_parameters(),
-            &mut OsRng,
+            &mut OsCsRng,
         )
         .unwrap();
         let second_randomness = CommitmentScheme::RandomnessSpaceGroupElement::sample(
             public_parameters.randomness_space_public_parameters(),
-            &mut OsRng,
+            &mut OsCsRng,
         )
         .unwrap();
 

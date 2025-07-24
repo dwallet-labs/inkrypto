@@ -6,13 +6,13 @@ use std::{
     ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign},
 };
 
-use crypto_bigint::{rand_core::CryptoRngCore, NonZero, Uint};
+use crypto_bigint::{NonZero, Uint};
 use serde::{Deserialize, Serialize};
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq, CtOption};
 
 use crate::{
-    BoundedGroupElement, GroupElement, Invert, KnownOrderGroupElement, KnownOrderScalar,
-    LinearlyCombinable, Reduce, Samplable, Scale,
+    BoundedGroupElement, CsRng, GroupElement, Invert, KnownOrderGroupElement, KnownOrderScalar,
+    LinearlyCombinable, Reduce, Samplable, Scale, Transcribeable,
 };
 
 /// Newtype used to comply with Rust's local-type checks.
@@ -24,6 +24,20 @@ pub struct Scalar<const SCALAR_LIMBS: usize, S>(pub S);
 pub struct PublicParameters<PP>(PP);
 
 /// Newtype used to comply with Rust's local-type checks.
+#[derive(Serialize)]
+pub struct CanonicalPublicParameters<PP: Transcribeable>(PP::CanonicalRepresentation);
+
+impl<PP: Transcribeable> From<PublicParameters<PP>> for CanonicalPublicParameters<PP> {
+    fn from(value: PublicParameters<PP>) -> Self {
+        Self(value.0.into())
+    }
+}
+
+impl<PP: Transcribeable> Transcribeable for PublicParameters<PP> {
+    type CanonicalRepresentation = CanonicalPublicParameters<PP>;
+}
+
+/// Newtype used to comply with Rust's local-type checks.
 #[derive(PartialEq, Eq, Clone, Debug, Copy, Default, Serialize, Deserialize)]
 pub struct Value<V>(pub(crate) V);
 
@@ -33,10 +47,6 @@ impl<const SCALAR_LIMBS: usize, S: GroupElement> GroupElement for Scalar<SCALAR_
 
     fn new(value: Self::Value, public_parameters: &Self::PublicParameters) -> crate::Result<Self> {
         Ok(Self(S::new(value.0, &public_parameters.0)?))
-    }
-
-    fn public_parameters(&self) -> Self::PublicParameters {
-        PublicParameters(self.0.public_parameters())
     }
 
     fn neutral(&self) -> Self {
@@ -61,6 +71,26 @@ impl<const SCALAR_LIMBS: usize, S: GroupElement> GroupElement for Scalar<SCALAR_
         Ok(Self(S::neutral_from_public_parameters(
             &public_parameters.0,
         )?))
+    }
+
+    fn scale_bounded_vartime<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        scalar_bits: u32,
+    ) -> Self {
+        self.scale_bounded(scalar, scalar_bits)
+    }
+
+    fn add_randomized(self, other: &Self) -> Self {
+        Self(self.0.add_randomized(&other.0))
+    }
+
+    fn add_vartime(self, other: &Self) -> Self {
+        Self(self.0.add_vartime(&other.0))
+    }
+
+    fn double_vartime(&self) -> Self {
+        Self(self.0.double_vartime())
     }
 }
 impl<const SCALAR_LIMBS: usize, S: GroupElement> LinearlyCombinable for Scalar<SCALAR_LIMBS, S> {
@@ -238,14 +268,6 @@ impl<'r, const SCALAR_LIMBS: usize, S: GroupElement + Mul<&'r S, Output = S>> Mu
     }
 }
 
-impl<const SCALAR_LIMBS: usize, S: GroupElement> From<Scalar<SCALAR_LIMBS, S>>
-    for PublicParameters<S::PublicParameters>
-{
-    fn from(value: Scalar<SCALAR_LIMBS, S>) -> Self {
-        PublicParameters(value.0.into())
-    }
-}
-
 impl<const SCALAR_LIMBS: usize, S: GroupElement> From<Scalar<SCALAR_LIMBS, S>> for Value<S::Value> {
     fn from(value: Scalar<SCALAR_LIMBS, S>) -> Self {
         Value(value.0.into())
@@ -284,15 +306,37 @@ where
     S::Value: From<Uint<SCALAR_LIMBS>> + Into<Uint<SCALAR_LIMBS>>,
     S: Default + ConditionallySelectable,
 {
-    fn scale_generic(&self, scalar: &Self) -> Self {
+    fn scale_randomized_accelerated(
+        &self,
+        scalar: &Self,
+        _public_parameters: &Self::PublicParameters,
+    ) -> Self {
         *scalar * self
     }
 
-    fn scale_bounded_generic(&self, scalar: &Self, scalar_bits: u32) -> Self {
+    fn scale_vartime_accelerated(
+        &self,
+        scalar: &Self,
+        _public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_vartime(&scalar.value().into())
+    }
+
+    fn scale_randomized_bounded_accelerated(
+        &self,
+        scalar: &Self,
+        _public_parameters: &Self::PublicParameters,
+        scalar_bits: u32,
+    ) -> Self {
         self.scale_bounded(&scalar.value().into(), scalar_bits)
     }
 
-    fn scale_bounded_vartime_generic(&self, scalar: &Self, scalar_bits: u32) -> Self {
+    fn scale_bounded_vartime_accelerated(
+        &self,
+        scalar: &Self,
+        _public_parameters: &Self::PublicParameters,
+        scalar_bits: u32,
+    ) -> Self {
         self.scale_bounded_vartime(&scalar.value().into(), scalar_bits)
     }
 }
@@ -303,17 +347,35 @@ where
     S::Value: From<Uint<SCALAR_LIMBS>> + Into<Uint<SCALAR_LIMBS>>,
     S: Default + ConditionallySelectable,
 {
-    fn scale_generic(&self, scalar: &Value<crate::Value<S>>) -> Self {
+    fn scale_randomized_accelerated(
+        &self,
+        scalar: &Value<crate::Value<S>>,
+        _public_parameters: &Self::PublicParameters,
+    ) -> Self {
         self.scale(&(*scalar).into())
     }
 
-    fn scale_bounded_generic(&self, scalar: &Value<crate::Value<S>>, scalar_bits: u32) -> Self {
+    fn scale_vartime_accelerated(
+        &self,
+        scalar: &Value<crate::Value<S>>,
+        _public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_vartime(&(*scalar).into())
+    }
+
+    fn scale_randomized_bounded_accelerated(
+        &self,
+        scalar: &Value<crate::Value<S>>,
+        _public_parameters: &Self::PublicParameters,
+        scalar_bits: u32,
+    ) -> Self {
         self.scale_bounded(&(*scalar).into(), scalar_bits)
     }
 
-    fn scale_bounded_vartime_generic(
+    fn scale_bounded_vartime_accelerated(
         &self,
         scalar: &Value<crate::Value<S>>,
+        _public_parameters: &Self::PublicParameters,
         scalar_bits: u32,
     ) -> Self {
         self.scale_bounded_vartime(&(*scalar).into(), scalar_bits)
@@ -355,9 +417,16 @@ where
 impl<const SCALAR_LIMBS: usize, S: Samplable> Samplable for Scalar<SCALAR_LIMBS, S> {
     fn sample(
         public_parameters: &Self::PublicParameters,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> crate::Result<Self> {
         Ok(Self(S::sample(&public_parameters.0, rng)?))
+    }
+
+    fn sample_randomizer(
+        public_parameters: &Self::PublicParameters,
+        rng: &mut impl CsRng,
+    ) -> crate::Result<Self> {
+        Self::sample(public_parameters, rng)
     }
 }
 

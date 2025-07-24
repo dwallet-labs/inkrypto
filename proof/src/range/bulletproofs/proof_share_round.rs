@@ -17,10 +17,9 @@ use bulletproofs::range_proof_mpc::{
     messages::{BitChallenge, PolyCommitment, ProofShare},
     party::PartyAwaitingPolyChallenge,
 };
-use crypto_bigint::rand_core::CryptoRngCore;
 use curve25519_dalek::{ristretto::RistrettoPoint, traits::Identity};
 use group::helpers::DeduplicateAndSort;
-use group::{ristretto, PartyID};
+use group::{ristretto, CsRng, PartyID};
 
 #[cfg_attr(feature = "test_helpers", derive(Clone))]
 pub struct Party<const NUM_RANGE_CLAIMS: usize> {
@@ -50,7 +49,7 @@ impl<const NUM_RANGE_CLAIMS: usize> ProofShareRoundParty<super::Output<NUM_RANGE
     fn generate_proof_share(
         self,
         decommitments: HashMap<PartyID, Self::Decommitment>,
-        _rng: &mut impl CryptoRngCore,
+        _rng: &mut impl CsRng,
     ) -> Result<(Self::ProofShare, Self::ProofAggregationRoundParty)> {
         let decommitments =
             process_incoming_messages(self.party_id, self.provers.clone(), decommitments, false)?;

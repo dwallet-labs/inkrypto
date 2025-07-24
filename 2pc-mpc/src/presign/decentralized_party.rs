@@ -12,7 +12,7 @@ pub mod nonce_public_share_and_encryption_of_masked_nonce_round;
 pub mod paillier;
 
 /// The public input of the Presign Protocol.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct PublicInput<GroupElementValue, CiphertextSpaceValue, ProtocolPublicParameters> {
     pub dkg_output: dkg::decentralized_party::Output<GroupElementValue, CiphertextSpaceValue>,
     pub protocol_public_parameters: ProtocolPublicParameters,

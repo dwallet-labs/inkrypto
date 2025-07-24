@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 use std::collections::{HashMap, HashSet};
 
-use crypto_bigint::{rand_core::CryptoRngCore, NonZero, U64};
-use crypto_bigint::{ConstChoice, Int, Invert};
+use crypto_bigint::{ConstChoice, Int};
+use crypto_bigint::{NonZero, U64};
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -14,7 +14,7 @@ pub(crate) use benches::{
     benchmark_decryption_key_share, benchmark_decryption_key_share_semi_honest,
 };
 use group::helpers::{DeduplicateAndSort, TryCollectHashMap};
-use group::{GroupElement, PartyID};
+use group::{CsRng, GroupElement, PartyID};
 use homomorphic_encryption::{
     AdditivelyHomomorphicDecryptionKeyShare, AdditivelyHomomorphicEncryptionKey,
     GroupsPublicParametersAccessors,
@@ -66,6 +66,7 @@ impl AdditivelyHomomorphicDecryptionKeyShare<PLAINTEXT_SPACE_SCALAR_LIMBS, Encry
         party_id: PartyID,
         decryption_key_share: Self::SecretKeyShare,
         public_parameters: &Self::PublicParameters,
+        _rng: &mut impl CsRng,
     ) -> Result<Self> {
         let encryption_key =
             EncryptionKey::new(&public_parameters.encryption_scheme_public_parameters)?;
@@ -99,7 +100,7 @@ impl AdditivelyHomomorphicDecryptionKeyShare<PLAINTEXT_SPACE_SCALAR_LIMBS, Encry
 
         // The only way the generate_decryption_share_semi_honst may fail is if the size of the decryption key share is out of the specified bounds. This is never the case as the DKG and Reconfiguration protocols guarantee that the outputted decryption key shares are bounded by the correct values.
         // Thus this check may never fail for a honest party and as such cannot reveal information on the secret share.
-        if let Some(decryption_key_share) = self.decryption_key_share.to_int().into() {
+        if let Some(decryption_key_share) = self.decryption_key_share.try_into_int().into() {
             shamir::over_the_integers::generate_decryption_share_semi_honest(
                 decryption_key_share,
                 &decryption_share_base,
@@ -109,6 +110,9 @@ impl AdditivelyHomomorphicDecryptionKeyShare<PLAINTEXT_SPACE_SCALAR_LIMBS, Encry
                 public_parameters.number_of_parties,
                 public_parameters.n_factorial,
                 &public_parameters.binomial_coefficients,
+                public_parameters
+                    .encryption_scheme_public_parameters
+                    .ciphertext_space_public_parameters(),
                 PaillierModulusSizedNumber::BITS,
             )
         } else {
@@ -120,7 +124,7 @@ impl AdditivelyHomomorphicDecryptionKeyShare<PLAINTEXT_SPACE_SCALAR_LIMBS, Encry
         &self,
         ciphertexts: Vec<CiphertextSpaceGroupElement>,
         public_parameters: &Self::PublicParameters,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> CtOption<(Vec<Self::DecryptionShare>, Self::PartialDecryptionProof)> {
         let n2 = *public_parameters
             .encryption_scheme_public_parameters
@@ -313,7 +317,7 @@ impl AdditivelyHomomorphicDecryptionKeyShare<PLAINTEXT_SPACE_SCALAR_LIMBS, Encry
             (Vec<Self::DecryptionShare>, Self::PartialDecryptionProof),
         >,
         public_parameters: &Self::PublicParameters,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> std::result::Result<Vec<PartyID>, Self::Error> {
         let n2 = *public_parameters
             .encryption_scheme_public_parameters
@@ -574,6 +578,9 @@ impl DecryptionKeyShare {
             public_parameters.number_of_parties,
             public_parameters.n_factorial,
             binomial_coefficient,
+            public_parameters
+                .encryption_scheme_public_parameters
+                .ciphertext_space_public_parameters(),
             PaillierModulusSizedNumber::BITS,
         );
 
@@ -690,9 +697,9 @@ pub mod test_helpers {
 
     use crypto_bigint::{CheckedMul, NonZero, RandomMod};
     use rand::seq::IteratorRandom;
-    use rand_core::OsRng;
     use rstest::rstest;
 
+    use group::OsCsRng;
     use mpc::secret_sharing::shamir::over_the_integers::{
         secret_key_share_size_upper_bound, SecretKeyShareSizedInteger,
     };
@@ -741,6 +748,7 @@ pub mod test_helpers {
                 )
                 .unwrap(),
                 base,
+                encryption_scheme_public_parameters.ciphertext_space_public_parameters(),
                 PaillierModulusSizedNumber::BITS,
             );
 
@@ -776,7 +784,8 @@ pub mod test_helpers {
             .map(|(party_id, share)| {
                 (
                     party_id,
-                    DecryptionKeyShare::new(party_id, share, &public_parameters).unwrap(),
+                    DecryptionKeyShare::new(party_id, share, &public_parameters, &mut OsCsRng)
+                        .unwrap(),
                 )
             })
             .collect();
@@ -798,7 +807,7 @@ pub mod test_helpers {
         .unwrap();
 
         let (decryption_shares, proof) = decryption_key_share
-            .generate_decryption_shares(vec![ciphertext], &public_parameters, &mut OsRng)
+            .generate_decryption_shares(vec![ciphertext], &public_parameters, &mut OsCsRng)
             .unwrap();
 
         let decryption_share_base = CIPHERTEXT
@@ -832,7 +841,7 @@ pub mod test_helpers {
                 decryption_share_base,
                 public_verification_key,
                 decryption_share,
-                &mut OsRng,
+                &mut OsCsRng,
             )
             .is_ok());
     }
@@ -849,7 +858,8 @@ pub mod test_helpers {
             .map(|(party_id, share)| {
                 (
                     party_id,
-                    DecryptionKeyShare::new(party_id, share, &public_parameters).unwrap(),
+                    DecryptionKeyShare::new(party_id, share, &public_parameters, &mut OsCsRng)
+                        .unwrap(),
                 )
             })
             .collect();
@@ -863,7 +873,7 @@ pub mod test_helpers {
 
         let plaintexts: Vec<_> = iter::repeat_with(|| {
             PlaintextSpaceGroupElement::new(
-                LargeBiPrimeSizedNumber::random_mod(&mut OsRng, &NonZero::new(N).unwrap()),
+                LargeBiPrimeSizedNumber::random_mod(&mut OsCsRng, &NonZero::new(N).unwrap()),
                 public_parameters
                     .encryption_scheme_public_parameters
                     .plaintext_space_public_parameters(),
@@ -880,7 +890,8 @@ pub mod test_helpers {
                     .encrypt(
                         m,
                         &public_parameters.encryption_scheme_public_parameters,
-                        &mut OsRng,
+                        false,
+                        &mut OsCsRng,
                     )
                     .unwrap();
                 ciphertext
@@ -888,7 +899,7 @@ pub mod test_helpers {
             .collect();
 
         let (decryption_shares, proof) = decryption_key_share
-            .generate_decryption_shares(ciphertexts.clone(), &public_parameters, &mut OsRng)
+            .generate_decryption_shares(ciphertexts.clone(), &public_parameters, &mut OsCsRng)
             .unwrap();
 
         let decryption_share_bases: Vec<PaillierModulusSizedNumber> = ciphertexts
@@ -932,7 +943,7 @@ pub mod test_helpers {
                     .into_iter()
                     .zip(decryption_shares)
                     .collect(),
-                &mut OsRng,
+                &mut OsCsRng,
             )
             .is_ok());
     }
@@ -953,7 +964,8 @@ pub mod test_helpers {
             .map(|(party_id, share)| {
                 (
                     party_id,
-                    DecryptionKeyShare::new(party_id, share, &public_parameters).unwrap(),
+                    DecryptionKeyShare::new(party_id, share, &public_parameters, &mut OsCsRng)
+                        .unwrap(),
                 )
             })
             .collect();
@@ -963,7 +975,7 @@ pub mod test_helpers {
             batch_size,
             decryption_key_shares,
             &public_parameters,
-            &mut OsRng,
+            &mut OsCsRng,
         );
     }
 }
@@ -971,7 +983,8 @@ pub mod test_helpers {
 #[cfg(feature = "benchmarking")]
 mod benches {
     use criterion::Criterion;
-    use rand_core::OsRng;
+
+    use group::OsCsRng;
 
     use crate::{test_helpers::deal_trusted_shares, LargeBiPrimeSizedNumber};
 
@@ -993,7 +1006,8 @@ mod benches {
                 .map(|(party_id, share)| {
                     (
                         party_id,
-                        DecryptionKeyShare::new(party_id, share, &public_parameters).unwrap(),
+                        DecryptionKeyShare::new(party_id, share, &public_parameters, &mut OsCsRng)
+                            .unwrap(),
                     )
                 })
                 .collect();
@@ -1006,7 +1020,7 @@ mod benches {
                 &public_parameters,
                 "tiresias",
                 c,
-                &mut OsRng,
+                &mut OsCsRng,
             );
         }
     }
@@ -1029,7 +1043,8 @@ mod benches {
                 .map(|(party_id, share)| {
                     (
                         party_id,
-                        DecryptionKeyShare::new(party_id, share, &public_parameters).unwrap(),
+                        DecryptionKeyShare::new(party_id, share, &public_parameters, &mut OsCsRng)
+                            .unwrap(),
                     )
                 })
                 .collect();
@@ -1045,7 +1060,7 @@ mod benches {
                     true,
                     "tiresias",
                     c,
-                    &mut OsRng,
+                    &mut OsCsRng,
                 );
 
                 homomorphic_encryption::test_helpers::benchmark_decryption_key_share_semi_honest(
@@ -1058,7 +1073,7 @@ mod benches {
                     false,
                     "tiresias",
                     c,
-                    &mut OsRng,
+                    &mut OsCsRng,
                 );
             }
         }

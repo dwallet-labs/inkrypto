@@ -1,27 +1,19 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
-use crypto_bigint::U256;
-use group::PartyID;
+use std::collections::{HashMap, HashSet};
 use std::ops::Neg;
 
-use mpc::{AsynchronousRoundResult, AsynchronouslyAdvanceable};
-use rand_core::OsRng;
-use std::collections::{HashMap, HashSet};
-use twopc_mpc::sign::centralized_party::message::class_groups::Message as SignMessage;
-
-use twopc_mpc::class_groups::ProtocolPublicParameters;
-
-use twopc_mpc::presign::decentralized_party::class_groups::asynchronous;
-
-use twopc_mpc::sign::centralized_party::signature_homomorphic_evaluation_round;
-use twopc_mpc::sign::centralized_party::signature_homomorphic_evaluation_round::PublicInput as SignCentralizedPartyPublicInput;
-use twopc_mpc::sign::decentralized_party::class_groups::asynchronous::Party as DecentralizedSignParty;
+use crypto_bigint::U256;
+use tiny_keccak::{Hasher, Keccak};
 
 use common::run_presign_protocol;
 use common::{DecentralizedPartyContext, ProtocolContext};
+use group::{OsCsRng, PartyID};
 use mpc::two_party::Round;
-use tiny_keccak::{Hasher, Keccak};
+use mpc::{AsynchronousRoundResult, AsynchronouslyAdvanceable};
+use twopc_mpc::class_groups::ProtocolPublicParameters;
+use twopc_mpc::presign::decentralized_party::class_groups::asynchronous;
 use twopc_mpc::secp256k1::class_groups::{
     FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
 };
@@ -29,6 +21,10 @@ use twopc_mpc::secp256k1::GroupElement as SecpGroupElement;
 use twopc_mpc::secp256k1::Scalar as SecpScalar;
 use twopc_mpc::secp256k1::MESSAGE_LIMBS;
 use twopc_mpc::secp256k1::SCALAR_LIMBS;
+use twopc_mpc::sign::centralized_party::message::class_groups::Message as SignMessage;
+use twopc_mpc::sign::centralized_party::signature_homomorphic_evaluation_round;
+use twopc_mpc::sign::centralized_party::signature_homomorphic_evaluation_round::PublicInput as SignCentralizedPartyPublicInput;
+use twopc_mpc::sign::decentralized_party::class_groups::asynchronous::Party as DecentralizedSignParty;
 
 mod common;
 
@@ -101,7 +97,7 @@ pub type ProtocolParams = ProtocolPublicParameters<
 ///
 /// The final signature (r, s)
 pub fn run_sign_protocol(
-    rng: &mut OsRng,
+    rng: &mut OsCsRng,
     protocol_context: &mut ProtocolContext,
     hashed_message: SecpScalar,
 ) -> Result<(SecpScalar, SecpScalar), DecentralizedSignError> {
@@ -139,7 +135,7 @@ pub fn run_sign_protocol(
 /// # Returns
 /// The signature message from the centralized party
 pub fn execute_sign_phase1(
-    rng: &mut OsRng,
+    rng: &mut OsCsRng,
     protocol_context: &mut ProtocolContext,
     hashed_message: &SecpScalar,
 ) -> Result<
@@ -153,7 +149,7 @@ pub fn execute_sign_phase1(
     DecentralizedSignError,
 > {
     println!("Starting Sign Phase 1: Centralized party signature generation");
-    println!("Hashed message to sign: {:?}", hashed_message);
+    println!("Hashed message to sign: {hashed_message:?}");
 
     // Get the centralized party DKG output
     let dkg_context = protocol_context
@@ -205,7 +201,7 @@ pub fn execute_sign_phase1(
 /// # Returns
 /// The final signature (r, s)
 fn execute_sign_phase2(
-    rng: &mut OsRng,
+    rng: &mut OsCsRng,
     protocol_context: &mut ProtocolContext,
     sign_message: &twopc_mpc::sign::centralized_party::message::class_groups::Message<
         { SCALAR_LIMBS },
@@ -222,7 +218,7 @@ fn execute_sign_phase2(
         "Number of participating parties: {}",
         participating_party_ids.len()
     );
-    println!("Participating party IDs: {:?}", participating_party_ids);
+    println!("Participating party IDs: {participating_party_ids:?}");
 
     // Initialize message storage for the decentralized parties
     let mut messages: Vec<HashMap<PartyID, DecentralizedSignMessage>> = vec![];
@@ -247,10 +243,7 @@ fn execute_sign_phase2(
     // Designated party finalizes the signature
     let designated_party_id = participating_party_ids[0];
     println!("\nStarting signature finalization");
-    println!(
-        "Designated party ID for finalization: {}",
-        designated_party_id
-    );
+    println!("Designated party ID for finalization: {designated_party_id}");
 
     // Find the party context for the designated party
     let party_context = protocol_context
@@ -311,6 +304,7 @@ fn execute_sign_phase2(
         messages.clone(),
         Some(virtual_party_id_to_decryption_key_share), // No private input for the final round
         &sign_public_input,
+        HashMap::new(),
         rng,
     )
     .expect("Sign finalization should complete successfully");
@@ -324,10 +318,7 @@ fn execute_sign_phase2(
             if malicious_parties.is_empty() {
                 println!("✓ No malicious parties detected during finalization");
             } else {
-                println!(
-                    "! Warning: Malicious parties detected: {:?}",
-                    malicious_parties
-                );
+                println!("! Warning: Malicious parties detected: {malicious_parties:?}");
             }
             println!("Signature components:");
             println!("  r: {:?}", public_output.0);
@@ -343,7 +334,7 @@ fn execute_sign_phase2(
 /// # Returns
 /// Map of party IDs to their generated messages for this round
 fn execute_sign_round(
-    rng: &mut OsRng,
+    rng: &mut OsCsRng,
     protocol_context: &mut ProtocolContext,
     sign_message: &twopc_mpc::sign::centralized_party::message::class_groups::Message<
         { SCALAR_LIMBS },
@@ -377,12 +368,11 @@ fn execute_sign_round(
             } => {
                 assert!(
                     malicious_parties.is_empty(),
-                    "No parties should be flagged as malicious in Sign {}",
-                    round_name
+                    "No parties should be flagged as malicious in Sign {round_name}"
                 );
                 round_messages.insert(party_id, message);
             }
-            _ => panic!("Expected Advance result in Sign {}", round_name),
+            _ => panic!("Expected Advance result in Sign {round_name}"),
         }
     }
 
@@ -391,7 +381,7 @@ fn execute_sign_round(
 
 /// Advance a sign party with the given inputs
 fn advance_sign_party(
-    rng: &mut OsRng,
+    rng: &mut OsCsRng,
     party_context: &DecentralizedPartyContext,
     messages: &[HashMap<PartyID, DecentralizedSignMessage>],
     sign_message: &twopc_mpc::sign::centralized_party::message::class_groups::Message<
@@ -456,15 +446,17 @@ fn advance_sign_party(
         messages.to_vec(),
         Some(private_input),
         &sign_public_input,
+        HashMap::new(),
         rng,
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use group::GroupElement;
     use common::run_dkg_protocol;
+    use group::{GroupElement, OsCsRng};
+
+    use super::*;
 
     /// This test demonstrates the complete workflow:
     /// 1. First, the DKG protocol is executed to establish key shares
@@ -474,7 +466,7 @@ mod tests {
     /// The test uses a 2-out-of-3 threshold scheme.
     #[test]
     fn test_dkg_and_presign_and_sign() {
-        let mut rng = OsRng;
+        let mut rng = OsCsRng;
         let num_parties = 3;
         let threshold = 2;
         let session_id = 12345;
@@ -546,7 +538,7 @@ mod tests {
     /// 3. Verify that the modified signatures are rejected
     #[test]
     fn test_bad_signature_verification() {
-        let mut rng = OsRng;
+        let mut rng = OsCsRng;
         let num_parties = 3;
         let threshold = 2;
         let session_id = 12345;
@@ -638,7 +630,7 @@ mod tests {
     /// 3. Try to verify the signature with the wrong public key
     #[test]
     fn test_wrong_key_signature_verification() {
-        let mut rng = OsRng;
+        let mut rng = OsCsRng;
         let num_parties = 3;
         let threshold = 2;
         let session_id = 12345;
@@ -705,7 +697,7 @@ mod tests {
 
     #[test]
     fn test_sign_malicious_parameter_detection() {
-        let mut rng = OsRng;
+        let mut rng = OsCsRng;
         let num_parties = 3;
         let threshold = 2;
 
@@ -770,7 +762,7 @@ mod tests {
         ];
 
         for param_name in &parameters {
-            println!("Testing malicious parameter: {}", param_name);
+            println!("Testing malicious parameter: {param_name}");
 
             // Create a hybrid message with just one malicious parameter
             let hybrid_message = create_hybrid_sign_message(
@@ -789,11 +781,10 @@ mod tests {
 
             assert!(
                 detected,
-                "Malicious parameter '{}' should have been detected",
-                param_name
+                "Malicious parameter '{param_name}' should have been detected"
             );
 
-            println!("✓ Successfully detected malicious {}", param_name);
+            println!("✓ Successfully detected malicious {param_name}");
         }
     }
 
@@ -894,7 +885,7 @@ mod tests {
             "decentralized_party_nonce_public_share_displacement_proof" => {
                 hybrid.decentralized_party_nonce_public_share_displacement_proof = malicious_message.decentralized_party_nonce_public_share_displacement_proof.clone();
             },
-            _ => panic!("Unknown parameter name: {}", parameter_name),
+            _ => panic!("Unknown parameter name: {parameter_name}"),
         }
 
         hybrid
@@ -902,7 +893,7 @@ mod tests {
 
     // Test if the malicious parameter is detected by any party
     fn test_malicious_parameter_detection(
-        rng: &mut OsRng,
+        rng: &mut OsCsRng,
         protocol_context: &ProtocolContext,
         sign_message: &SignMessage<
             SCALAR_LIMBS,
@@ -930,7 +921,7 @@ mod tests {
                 }
                 Err(e) => {
                     detected = true;
-                    println!("Error detected: {:?}", e);
+                    println!("Error detected: {e:?}");
                     break;
                 }
                 _ => {}

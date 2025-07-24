@@ -7,13 +7,6 @@ use std::{
     ops::Neg,
 };
 
-use super::{COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS, RANGE_CLAIM_BITS};
-use crate::{
-    aggregation,
-    aggregation::{process_incoming_messages, ProofAggregationRoundParty},
-    range::CommitmentScheme,
-    Error, Result,
-};
 use bulletproofs::{
     exp_iter,
     range_proof_mpc::{
@@ -22,10 +15,19 @@ use bulletproofs::{
         MPCError,
     },
 };
-use crypto_bigint::rand_core::CryptoRngCore;
 use curve25519_dalek::scalar::Scalar;
+
 use group::helpers::DeduplicateAndSort;
-use group::{ristretto, PartyID};
+use group::{ristretto, CsRng, PartyID};
+
+use crate::{
+    aggregation,
+    aggregation::{process_incoming_messages, ProofAggregationRoundParty},
+    range::CommitmentScheme,
+    Error, Result,
+};
+
+use super::{COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS, RANGE_CLAIM_BITS};
 
 #[cfg_attr(feature = "test_helpers", derive(Clone))]
 pub struct Party<const NUM_RANGE_CLAIMS: usize> {
@@ -64,7 +66,7 @@ impl<const NUM_RANGE_CLAIMS: usize> ProofAggregationRoundParty<Output<NUM_RANGE_
     fn aggregate_proof_shares(
         self,
         proof_shares: HashMap<PartyID, Self::ProofShare>,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<Output<NUM_RANGE_CLAIMS>> {
         let proof_shares =
             process_incoming_messages(self.party_id, self.provers.clone(), proof_shares, false)?;
@@ -90,9 +92,8 @@ impl<const NUM_RANGE_CLAIMS: usize> ProofAggregationRoundParty<Output<NUM_RANGE_
             .flat_map(|(_, proof_shares)| proof_shares)
             .collect();
 
-        let l_vec: Vec<_> = iter::repeat(self.bit_challenge.z.neg())
-            .take(RANGE_CLAIM_BITS)
-            .collect();
+        let l_vec: Vec<_> =
+            std::iter::repeat_n(self.bit_challenge.z.neg(), RANGE_CLAIM_BITS).collect();
 
         // Add simulated party's messages.
         let mut j = proof_shares.len();
@@ -115,7 +116,7 @@ impl<const NUM_RANGE_CLAIMS: usize> ProofAggregationRoundParty<Output<NUM_RANGE_
                 // j+n-1}+z^{2+j}2^{n-1}) $$
                 let r_vec: Vec<_> = (0..RANGE_CLAIM_BITS)
                     .map(|i| {
-                        ((self.bit_challenge.z - Scalar::from(1u64))
+                        ((self.bit_challenge.z - Scalar::ONE)
                             * powers_of_y[j * RANGE_CLAIM_BITS + i])
                             + (powers_of_z[j + 2] * powers_of_2[i])
                     })
@@ -130,8 +131,8 @@ impl<const NUM_RANGE_CLAIMS: usize> ProofAggregationRoundParty<Output<NUM_RANGE_
                     .unwrap();
 
                 let proof_share = ProofShare {
-                    e_blinding: Scalar::zero(),
-                    t_x_blinding: Scalar::zero(),
+                    e_blinding: Scalar::ZERO,
+                    t_x_blinding: Scalar::ZERO,
                     r_vec,
                     l_vec: l_vec.clone(),
                     t_x,

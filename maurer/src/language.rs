@@ -4,7 +4,7 @@ use core::fmt::Debug;
 
 use serde::Serialize;
 
-use group::{ComputationalSecuritySizedNumber, GroupElement, Samplable};
+use group::{ComputationalSecuritySizedNumber, GroupElement, Samplable, Transcribeable};
 use proof::GroupsPublicParameters;
 
 use crate::{proof::BIT_SOUNDNESS_PROOFS_REPETITIONS, Error, Result};
@@ -39,7 +39,7 @@ pub trait Language<
             group::PublicParameters<Self::WitnessSpaceGroupElement>,
             group::PublicParameters<Self::StatementSpaceGroupElement>,
         >,
-    > + Serialize
+    > + Serialize + Transcribeable
     + PartialEq + Eq + Debug
     + Clone + Send + Sync;
 
@@ -70,6 +70,8 @@ pub trait Language<
     fn homomorphose(
         witness: &Self::WitnessSpaceGroupElement,
         language_public_parameters: &Self::PublicParameters,
+        is_randomizer: bool,
+        is_verify: bool
     ) -> Result<Self::StatementSpaceGroupElement>;
 }
 
@@ -99,15 +101,15 @@ pub type StatementSpaceValue<const REPETITIONS: usize, L> =
 pub(super) mod test_helpers {
     use core::iter;
 
-    use crypto_bigint::rand_core::CryptoRngCore;
     use proof::GroupsPublicParametersAccessors;
 
     use super::*;
+    use group::CsRng;
 
     pub fn sample_witnesses<const REPETITIONS: usize, Lang: Language<REPETITIONS>>(
         language_public_parameters: &Lang::PublicParameters,
         batch_size: usize,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Vec<Lang::WitnessSpaceGroupElement> {
         iter::repeat_with(|| {
             Lang::WitnessSpaceGroupElement::sample(
@@ -122,7 +124,7 @@ pub(super) mod test_helpers {
 
     pub fn sample_witness<const REPETITIONS: usize, Lang: Language<REPETITIONS>>(
         language_public_parameters: &Lang::PublicParameters,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Lang::WitnessSpaceGroupElement {
         let witnesses = sample_witnesses::<REPETITIONS, Lang>(language_public_parameters, 1, rng);
 

@@ -5,9 +5,12 @@ use std::ops::Mul;
 
 use serde::{Deserialize, Serialize};
 
-use group::{self_product, BoundedGroupElement, Samplable};
+use group::{self_product, BoundedGroupElement, Samplable, Transcribeable};
 
-use crate::{pedersen, GroupsPublicParameters, HomomorphicCommitmentScheme, Pedersen};
+use crate::{
+    pedersen, CanonicalGroupsPublicParameters, GroupsPublicParameters, HomomorphicCommitmentScheme,
+    Pedersen,
+};
 
 /// A Batched Pedersen Commitment:
 /// $$\Com_\pp(m;\rho):=\Ped.\Com_{\GG,G,H,q}(\vec{m},\vec{\rho})=
@@ -79,7 +82,7 @@ pub type CommitmentSpaceGroupElement<GroupElement> = GroupElement;
 pub type CommitmentSpacePublicParameters<GroupElement> =
     group::PublicParameters<CommitmentSpaceGroupElement<GroupElement>>;
 
-/// The Public Parameters of a Pedersen Commitment.
+/// The Public Parameters of a Multi-Pedersen Commitment.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub struct PublicParameters<
     const BATCH_SIZE: usize,
@@ -181,12 +184,89 @@ impl<const BATCH_SIZE: usize, GroupElementValue, ScalarPublicParameters, GroupPu
     }
 }
 
+/// The Canonical Representation of the Public Parameters of a Multi-Pedersen Commitment.
+#[derive(Serialize)]
+pub struct CanonicalPublicParameters<
+    const BATCH_SIZE: usize,
+    GroupElementValue: Serialize,
+    ScalarPublicParameters: Transcribeable,
+    GroupPublicParameters: Transcribeable,
+> {
+    canonical_groups_public_parameters: CanonicalGroupsPublicParameters<
+        self_product::PublicParameters<BATCH_SIZE, ScalarPublicParameters>,
+        self_product::PublicParameters<BATCH_SIZE, ScalarPublicParameters>,
+        self_product::PublicParameters<BATCH_SIZE, GroupPublicParameters>,
+    >,
+    canonical_pedersen_public_parameters: pedersen::CanonicalPublicParameters<
+        1,
+        GroupElementValue,
+        ScalarPublicParameters,
+        GroupPublicParameters,
+    >,
+}
+
+impl<
+        const BATCH_SIZE: usize,
+        GroupElementValue: Serialize,
+        ScalarPublicParameters: Transcribeable,
+        GroupPublicParameters: Transcribeable,
+    >
+    From<
+        PublicParameters<
+            BATCH_SIZE,
+            GroupElementValue,
+            ScalarPublicParameters,
+            GroupPublicParameters,
+        >,
+    >
+    for CanonicalPublicParameters<
+        BATCH_SIZE,
+        GroupElementValue,
+        ScalarPublicParameters,
+        GroupPublicParameters,
+    >
+{
+    fn from(
+        value: PublicParameters<
+            BATCH_SIZE,
+            GroupElementValue,
+            ScalarPublicParameters,
+            GroupPublicParameters,
+        >,
+    ) -> Self {
+        Self {
+            canonical_groups_public_parameters: value.groups_public_parameters.into(),
+            canonical_pedersen_public_parameters: value.pedersen_public_parameters.into(),
+        }
+    }
+}
+
+impl<
+        const BATCH_SIZE: usize,
+        GroupElementValue: Serialize,
+        ScalarPublicParameters: Transcribeable + Serialize,
+        GroupPublicParameters: Transcribeable + Serialize,
+    > Transcribeable
+    for PublicParameters<
+        BATCH_SIZE,
+        GroupElementValue,
+        ScalarPublicParameters,
+        GroupPublicParameters,
+    >
+{
+    type CanonicalRepresentation = CanonicalPublicParameters<
+        BATCH_SIZE,
+        GroupElementValue,
+        ScalarPublicParameters,
+        GroupPublicParameters,
+    >;
+}
+
 #[cfg(test)]
 mod tests {
     use bulletproofs::PedersenGens;
-    use rand_core::OsRng;
 
-    use group::ristretto;
+    use group::{ristretto, OsCsRng};
 
     use crate::Pedersen;
 
@@ -197,8 +277,9 @@ mod tests {
         let scalar_public_parameters = ristretto::scalar::PublicParameters::default();
         let group_public_parameters = ristretto::group_element::PublicParameters::default();
 
-        let message = ristretto::Scalar::sample(&scalar_public_parameters, &mut OsRng).unwrap();
-        let randomness = ristretto::Scalar::sample(&scalar_public_parameters, &mut OsRng).unwrap();
+        let message = ristretto::Scalar::sample(&scalar_public_parameters, &mut OsCsRng).unwrap();
+        let randomness =
+            ristretto::Scalar::sample(&scalar_public_parameters, &mut OsCsRng).unwrap();
 
         let commitment_generators = PedersenGens::default();
 

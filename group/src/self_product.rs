@@ -7,13 +7,13 @@ use std::{
     ops::{Add, AddAssign, BitAnd, Mul, Neg, Sub, SubAssign},
 };
 
-use crypto_bigint::{rand_core::CryptoRngCore, Uint};
+use crypto_bigint::{Int, Uint};
 use serde::{Deserialize, Serialize};
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 
 use crate::{
-    helpers::FlatMapResults, scalar, scalar::Scalar, BoundedGroupElement, GroupElement as _,
-    KnownOrderGroupElement, KnownOrderScalar, LinearlyCombinable, Samplable, Scale,
+    helpers::FlatMapResults, scalar, scalar::Scalar, BoundedGroupElement, CsRng,
+    KnownOrderGroupElement, KnownOrderScalar, LinearlyCombinable, Samplable, Scale, Transcribeable,
 };
 
 /// An element of the Self Product of the Group `G` by Itself.
@@ -26,9 +26,9 @@ where
 {
     fn sample(
         public_parameters: &Self::PublicParameters,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> crate::Result<Self> {
-        let public_parameters = &public_parameters.public_parameters;
+        let public_parameters = &public_parameters.0;
 
         if N == 0 {
             return Err(crate::Error::InvalidPublicParameters);
@@ -38,21 +38,52 @@ where
             array::from_fn(|_| G::sample(public_parameters, rng)).flat_map_results()?,
         ))
     }
+
+    fn sample_randomizer(
+        public_parameters: &Self::PublicParameters,
+        rng: &mut impl CsRng,
+    ) -> crate::Result<Self> {
+        let public_parameters = &public_parameters.0;
+
+        if N == 0 {
+            return Err(crate::Error::InvalidPublicParameters);
+        }
+
+        Ok(Self(
+            array::from_fn(|_| G::sample_randomizer(public_parameters, rng)).flat_map_results()?,
+        ))
+    }
 }
 
 /// The public parameters of the Self Product of the Group `G` by Itself.
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Serialize, Deserialize)]
-pub struct PublicParameters<const N: usize, PP> {
-    pub public_parameters: PP,
-    pub size: usize,
+pub struct PublicParameters<const N: usize, PP>(pub PP);
+
+/// The canonical representation of the public parameters of the Self Product of the Group `G` by Itself.
+#[derive(Serialize)]
+pub struct CanonicalPublicParameters<const N: usize, PP: Transcribeable> {
+    pub canonical_public_parameters: PP::CanonicalRepresentation,
+    pub size: u64,
+}
+
+impl<const N: usize, PP: Transcribeable> From<PublicParameters<N, PP>>
+    for CanonicalPublicParameters<N, PP>
+{
+    fn from(value: PublicParameters<N, PP>) -> Self {
+        Self {
+            canonical_public_parameters: value.0.into(),
+            size: N.try_into().unwrap(),
+        }
+    }
+}
+
+impl<const N: usize, PP: Transcribeable> Transcribeable for PublicParameters<N, PP> {
+    type CanonicalRepresentation = CanonicalPublicParameters<N, PP>;
 }
 
 impl<const N: usize, PP> PublicParameters<N, PP> {
     pub fn new(public_parameters: PP) -> Self {
-        Self {
-            public_parameters,
-            size: N,
-        }
+        Self(public_parameters)
     }
 }
 
@@ -169,15 +200,8 @@ impl<const N: usize, G: crate::GroupElement> crate::GroupElement for GroupElemen
 
     type PublicParameters = PublicParameters<N, G::PublicParameters>;
 
-    fn public_parameters(&self) -> Self::PublicParameters {
-        // in [`Self::new()`] we used the same public parameters for all elements, so we just pick
-        // the first calling `unwrap()` is safe here because we assure to get at least two
-        // values, i.e., this struct cannot be instantiated for `N == 0`.
-        PublicParameters::new(self.0.first().unwrap().public_parameters())
-    }
-
     fn new(value: Self::Value, public_parameters: &Self::PublicParameters) -> crate::Result<Self> {
-        let public_parameters = &public_parameters.public_parameters;
+        let public_parameters = &public_parameters.0;
 
         if N == 0 {
             return Err(crate::Error::InvalidPublicParameters);
@@ -198,7 +222,7 @@ impl<const N: usize, G: crate::GroupElement> crate::GroupElement for GroupElemen
     fn neutral_from_public_parameters(
         public_parameters: &Self::PublicParameters,
     ) -> crate::Result<Self> {
-        G::neutral_from_public_parameters(&public_parameters.public_parameters)
+        G::neutral_from_public_parameters(&public_parameters.0)
             .map(|neutral| Self(array::from_fn(|_| neutral)))
     }
 
@@ -213,8 +237,42 @@ impl<const N: usize, G: crate::GroupElement> crate::GroupElement for GroupElemen
         )
     }
 
+    fn scale_bounded_vartime<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        scalar_bits: u32,
+    ) -> Self {
+        Self(
+            self.0
+                .map(|element| element.scale_bounded_vartime(scalar, scalar_bits)),
+        )
+    }
+
+    fn add_randomized(self, other: &Self) -> Self {
+        let mut result: [G; N] = self.0;
+
+        for (i, element) in result.iter_mut().enumerate() {
+            *element = element.add_randomized(&other.0[i]);
+        }
+
+        Self(result)
+    }
+
+    fn add_vartime(self, other: &Self) -> Self {
+        let mut result: [G; N] = self.0;
+
+        for (i, element) in result.iter_mut().enumerate() {
+            *element = element.add_vartime(&other.0[i]);
+        }
+
+        Self(result)
+    }
+
     fn double(&self) -> Self {
         Self(self.0.map(|element| element.double()))
+    }
+    fn double_vartime(&self) -> Self {
+        Self(self.0.map(|element| element.double_vartime()))
     }
 }
 
@@ -240,14 +298,6 @@ impl<
 {
     fn from(value: [OtherElementValue; N]) -> Self {
         Value(value.map(GroupElementValue::from))
-    }
-}
-
-impl<const N: usize, G: crate::GroupElement> From<GroupElement<N, G>>
-    for PublicParameters<N, G::PublicParameters>
-{
-    fn from(value: GroupElement<N, G>) -> Self {
-        value.public_parameters()
     }
 }
 
@@ -353,7 +403,7 @@ impl<const N: usize, const SCALAR_LIMBS: usize, G: BoundedGroupElement<SCALAR_LI
     BoundedGroupElement<SCALAR_LIMBS> for GroupElement<N, G>
 {
     fn lower_bound(public_parameters: &Self::PublicParameters) -> Uint<SCALAR_LIMBS> {
-        G::lower_bound(&public_parameters.public_parameters)
+        G::lower_bound(&public_parameters.0)
     }
 }
 
@@ -401,20 +451,53 @@ where
         + Copy,
     S: Default + ConditionallySelectable,
 {
-    fn scale_generic(&self, scalar: &Scalar<SCALAR_LIMBS, S>) -> Self {
-        *scalar * self
-    }
-
-    fn scale_bounded_generic(&self, scalar: &Scalar<SCALAR_LIMBS, S>, scalar_bits: u32) -> Self {
-        self.scale_bounded(&scalar.value().into(), scalar_bits)
-    }
-
-    fn scale_bounded_vartime_generic(
+    fn scale_randomized_accelerated(
         &self,
         scalar: &Scalar<SCALAR_LIMBS, S>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0.map(|element| {
+                element.scale_randomized_accelerated(&scalar.0, &public_parameters.0)
+            }),
+        )
+    }
+
+    fn scale_vartime_accelerated(
+        &self,
+        scalar: &Scalar<SCALAR_LIMBS, S>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .map(|element| element.scale_vartime_accelerated(&scalar.0, &public_parameters.0)),
+        )
+    }
+
+    fn scale_randomized_bounded_accelerated(
+        &self,
+        scalar: &Scalar<SCALAR_LIMBS, S>,
+        public_parameters: &Self::PublicParameters,
         scalar_bits: u32,
     ) -> Self {
-        self.scale_bounded_vartime(&scalar.value().into(), scalar_bits)
+        Self(self.0.map(|element| {
+            element.scale_randomized_bounded_accelerated(
+                &scalar.0,
+                &public_parameters.0,
+                scalar_bits,
+            )
+        }))
+    }
+
+    fn scale_bounded_vartime_accelerated(
+        &self,
+        scalar: &Scalar<SCALAR_LIMBS, S>,
+        public_parameters: &Self::PublicParameters,
+        scalar_bits: u32,
+    ) -> Self {
+        Self(self.0.map(|element| {
+            element.scale_bounded_vartime_accelerated(&scalar.0, &public_parameters.0, scalar_bits)
+        }))
     }
 }
 
@@ -431,22 +514,149 @@ where
         + Copy,
     G: Scale<V>,
 {
-    fn scale_generic(&self, scalar: &scalar::Value<V>) -> Self {
-        Self(self.0.map(|element| element.scale_generic(&scalar.0)))
-    }
-
-    fn scale_bounded_generic(&self, scalar: &scalar::Value<V>, scalar_bits: u32) -> Self {
+    fn scale_randomized_accelerated(
+        &self,
+        scalar: &scalar::Value<V>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
         Self(
-            self.0
-                .map(|element| element.scale_bounded_generic(&scalar.0, scalar_bits)),
+            self.0.map(|element| {
+                element.scale_randomized_accelerated(&scalar.0, &public_parameters.0)
+            }),
         )
     }
 
-    fn scale_bounded_vartime_generic(&self, scalar: &scalar::Value<V>, scalar_bits: u32) -> Self {
+    fn scale_vartime_accelerated(
+        &self,
+        scalar: &scalar::Value<V>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
         Self(
             self.0
-                .map(|element| element.scale_bounded_vartime_generic(&scalar.0, scalar_bits)),
+                .map(|element| element.scale_vartime_accelerated(&scalar.0, &public_parameters.0)),
         )
+    }
+
+    fn scale_randomized_bounded_accelerated(
+        &self,
+        scalar: &scalar::Value<V>,
+        public_parameters: &Self::PublicParameters,
+        scalar_bits: u32,
+    ) -> Self {
+        Self(self.0.map(|element| {
+            element.scale_randomized_bounded_accelerated(
+                &scalar.0,
+                &public_parameters.0,
+                scalar_bits,
+            )
+        }))
+    }
+
+    fn scale_bounded_vartime_accelerated(
+        &self,
+        scalar: &scalar::Value<V>,
+        public_parameters: &Self::PublicParameters,
+        scalar_bits: u32,
+    ) -> Self {
+        Self(self.0.map(|element| {
+            element.scale_bounded_vartime_accelerated(&scalar.0, &public_parameters.0, scalar_bits)
+        }))
+    }
+}
+
+impl<const N: usize, const LIMBS: usize, G: crate::GroupElement + Scale<Uint<LIMBS>>>
+    Scale<Uint<LIMBS>> for GroupElement<N, G>
+{
+    fn scale_randomized_accelerated(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .map(|element| element.scale_randomized_accelerated(scalar, &public_parameters.0)),
+        )
+    }
+
+    fn scale_vartime_accelerated(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .map(|element| element.scale_vartime_accelerated(scalar, &public_parameters.0)),
+        )
+    }
+
+    fn scale_randomized_bounded_accelerated(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+        scalar_bits: u32,
+    ) -> Self {
+        Self(self.0.map(|element| {
+            element.scale_randomized_bounded_accelerated(scalar, &public_parameters.0, scalar_bits)
+        }))
+    }
+
+    fn scale_bounded_vartime_accelerated(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+        scalar_bits: u32,
+    ) -> Self {
+        Self(self.0.map(|element| {
+            element.scale_bounded_vartime_accelerated(scalar, &public_parameters.0, scalar_bits)
+        }))
+    }
+}
+
+impl<const N: usize, const LIMBS: usize, G: crate::GroupElement + Scale<Int<LIMBS>>>
+    Scale<Int<LIMBS>> for GroupElement<N, G>
+{
+    fn scale_randomized_accelerated(
+        &self,
+        scalar: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .map(|element| element.scale_randomized_accelerated(scalar, &public_parameters.0)),
+        )
+    }
+
+    fn scale_vartime_accelerated(
+        &self,
+        scalar: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .map(|element| element.scale_vartime_accelerated(scalar, &public_parameters.0)),
+        )
+    }
+
+    fn scale_randomized_bounded_accelerated(
+        &self,
+        scalar: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+        scalar_bits: u32,
+    ) -> Self {
+        Self(self.0.map(|element| {
+            element.scale_randomized_bounded_accelerated(scalar, &public_parameters.0, scalar_bits)
+        }))
+    }
+
+    fn scale_bounded_vartime_accelerated(
+        &self,
+        scalar: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+        scalar_bits: u32,
+    ) -> Self {
+        Self(self.0.map(|element| {
+            element.scale_bounded_vartime_accelerated(scalar, &public_parameters.0, scalar_bits)
+        }))
     }
 }
 
@@ -475,6 +685,6 @@ where
     fn order_from_public_parameters(
         public_parameters: &Self::PublicParameters,
     ) -> Uint<SCALAR_LIMBS> {
-        G::order_from_public_parameters(&public_parameters.public_parameters)
+        G::order_from_public_parameters(&public_parameters.0)
     }
 }

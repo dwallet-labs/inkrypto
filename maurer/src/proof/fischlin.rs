@@ -4,12 +4,11 @@
 use std::array;
 use std::fmt::Debug;
 
-use crypto_bigint::rand_core::CryptoRngCore;
 use crypto_bigint::Concat;
 use merlin::Transcript;
 use serde::Serialize;
 
-use group::{ComputationalSecuritySizedNumber, GroupElement};
+use group::{ComputationalSecuritySizedNumber, CsRng, GroupElement};
 use proof::TranscriptProtocol;
 
 use crate::language::{WitnessSpaceValue, MAX_REPETITIONS};
@@ -28,7 +27,7 @@ pub const fn target_bits<const REPETITIONS: usize>() -> usize {
         "Proofs with too many repetitions are not supported"
     );
 
-    (ComputationalSecuritySizedNumber::BITS as usize + (REPETITIONS - 1)) / REPETITIONS
+    (ComputationalSecuritySizedNumber::BITS as usize).div_ceil(REPETITIONS)
 }
 
 /// A Universally Composable (UC) Maurer Zero-Knowledge Proof via Fischlin's transform.
@@ -71,13 +70,20 @@ impl<
         protocol_context: &ProtocolContext,
         language_public_parameters: &Language::PublicParameters,
         witness: Language::WitnessSpaceGroupElement, // $w$
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<(Self, Language::StatementSpaceGroupElement)> {
         if REPETITIONS == 0 || REPETITIONS > MAX_REPETITIONS {
             return Err(Error::UnsupportedRepetitions);
         }
 
-        let statement = Language::homomorphose(&witness, language_public_parameters)?; // $x$
+        let is_randomizer = false;
+        let is_verify = false;
+        let statement = Language::homomorphose(
+            &witness,
+            language_public_parameters,
+            is_randomizer,
+            is_verify,
+        )?; // $x$
 
         let (randomizers, statement_masks) = // $(\vec{\sigma}, \vec{m_i})
             super::Proof::<REPETITIONS, Language, ProtocolContext>::sample_randomizers_and_statement_masks(language_public_parameters, rng)?;
@@ -246,7 +252,8 @@ pub(crate) mod test_helpers {
     use std::time::Duration;
 
     use criterion::measurement::{Measurement, WallTime};
-    use rand_core::OsRng;
+
+    use group::OsCsRng;
 
     use crate::test_helpers::sample_witness;
 
@@ -257,7 +264,7 @@ pub(crate) mod test_helpers {
         Language: language::Language<REPETITIONS>,
     >(
         language_public_parameters: &Language::PublicParameters,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> (
         Proof<REPETITIONS, Language, PhantomData<()>>,
         Language::StatementSpaceGroupElement,
@@ -272,7 +279,7 @@ pub(crate) mod test_helpers {
         Language: language::Language<REPETITIONS>,
     >(
         language_public_parameters: &Language::PublicParameters,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) {
         let (proof, statement) =
             generate_valid_fischlin_proof::<REPETITIONS, Language>(language_public_parameters, rng);
@@ -290,7 +297,7 @@ pub(crate) mod test_helpers {
         Language: language::Language<REPETITIONS>,
     >(
         language_public_parameters: &Language::PublicParameters,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) {
         let witness = sample_witness::<REPETITIONS, Language>(language_public_parameters, rng);
 
@@ -360,7 +367,7 @@ pub(crate) mod test_helpers {
             let now = measurement.start();
             let (proof, statement) = generate_valid_fischlin_proof::<REPETITIONS, Language>(
                 language_public_parameters,
-                &mut OsRng,
+                &mut OsCsRng,
             );
             let prove_time = measurement.end(now);
 

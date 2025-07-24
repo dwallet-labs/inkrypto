@@ -4,14 +4,14 @@
 #[cfg(test)]
 #[allow(clippy::type_complexity)]
 mod maurer_tests {
-    use group::{secp256k1, CyclicGroupElement, GroupElement, PartyID};
+    use std::iter;
+    use std::marker::PhantomData;
+
+    use group::{secp256k1, CyclicGroupElement, GroupElement, OsCsRng, PartyID};
     use maurer::language::StatementSpaceGroupElement;
     use maurer::Language;
     use maurer::{commitment_of_discrete_log, knowledge_of_discrete_log, SOUND_PROOFS_REPETITIONS};
     use maurer::{test_helpers, Proof};
-    use rand_core::OsRng;
-    use std::iter;
-    use std::marker::PhantomData;
 
     #[test]
     fn test_valid_discrete_log_proof_verifies() {
@@ -26,7 +26,7 @@ mod maurer_tests {
             test_helpers::valid_proof_verifies::<
                 SOUND_PROOFS_REPETITIONS,
                 knowledge_of_discrete_log::test_helpers::Lang,
-            >(&language_public_parameters, batch_size, &mut OsRng);
+            >(&language_public_parameters, batch_size, &mut OsCsRng);
         }
     }
 
@@ -55,7 +55,7 @@ mod maurer_tests {
             FischlinLang<LARGE_REPETITIONS>,
             PhantomData<()>,
         >::sample_randomizers_and_statement_masks(
-            &language_public_parameters, &mut OsRng
+            &language_public_parameters, &mut OsCsRng
         );
 
         assert!(result.is_ok());
@@ -74,7 +74,7 @@ mod maurer_tests {
             test_helpers::valid_proof_verifies::<
                 SOUND_PROOFS_REPETITIONS,
                 knowledge_of_discrete_log::test_helpers::Lang,
-            >(&language_public_parameters, batch_size, &mut OsRng);
+            >(&language_public_parameters, batch_size, &mut OsCsRng);
         }
 
         // Also test commitment of discrete log proofs
@@ -85,7 +85,7 @@ mod maurer_tests {
             test_helpers::valid_proof_verifies::<
                 SOUND_PROOFS_REPETITIONS,
                 commitment_of_discrete_log::test_helpers::Lang,
-            >(&cod_language_public_parameters, batch_size, &mut OsRng);
+            >(&cod_language_public_parameters, batch_size, &mut OsCsRng);
         }
     }
 
@@ -100,23 +100,25 @@ mod maurer_tests {
         let witnesses = test_helpers::sample_witnesses::<
             SOUND_PROOFS_REPETITIONS,
             knowledge_of_discrete_log::test_helpers::Lang,
-        >(&language_public_parameters, 1, &mut OsRng);
+        >(&language_public_parameters, 1, &mut OsCsRng);
 
         let (maurer_proof, mut statements) =
             test_helpers::generate_valid_proof::<
                 SOUND_PROOFS_REPETITIONS,
                 knowledge_of_discrete_log::test_helpers::Lang,
-            >(&language_public_parameters, witnesses, &mut OsRng);
+            >(&language_public_parameters, witnesses, &mut OsCsRng);
 
         // Generate a witness that would create a different statement
         let wrong_witness = test_helpers::sample_witness::<
             SOUND_PROOFS_REPETITIONS,
             knowledge_of_discrete_log::test_helpers::Lang,
-        >(&language_public_parameters, &mut OsRng);
+        >(&language_public_parameters, &mut OsCsRng);
 
         let wrong_statement = knowledge_of_discrete_log::test_helpers::Lang::homomorphose(
             &wrong_witness,
             &language_public_parameters,
+            false,
+            false,
         )
         .unwrap();
 
@@ -128,7 +130,7 @@ mod maurer_tests {
         assert!(result.is_err());
 
         if result.is_ok() {
-            panic!("Expected ProofVerification error, got: {:?}", result);
+            panic!("Expected ProofVerification error, got: {result:?}");
         }
     }
 
@@ -162,7 +164,7 @@ mod maurer_tests {
                 &prover_public_parameters,
                 &verifier_public_parameters,
                 batch_size,
-                &mut OsRng,
+                &mut OsCsRng,
             );
         }
     }
@@ -179,7 +181,7 @@ mod maurer_tests {
             test_helpers::proof_with_incomplete_transcript_fails::<
                 SOUND_PROOFS_REPETITIONS,
                 knowledge_of_discrete_log::test_helpers::Lang,
-            >(&language_public_parameters, batch_size, &mut OsRng);
+            >(&language_public_parameters, batch_size, &mut OsCsRng);
         }
     }
 
@@ -214,9 +216,9 @@ mod maurer_tests {
             let witnesses = test_helpers::sample_witnesses::<
                 SOUND_PROOFS_REPETITIONS,
                 knowledge_of_discrete_log::test_helpers::Lang,
-            >(&language_public_parameters, batch_size, &mut OsRng);
+            >(&language_public_parameters, batch_size, &mut OsCsRng);
 
-            test_helpers::generate_valid_proof(&language_public_parameters, witnesses, &mut OsRng)
+            test_helpers::generate_valid_proof(&language_public_parameters, witnesses, &mut OsCsRng)
         })
         .take(number_of_proofs)
         .unzip();
@@ -227,7 +229,7 @@ mod maurer_tests {
             vec![PhantomData; number_of_proofs],
             &language_public_parameters,
             statements.clone(),
-            &mut OsRng,
+            &mut OsCsRng,
         );
         assert!(result.is_ok());
 
@@ -250,7 +252,7 @@ mod maurer_tests {
             vec![PhantomData; number_of_proofs],
             &language_public_parameters,
             statements.clone(),
-            &mut OsRng,
+            &mut OsCsRng,
         );
         assert!(result.is_err());
 
@@ -272,7 +274,7 @@ mod maurer_tests {
             vec![PhantomData; number_of_proofs],
             &language_public_parameters,
             invalid_statements,
-            &mut OsRng,
+            &mut OsCsRng,
         );
         assert!(result.is_err());
     }
@@ -337,13 +339,13 @@ mod maurer_tests {
         test_helpers::valid_fischlin_proof_verifies::<
             FISCHLIN_REPETITIONS_16,
             FischlinLang<FISCHLIN_REPETITIONS_16>,
-        >(&language_public_parameters_16, &mut OsRng);
+        >(&language_public_parameters_16, &mut OsCsRng);
 
         // Invalid Fischlin proofs should fail verification
         test_helpers::invalid_fischlin_proof_fails_verification::<
             FISCHLIN_REPETITIONS_16,
             FischlinLang<FISCHLIN_REPETITIONS_16>,
-        >(&language_public_parameters_16, &mut OsRng);
+        >(&language_public_parameters_16, &mut OsCsRng);
 
         // Test with 32 repetitions as well
         let language_public_parameters_32 =
@@ -353,12 +355,12 @@ mod maurer_tests {
         test_helpers::valid_fischlin_proof_verifies::<
             FISCHLIN_REPETITIONS_32,
             FischlinLang<FISCHLIN_REPETITIONS_32>,
-        >(&language_public_parameters_32, &mut OsRng);
+        >(&language_public_parameters_32, &mut OsCsRng);
 
         test_helpers::invalid_fischlin_proof_fails_verification::<
             FISCHLIN_REPETITIONS_32,
             FischlinLang<FISCHLIN_REPETITIONS_32>,
-        >(&language_public_parameters_32, &mut OsRng);
+        >(&language_public_parameters_32, &mut OsCsRng);
     }
 
     #[test]
@@ -376,13 +378,13 @@ mod maurer_tests {
         let witnesses = test_helpers::sample_witnesses::<
             FISCHLIN_REPETITIONS_100,
             FischlinLang<FISCHLIN_REPETITIONS_100>,
-        >(&language_public_parameters, 1, &mut OsRng);
+        >(&language_public_parameters, 1, &mut OsCsRng);
 
         let (maurer_proof, statements) =
             test_helpers::generate_valid_proof::<
                 FISCHLIN_REPETITIONS_100,
                 FischlinLang<FISCHLIN_REPETITIONS_100>,
-            >(&language_public_parameters, witnesses, &mut OsRng);
+            >(&language_public_parameters, witnesses, &mut OsCsRng);
 
         assert!(maurer_proof
             .verify(&PhantomData, &language_public_parameters, statements)
@@ -404,7 +406,7 @@ mod maurer_tests {
         let witnesses = test_helpers::sample_witnesses::<
             FISCHLIN_REPETITIONS_1000,
             FischlinLang<FISCHLIN_REPETITIONS_1000>,
-        >(&language_public_parameters, 1, &mut OsRng);
+        >(&language_public_parameters, 1, &mut OsCsRng);
 
         assert!(matches!(
             Proof::<
@@ -415,7 +417,7 @@ mod maurer_tests {
                 &PhantomData,
                 &language_public_parameters,
                 witnesses,
-                &mut OsRng
+                &mut OsCsRng
             )
             .err()
             .unwrap(),
@@ -453,7 +455,7 @@ mod maurer_tests {
                 let witnesses = test_helpers::sample_witnesses::<SOUND_PROOFS_REPETITIONS, Lang>(
                     &language_public_parameters,
                     BATCH_SIZE,
-                    &mut OsRng,
+                    &mut OsCsRng,
                 );
                 (party_id, witnesses)
             })
@@ -471,7 +473,7 @@ mod maurer_tests {
                 language_public_parameters.clone(),
                 protocol_context,
                 party_witnesses[&party_id].clone(),
-                &mut OsRng,
+                &mut OsCsRng,
             )
             .unwrap();
             commitment_round_parties.insert(party_id, party);
@@ -486,7 +488,7 @@ mod maurer_tests {
 
         for (party_id, party) in commitment_round_parties.drain() {
             let (commitment, decommitment_party) = party
-                .commit_statements_and_statement_mask(&mut OsRng)
+                .commit_statements_and_statement_mask(&mut OsCsRng)
                 .unwrap();
             commitments.insert(party_id, commitment);
             decommitment_round_parties.insert(party_id, decommitment_party);
@@ -501,7 +503,7 @@ mod maurer_tests {
 
         for (party_id, party) in decommitment_round_parties.drain() {
             let (decommitment, proof_share_party) = party
-                .decommit_statements_and_statement_mask(commitments.clone(), &mut OsRng)
+                .decommit_statements_and_statement_mask(commitments.clone(), &mut OsCsRng)
                 .unwrap();
             decommitments.insert(party_id, decommitment);
             proof_share_round_parties.insert(party_id, proof_share_party);
@@ -510,7 +512,7 @@ mod maurer_tests {
         // Test 1: Verify that all parties can generate valid proof shares
         let mut proof_share_results = HashMap::new();
         for (party_id, party) in proof_share_round_parties.drain() {
-            let result = party.generate_proof_share(decommitments.clone(), &mut OsRng);
+            let result = party.generate_proof_share(decommitments.clone(), &mut OsCsRng);
             assert!(
                 result.is_ok(),
                 "Party {} failed to generate proof share: {:?}",
@@ -537,7 +539,7 @@ mod maurer_tests {
                 language_public_parameters.clone(),
                 protocol_context,
                 party_witnesses[&party_id].clone(),
-                &mut OsRng,
+                &mut OsCsRng,
             )
             .unwrap();
             commitment_round_parties.insert(party_id, party);
@@ -552,7 +554,7 @@ mod maurer_tests {
 
         for (party_id, party) in commitment_round_parties.drain() {
             let (commitment, decommitment_party) = party
-                .commit_statements_and_statement_mask(&mut OsRng)
+                .commit_statements_and_statement_mask(&mut OsCsRng)
                 .unwrap();
             commitments.insert(party_id, commitment);
             decommitment_round_parties.insert(party_id, decommitment_party);
@@ -567,7 +569,7 @@ mod maurer_tests {
 
         for (party_id, party) in decommitment_round_parties.drain() {
             let (decommitment, proof_share_party) = party
-                .decommit_statements_and_statement_mask(commitments.clone(), &mut OsRng)
+                .decommit_statements_and_statement_mask(commitments.clone(), &mut OsCsRng)
                 .unwrap();
             decommitments.insert(party_id, decommitment);
             proof_share_round_parties.insert(party_id, proof_share_party);
@@ -593,7 +595,7 @@ mod maurer_tests {
             let verifier_party = proof_share_round_parties.remove(&verifier_id).unwrap();
 
             // Verify that the error properly identifies the miscommitting party
-            let result = verifier_party.generate_proof_share(corrupted_decommitments, &mut OsRng);
+            let result = verifier_party.generate_proof_share(corrupted_decommitments, &mut OsCsRng);
 
             assert!(
                 result.is_err(),
@@ -604,12 +606,10 @@ mod maurer_tests {
                 Err(Error::Aggregation(proof::aggregation::Error::WrongDecommitment(parties))) => {
                     assert!(
                         parties.contains(&first_party_id),
-                        "Error should identify the corrupting party: expected {}, got {:?}",
-                        first_party_id,
-                        parties
+                        "Error should identify the corrupting party: expected {first_party_id}, got {parties:?}"
                     );
                 }
-                Err(e) => panic!("Expected WrongDecommitment error, got: {:?}", e),
+                Err(e) => panic!("Expected WrongDecommitment error, got: {e:?}"),
                 Ok(_) => panic!("Expected error but got success"),
             }
         }
@@ -629,7 +629,7 @@ mod maurer_tests {
                     language_public_parameters.clone(),
                     protocol_context,
                     party_witnesses[&party_id].clone(),
-                    &mut OsRng,
+                    &mut OsCsRng,
                 )
                 .unwrap();
                 commitment_round_parties.insert(party_id, party);
@@ -644,7 +644,7 @@ mod maurer_tests {
 
             for (party_id, party) in commitment_round_parties.drain() {
                 let (commitment, decommitment_party) = party
-                    .commit_statements_and_statement_mask(&mut OsRng)
+                    .commit_statements_and_statement_mask(&mut OsCsRng)
                     .unwrap();
                 commitments.insert(party_id, commitment);
                 decommitment_round_parties.insert(party_id, decommitment_party);
@@ -659,7 +659,7 @@ mod maurer_tests {
 
             for (party_id, party) in decommitment_round_parties.drain() {
                 let (decommitment, proof_share_party) = party
-                    .decommit_statements_and_statement_mask(commitments.clone(), &mut OsRng)
+                    .decommit_statements_and_statement_mask(commitments.clone(), &mut OsCsRng)
                     .unwrap();
                 decommitments.insert(party_id, decommitment);
                 proof_share_round_parties.insert(party_id, proof_share_party);
@@ -688,7 +688,7 @@ mod maurer_tests {
             let verifier_party = proof_share_round_parties.remove(&verifier_id).unwrap();
 
             // Verify that the error properly identifies all miscommitting parties
-            let result = verifier_party.generate_proof_share(corrupted_decommitments, &mut OsRng);
+            let result = verifier_party.generate_proof_share(corrupted_decommitments, &mut OsCsRng);
 
             assert!(
                 result.is_err(),
@@ -702,11 +702,10 @@ mod maurer_tests {
 
                     assert_eq!(
                         parties, corrupted_parties,
-                        "Error should identify all corrupting parties: expected {:?}, got {:?}",
-                        corrupted_parties, parties
+                        "Error should identify all corrupting parties: expected {corrupted_parties:?}, got {parties:?}"
                     );
                 }
-                Err(e) => panic!("Expected WrongDecommitment error, got: {:?}", e),
+                Err(e) => panic!("Expected WrongDecommitment error, got: {e:?}"),
                 Ok(_) => panic!("Expected error but got success"),
             }
         }
@@ -740,7 +739,7 @@ mod maurer_tests {
                 let witnesses = test_helpers::sample_witnesses::<SOUND_PROOFS_REPETITIONS, Lang>(
                     &language_public_parameters,
                     BATCH_SIZE,
-                    &mut OsRng,
+                    &mut OsCsRng,
                 );
                 (party_id, witnesses)
             })
@@ -758,7 +757,7 @@ mod maurer_tests {
                 language_public_parameters.clone(),
                 protocol_context,
                 party_witnesses[&party_id].clone(),
-                &mut OsRng,
+                &mut OsCsRng,
             )
             .unwrap();
             commitment_round_parties.insert(party_id, party);
@@ -773,7 +772,7 @@ mod maurer_tests {
 
         for (party_id, party) in commitment_round_parties.drain() {
             let (commitment, decommitment_party) = party
-                .commit_statements_and_statement_mask(&mut OsRng)
+                .commit_statements_and_statement_mask(&mut OsCsRng)
                 .unwrap();
             commitments.insert(party_id, commitment);
             decommitment_round_parties.insert(party_id, decommitment_party);
@@ -788,7 +787,7 @@ mod maurer_tests {
 
         for (party_id, party) in decommitment_round_parties.drain() {
             let (decommitment, proof_share_party) = party
-                .decommit_statements_and_statement_mask(commitments.clone(), &mut OsRng)
+                .decommit_statements_and_statement_mask(commitments.clone(), &mut OsCsRng)
                 .unwrap();
             decommitments.insert(party_id, decommitment);
             proof_share_round_parties.insert(party_id, proof_share_party);
@@ -810,7 +809,7 @@ mod maurer_tests {
 
             for party_id in party_ids {
                 if let Some(party) = proof_share_round_parties.remove(&party_id) {
-                    let result = party.generate_proof_share(decommitments.clone(), &mut OsRng);
+                    let result = party.generate_proof_share(decommitments.clone(), &mut OsCsRng);
                     assert!(
                         result.is_ok(),
                         "Party {} failed to generate proof share: {:?}",
@@ -823,7 +822,7 @@ mod maurer_tests {
 
                     // Print progress every 100 parties
                     if next_party_idx % 100 == 0 {
-                        println!("Processed {} of {} parties", next_party_idx, NUM_VALIDATORS);
+                        println!("Processed {next_party_idx} of {NUM_VALIDATORS} parties");
                     }
                     next_party_idx += 1;
                 }
@@ -835,9 +834,6 @@ mod maurer_tests {
             NUM_VALIDATORS,
             "All validators should successfully generate proof shares"
         );
-        println!(
-            "Successfully processed all {} validators without issues",
-            NUM_VALIDATORS
-        );
+        println!("Successfully processed all {NUM_VALIDATORS} validators without issues");
     }
 }

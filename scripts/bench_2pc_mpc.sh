@@ -1,3 +1,3 @@
-cargo test --package twopc_mpc --release --features benchmarking --lib dkg::benches::benchmark -- --nocapture --exact --ignored | tee bench_2pc_mpc_dkg.txt
-cargo test --package twopc_mpc --release --features benchmarking --lib presign::benches::benchmark -- --nocapture --exact --ignored | tee bench_2pc_mpc_presign.txt
-cargo test --package twopc_mpc --release --features benchmarking --lib sign::benches::benchmark -- --nocapture --exact --ignored | tee bench_2pc_mpc_sign.txt
+RUST_BACKTRACE=1 cargo test --package twopc_mpc --release --features benchmarking --lib dkg::benches::benchmark -- --nocapture --exact --ignored | tee bench_2pc_mpc_dkg.txt
+RUST_BACKTRACE=1 cargo test --package twopc_mpc --release --features benchmarking --lib presign::benches::benchmark -- --nocapture --exact --ignored | tee bench_2pc_mpc_presign.txt
+RUST_BACKTRACE=1 cargo test --package twopc_mpc --release --features benchmarking --lib sign::benches::benchmark -- --nocapture --exact --ignored | tee bench_2pc_mpc_sign.txt

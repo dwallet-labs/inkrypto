@@ -7,10 +7,12 @@ pub mod asynchronous {
     use std::collections::HashMap;
     use std::marker::PhantomData;
 
-    use crypto_bigint::rand_core::CryptoRngCore;
     use crypto_bigint::{ConcatMixed, Encoding, Int, Uint};
 
+    use ::class_groups::equivalence_class::EquivalenceClassOps;
     use ::class_groups::DecryptionKeyShare;
+    use ::class_groups::MultiFoldNupowAccelerator;
+    use ::class_groups::{decryption_key_share, SecretKeyShareSizedInteger};
     use ::class_groups::{
         encryption_key, CiphertextSpaceGroupElement, CompactIbqf, EncryptionKey, EquivalenceClass,
     };
@@ -22,9 +24,13 @@ pub mod asynchronous {
     use commitment::CommitmentSizedNumber;
     use group::helpers::DeduplicateAndSort;
     use group::{
-        AffineXCoordinate, HashToGroup, PartyID, PrimeGroupElement, StatisticalSecuritySizedNumber,
+        AffineXCoordinate, CsRng, HashToGroup, PartyID, PrimeGroupElement,
+        StatisticalSecuritySizedNumber,
     };
-    use homomorphic_encryption::AdditivelyHomomorphicEncryptionKey;
+    use homomorphic_encryption::{
+        AdditivelyHomomorphicDecryptionKeyShare, AdditivelyHomomorphicEncryptionKey,
+    };
+    use mpc::secret_sharing::shamir::over_the_integers::AdjustedLagrangeCoefficientSizedNumber;
     use mpc::{
         AsynchronousRoundResult, AsynchronouslyAdvanceable, HandleInvalidMessages,
         WeightedThresholdAccessStructure,
@@ -63,11 +69,16 @@ pub mod asynchronous {
         Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
         Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
         EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-            PublicParameters = equivalence_class::PublicParameters<
+                Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+                PublicParameters = equivalence_class::PublicParameters<
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                >,
+            > + EquivalenceClassOps<
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                >,
             >,
-        >,
     {
         DecryptionShares(
             HashMap<
@@ -112,11 +123,16 @@ pub mod asynchronous {
         Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
         Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
         EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-            PublicParameters = equivalence_class::PublicParameters<
+                Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+                PublicParameters = equivalence_class::PublicParameters<
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                >,
+            > + EquivalenceClassOps<
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                >,
             >,
-        >,
         EncryptionKey<
             SCALAR_LIMBS,
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -225,6 +241,9 @@ pub mod asynchronous {
             PublicParameters = equivalence_class::PublicParameters<
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
         >,
         EncryptionKey<
             SCALAR_LIMBS,
@@ -270,6 +289,31 @@ pub mod asynchronous {
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             GroupElement,
         >,
+        DecryptionKeyShare<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >: AdditivelyHomomorphicDecryptionKeyShare<
+            SCALAR_LIMBS,
+            EncryptionKey<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+            PublicParameters = decryption_key_share::PublicParameters<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                group::PublicParameters<GroupElement::Scalar>,
+            >,
+            SecretKeyShare = SecretKeyShareSizedInteger,
+            PartialDecryptionProof = decryption_key_share::PartialDecryptionProof<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            DecryptionShare = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            LagrangeCoefficient = AdjustedLagrangeCoefficientSizedNumber,
+            Error = ::class_groups::Error
+        >,
         Uint<MESSAGE_LIMBS>: Encoding,
         GroupElement::Scalar: Serialize + for<'a> Deserialize<'a>,
     {
@@ -290,11 +334,16 @@ pub mod asynchronous {
             messages: Vec<HashMap<PartyID, Self::Message>>,
             virtual_party_id_to_decryption_key_share: Option<Self::PrivateInput>,
             public_input: &Self::PublicInput,
-            rng: &mut impl CryptoRngCore,
+            _malicious_parties_by_round: HashMap<u64, HashSet<PartyID>>,
+            rng: &mut impl CsRng,
         ) -> Result<
             AsynchronousRoundResult<Self::Message, Self::PrivateOutput, Self::PublicOutput>,
             Self::Error,
         > {
+            if public_input.presign.public_key != public_input.dkg_output.public_key {
+                return Err(Error::InvalidParameters);
+            }
+
             let virtual_party_id_to_decryption_key_share =
                 virtual_party_id_to_decryption_key_share
                     .ok_or(Error::InvalidParameters)?;
@@ -437,7 +486,7 @@ pub mod asynchronous {
             }
         }
 
-        fn round_causing_threshold_not_reached(failed_round: usize) -> Option<usize> {
+        fn round_causing_threshold_not_reached(failed_round: u64) -> Option<u64> {
             match failed_round {
                 3 => Some(2),
                 _ => None

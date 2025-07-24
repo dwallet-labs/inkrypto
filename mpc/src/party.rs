@@ -3,22 +3,24 @@
 
 //! Todo (#104): Introduce Synchronous MPC traits.
 
-use crypto_bigint::rand_core::CryptoRngCore;
-use itertools::Itertools;
+pub mod guaranteed_output_delivery;
+
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 
 use commitment::CommitmentSizedNumber;
-use group::helpers::DeduplicateAndSort;
-use group::PartyID;
+use group::{CsRng, PartyID};
 
-use crate::{Error, MajorityVote, WeightedThresholdAccessStructure};
+use crate::{Error, WeightedThresholdAccessStructure};
+pub use guaranteed_output_delivery::{
+    GuaranteedOutputDeliveryParty, RoundResult as GuaranteedOutputDeliveryRoundResult,
+};
 
 /// A Multi-Party Computation (MPC) Party.
 pub trait Party: Sized + Send + Sync {
     /// An error in the MPC protocol.
-    type Error: Send + Sync + Debug + Into<Error> + From<Error>;
+    type Error: Send + Sync + Debug + Into<Error> + From<Error> + Clone;
 
     /// The public input of the party.
     /// Holds together all public information that is required for the protocol.
@@ -54,16 +56,6 @@ pub trait Party: Sized + Send + Sync {
     type Message: Serialize + for<'a> Deserialize<'a> + Clone + Debug + PartialEq + Eq + Send + Sync;
 }
 
-/// A wrapper around the inner protocol message `M` used by `advance_with_guaranteed_output()` to guarantee output delivery.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct AsynchronousMessage<M> {
-    // The list of parties who's messages were unaccounted for because they were unavailable at the time of advancing,
-    // or weren't needed to guarantee output delivery.
-    inactive_or_ignored_senders_by_round: HashMap<usize, HashSet<PartyID>>,
-    // The actual message of the MPC protocol.
-    message: M,
-}
-
 /// An asynchronous MPC session.
 /// Captures the round transition `advance` functionality.
 pub trait AsynchronouslyAdvanceable: Party + Sized {
@@ -74,8 +66,9 @@ pub trait AsynchronouslyAdvanceable: Party + Sized {
     /// `messages` must be an ordered list of messages where the `i`th element contains the messages of the `i`th round.
     /// Note: `session_id` is always freshly-generated. This is essential for security, and in particular to prevent forking attacks, double-spending attacks, and nonce-reuse.
     /// If, for protocol-specific cryptographic reasons, you need to use the session ID of a previous protocol,
-    /// it should be passed in as part of the `public_input`. For example, if a signning protocol is split to a presign phase and an online phase, viewed as two seperate protocols, the onilne signning phase will use the session id of the presign phase by including the session id in the presign public output, which will be part of the public input for signning.
+    /// it should be passed in as part of the `public_input`. For example, if a signing protocol is split to a presign phase and an online phase, viewed as two seperate protocols, the onilne signning phase will use the session id of the presign phase by including the session id in the presign public output, which will be part of the public input for signing.
     #[allow(clippy::type_complexity)]
+    #[allow(clippy::too_many_arguments)]
     fn advance(
         session_id: CommitmentSizedNumber,
         party_id: PartyID,
@@ -83,275 +76,12 @@ pub trait AsynchronouslyAdvanceable: Party + Sized {
         messages: Vec<HashMap<PartyID, Self::Message>>,
         private_input: Option<Self::PrivateInput>,
         public_input: &Self::PublicInput,
-        rng: &mut impl CryptoRngCore,
+        malicious_parties_by_round: HashMap<u64, HashSet<PartyID>>,
+        rng: &mut impl CsRng,
     ) -> Result<
         AsynchronousRoundResult<Self::Message, Self::PrivateOutput, Self::PublicOutput>,
         Self::Error,
     >;
-
-    /// In an asynchronous protocol, a [`asynchronous::Party`] party advances to the next round by calling [`Self::advance()`].
-    /// Since it cannot know in advance which messages are valid (i.e. without calling `advance()` and checking if it succeeded),
-    /// and since in an asynchronous protocol we cannot expect a particular set of parties to be online,
-    /// we can never know in advance when to call [`Self::advance()`].
-    ///
-    /// In practice, we must have some kind of measure of passed time (e.g., the amount of consensus rounds passed),
-    /// after which all parties decide to advance (thus giving the same `messages` as argument to `advance()`).
-    /// This introduces a trade-off between latency and output guarantee, as the longer we wait for messages,
-    /// we have a better chance at succeeding in that attempt to advance.
-    ///
-    /// Since malicious behavior is the infrequent event, and malicious actors can be ignored once identified,
-    /// a good rule of thumb is to advance on the first agreed-upon time in which we see messages
-    /// coming from an authorized subset of parties (i.e. `total_weight >= threshold`.)
-    ///
-    /// However, this might increase the chance of encountering a session that failed to `advance()` due to insufficient honest parties.
-    /// For example, let's say we have `4` parties, each with one weight, with a threshold of `3`.
-    /// Now let's say that at time `T1` we got messages from parties `1, 2, 4`.
-    /// This seems like it is enough, since their total weight is `3`, and so we call `advance()`.
-    /// However, let's say that party `2` was malicious and sent a wrong proof.
-    /// Then, `advance()` would verify the proofs, and filter the malicious parties,
-    /// and call `WeightedThresholdAccessStructure::is_authorized_subset()` with the now-honest subset of `1, 4`,
-    /// which would fail, as `2 < 3`. In this scenario, an [`Error::ThresholdNotReached`] is returned by `is_authorized_subset()`
-    /// and later by `advance()`.
-    ///
-    /// Upon [`Error::ThresholdNotReached`], we have to wait for more messages to be sent from a previous round and retry
-    /// (in our example: until a time `T2` in which the slow party `3` sends its message.)
-    ///
-    /// Note: there will be such messages eventually, as the adversary statically corrupts up to f<=n-t parties
-    /// (above that, it can trivially DOS the system by not participating).
-    ///
-    /// This function offers a clear and simple API to tackle this issue generically,
-    /// for every asynchronous MPC protocol with guaranteed output,
-    /// so long that either (@dolev, @offir validate):
-    /// - The round that caused the threshold not reached,
-    ///   i.e. the round from which more messages are needed,
-    ///   is always the previous round (which is the "naive" and commonplace case.) or:
-    /// - The round(s) in between the round that caused the threshold not reached and the round
-    ///   at which we encountered the threshold not reached error, do not depend on the round that caused the error.
-    ///   For example, in our `class_groups::dkg` (and `reconfiguration`) protocols, we have the following structure:
-    ///    * round 1: prove something for every party
-    ///    * round 2 (optimization, optional): verify the proofs sent to you (from everyone that sent a first round message at *T1*.)
-    ///    * round 3: verify proofs (from everyone that sent a first round message at *T2*) for everyone that wasn't online during round 2.
-    ///
-    ///   Since the optimization is optional, and we will end up verifying everyone that wasn't online in round 2 at round 3 anyways,
-    ///   its safe for second round messages to be computed on first round messages seen at time *T1*,
-    ///   whilst round 3 computes on messages seen at *T2*, so long as the change is additive
-    ///   (we require that messages for a specific round are only added by different parties, never removed or changed.)
-    ///
-    /// REQUIREMENTS:
-    ///   1. The caller should always receive and store messages for all rounds, even after the round has advanced.
-    ///   2. Parties cannot re-send or replace a message for a round if they already sent a message for this round.
-    ///   3. Once a message has been stored, it can never be filtered by the caller, even if the party became malicious in the middle of the session.
-    ///      It is safe to not store messages in the first place if the sender is malicious (and the fact they are malicious has been established in agreement.)
-    ///
-    /// Given these, we operate as follows to guarantee output:
-    ///  - The inner protocol messages (i.e. [`Self::Message`]) are wrapped by `AsynchronousMessage` which also
-    ///    reports which previous rounds messages were accounted for to compute that message.
-    ///  - We begin by performing a majority vote to decide which messages were being used in every round and filter these before
-    ///    calling the actual protocol logic with [`Self::advance()`].
-    ///    We do not filter messages if they can cause an [`Error::ThresholdNotReached`] error,
-    ///    i.e. *we add messages if available if they can help guarantee output delivery.*
-    ///
-    ///    This *guarantees that subsequent rounds see the same messages for every round, unless it is safe given the above requirement*.
-    ///
-    /// If this call fails on an [`Error::ThresholdNotReached`] error, the caller must then
-    /// wait for more messages and call this function `advance_with_guaranteed_output()` again.
-    ///
-    /// Eventually, enough messages should be available, and the round will advance,
-    /// thus *the output is guaranteed for every such session that answers the above requirements and follow this methodology*.
-    #[allow(clippy::type_complexity)]
-    fn advance_with_guaranteed_output(
-        session_id: CommitmentSizedNumber,
-        party_id: PartyID,
-        access_structure: &WeightedThresholdAccessStructure,
-        messages: HashMap<usize, HashMap<PartyID, AsynchronousMessage<Self::Message>>>,
-        private_input: Option<Self::PrivateInput>,
-        public_input: &Self::PublicInput,
-        rng: &mut impl CryptoRngCore,
-    ) -> Result<
-        AsynchronousRoundResult<
-            AsynchronousMessage<Self::Message>,
-            Self::PrivateOutput,
-            Self::PublicOutput,
-        >,
-        Self::Error,
-    > {
-        // Check that the messages are of subsequent rounds.
-        let rounds: Vec<_> = messages.keys().copied().sorted().collect();
-        let current_round = rounds.last().copied().unwrap_or(0) + 1;
-        if current_round != 1 && rounds != (1..current_round).collect_vec() {
-            return Err(Error::InvalidParameters)?;
-        }
-
-        // Perform a majority vote to reach the parties to ignore per-round.
-        let (malicious_voters, inactive_or_ignored_senders_by_round): (Vec<_>, HashMap<_, _>) =
-            if let Some(last_round_messages) = messages.get(&(current_round - 1)) {
-                let inactive_or_ignored_senders_by_round: HashMap<_, _> = last_round_messages
-                    .iter()
-                    .map(|(&tangible_party_id, message)| {
-                        let inactive_or_ignored_senders_by_round: Vec<_> = message
-                            .inactive_or_ignored_senders_by_round
-                            .clone()
-                            .into_iter()
-                            .sorted_by(|(round_number, _), (other_round_number, _)| {
-                                other_round_number.cmp(round_number)
-                            })
-                            .map(|(round_number, inactive_or_ignored_senders)| {
-                                (
-                                    round_number,
-                                    inactive_or_ignored_senders.deduplicate_and_sort(),
-                                )
-                            })
-                            .collect();
-
-                        (tangible_party_id, inactive_or_ignored_senders_by_round)
-                    })
-                    .collect();
-
-                let (malicious_voters, inactive_or_ignored_senders_by_round) =
-                    inactive_or_ignored_senders_by_round
-                        .weighted_majority_vote(access_structure)?;
-
-                let inactive_or_ignored_senders_by_round: HashMap<_, _> =
-                    inactive_or_ignored_senders_by_round.into_iter().collect();
-
-                (malicious_voters, inactive_or_ignored_senders_by_round)
-            } else {
-                // For the first round there is no previous rounds messages to ignore.
-                (Vec::new(), HashMap::new())
-            };
-
-        // Sort the messages by the round number, ignore the inactive/ignored senders,
-        // and then collect into a vector (sorted by the round number) to comply with the API of `Self::advance()`.
-        // Don't ignore any messages that can cause a `ThresholdNotReached` error.
-        let round_number_to_take_all_messages_from =
-            Self::round_causing_threshold_not_reached(current_round);
-
-        let messages_to_advance: Vec<HashMap<_, _>> = messages
-            .clone()
-            .into_iter()
-            .sorted_by(|(round_number, _), (other_round_number, _)| {
-                round_number.cmp(other_round_number)
-            })
-            .map(|(round_number, messages)| {
-                messages
-                    .into_iter()
-                    .filter(|(party_id, _)| {
-                        let is_ignored = if let Some(inactive_or_ignored_senders) =
-                            inactive_or_ignored_senders_by_round.get(&round_number)
-                        {
-                            inactive_or_ignored_senders.contains(party_id)
-                        } else {
-                            // The last round doesn't have this set, we shouldn't ignore any message if they are all unaccounted for.
-                            false
-                        };
-
-                        // Don't ignore any messages from the round that can potentially cause a threshold not reached.
-                        // Ignore malicious voters.
-                        (Some(round_number) == round_number_to_take_all_messages_from
-                            || !is_ignored)
-                            && !malicious_voters.contains(party_id)
-                    })
-                    .map(|(party_id, message)| (party_id, message.message))
-                    .collect()
-            })
-            .collect();
-
-        // Wrap the inner protocol result with the inactive or ignored senders,
-        // and account for the malicious voters as well.
-        match Self::advance(
-            session_id,
-            party_id,
-            access_structure,
-            messages_to_advance.clone(),
-            private_input.clone(),
-            public_input,
-            rng,
-        ) {
-            Ok(res) => {
-                // Update `inactive_or_ignored_senders_by_round` including the last round,
-                // and any modifications that occurred due to the self-heal process,
-                // by taking the complimentary set of the parties who sent
-                // messages that were accounted for in the latest `advance()` call for each round.
-                let inactive_or_ignored_senders_by_round = messages_to_advance
-                    .iter()
-                    .enumerate()
-                    .map(|(round_index, messages)| {
-                        // The vector starts from index `0`, but the first round in the map is `1`.
-                        let round_number = round_index + 1;
-
-                        let inactive_or_ignored_senders = access_structure
-                            .party_to_weight
-                            .keys()
-                            .filter(|party_id| !messages.contains_key(party_id))
-                            .copied()
-                            .collect();
-
-                        (round_number, inactive_or_ignored_senders)
-                    })
-                    .collect();
-
-                match res {
-                    AsynchronousRoundResult::Advance {
-                        malicious_parties,
-                        message,
-                    } => {
-                        let malicious_parties: Vec<_> = malicious_voters
-                            .into_iter()
-                            .chain(malicious_parties)
-                            .collect();
-
-                        if let Some(last_round_messages) = messages_to_advance.last() {
-                            // Check that we have enough honest parties to advance.
-                            let honest_parties = last_round_messages
-                                .keys()
-                                .filter(|party_id| !malicious_parties.contains(party_id))
-                                .copied()
-                                .collect();
-
-                            access_structure.is_authorized_subset(&honest_parties)?;
-                        }
-
-                        Ok(AsynchronousRoundResult::Advance {
-                            malicious_parties,
-                            message: AsynchronousMessage {
-                                inactive_or_ignored_senders_by_round,
-                                message,
-                            },
-                        })
-                    }
-                    AsynchronousRoundResult::Finalize {
-                        malicious_parties,
-                        private_output,
-                        public_output,
-                    } => {
-                        let malicious_parties: Vec<_> = malicious_voters
-                            .into_iter()
-                            .chain(malicious_parties)
-                            .collect();
-
-                        if let Some(last_round_messages) = messages_to_advance.last() {
-                            // Check that we have enough honest parties to advance.
-                            let honest_parties = last_round_messages
-                                .keys()
-                                .filter(|party_id| !malicious_parties.contains(party_id))
-                                .copied()
-                                .collect();
-
-                            access_structure.is_authorized_subset(&honest_parties)?;
-                        }
-
-                        Ok(AsynchronousRoundResult::Finalize {
-                            malicious_parties,
-                            private_output,
-                            public_output,
-                        })
-                    }
-                }
-            }
-
-            Err(e) => Err(e),
-        }
-    }
 
     /// For a given round `r = current_round`,
     /// return the round `r` < r` that could cause the current round to abort on an [`Error::ThresholdNotReached`] error
@@ -363,7 +93,7 @@ pub trait AsynchronouslyAdvanceable: Party + Sized {
     /// The typical case would be a round that verifies messages from the previous round,
     /// e.g. verifies zk-proofs, and fails if not enough messages were honest,
     /// in which case `Some(current_round - 1)` is returned.
-    fn round_causing_threshold_not_reached(current_round: usize) -> Option<usize>;
+    fn round_causing_threshold_not_reached(current_round: u64) -> Option<u64>;
 }
 
 /// The result of an asynchronous MPC session round transition.
@@ -385,6 +115,25 @@ pub enum AsynchronousRoundResult<Message, PrivateOutput, PublicOutput> {
     },
 }
 
+impl<Message, PrivateOutput, PublicOutput>
+    AsynchronousRoundResult<Message, PrivateOutput, PublicOutput>
+{
+    /// Returns the malicious parties that were reported as part of this asynchronous round result.
+    pub fn malicious_parties(&self) -> Vec<PartyID> {
+        match self {
+            AsynchronousRoundResult::Advance {
+                malicious_parties,
+                message: _,
+            } => malicious_parties.clone(),
+            AsynchronousRoundResult::Finalize {
+                malicious_parties,
+                private_output: _,
+                public_output: _,
+            } => malicious_parties.clone(),
+        }
+    }
+}
+
 /// A message sent in the protocol. Typically, an enum over the list of messages in each round.
 pub type Message<P> = <P as Party>::Message;
 
@@ -402,8 +151,12 @@ pub type PublicInput<P> = <P as Party>::PublicInput;
 mod tests {
     use super::*;
     use crate::HandleInvalidMessages;
-    use crypto_bigint::{Random, Uint};
-    use rand_core::OsRng;
+    use crypto_bigint::{Random, Uint, U256};
+    use group::helpers::DeduplicateAndSort;
+    use group::OsCsRng;
+    use rand::Rng;
+    use std::collections::hash_map::Entry;
+    use std::collections::{HashMap, HashSet};
 
     struct MathParty {}
 
@@ -426,11 +179,13 @@ mod tests {
             messages: Vec<HashMap<PartyID, Self::Message>>,
             _private_input: Option<Self::PrivateInput>,
             _public_input: &Self::PublicInput,
-            _rng: &mut impl CryptoRngCore,
+            _malicious_parties_by_round: HashMap<u64, HashSet<PartyID>>,
+            _rng: &mut impl CsRng,
         ) -> Result<
             AsynchronousRoundResult<Self::Message, Self::PrivateOutput, Self::PublicOutput>,
             Self::Error,
         > {
+            println!("Party {party_id:?}: Messages {messages:?}");
             match &messages[..] {
                 [] => {
                     let message = match party_id {
@@ -565,7 +320,7 @@ mod tests {
             }
         }
 
-        fn round_causing_threshold_not_reached(failed_round: usize) -> Option<usize> {
+        fn round_causing_threshold_not_reached(failed_round: u64) -> Option<u64> {
             match failed_round {
                 3 => Some(1),
                 4 => Some(3),
@@ -576,9 +331,9 @@ mod tests {
 
     #[test]
     fn guarantees_output() {
-        let session_id = Uint::random(&mut OsRng);
+        let session_id = Uint::random(&mut OsCsRng);
         let access_structure =
-            WeightedThresholdAccessStructure::uniform(3, 6, 6, &mut OsRng).unwrap();
+            WeightedThresholdAccessStructure::uniform(3, 6, 6, &mut OsCsRng).unwrap();
 
         let mut messages = HashMap::new();
 
@@ -592,14 +347,11 @@ mod tests {
                     HashMap::new(),
                     None,
                     &(),
-                    &mut OsRng,
+                    &mut OsCsRng,
                 )
                 .unwrap()
                 {
-                    AsynchronousRoundResult::Advance {
-                        message,
-                        malicious_parties: _,
-                    } => message,
+                    GuaranteedOutputDeliveryRoundResult::Advance { message } => message,
                     _ => panic!(),
                 };
 
@@ -642,14 +394,11 @@ mod tests {
                         .collect(),
                     None,
                     &(),
-                    &mut OsRng,
+                    &mut OsCsRng,
                 )
                 .unwrap()
                 {
-                    AsynchronousRoundResult::Advance {
-                        message,
-                        malicious_parties: _,
-                    } => message,
+                    GuaranteedOutputDeliveryRoundResult::Advance { message } => message,
                     _ => panic!(),
                 };
 
@@ -698,7 +447,7 @@ mod tests {
                 .collect(),
             None,
             &(),
-            &mut OsRng,
+            &mut OsCsRng,
         );
 
         assert!(matches!(res.err().unwrap(), Error::ThresholdNotReached));
@@ -743,7 +492,7 @@ mod tests {
                 .collect(),
             None,
             &(),
-            &mut OsRng,
+            &mut OsCsRng,
         );
 
         assert!(matches!(res.err().unwrap(), Error::ThresholdNotReached));
@@ -787,17 +536,11 @@ mod tests {
                         .collect(),
                     None,
                     &(),
-                    &mut OsRng,
+                    &mut OsCsRng,
                 )
                 .unwrap()
                 {
-                    AsynchronousRoundResult::Advance {
-                        message,
-                        malicious_parties,
-                    } => {
-                        assert_eq!(malicious_parties, vec![1, 6]);
-                        message
-                    }
+                    GuaranteedOutputDeliveryRoundResult::Advance{ message } => message,
                     _ => panic!(),
                 };
 
@@ -841,7 +584,7 @@ mod tests {
                 .collect(),
             None,
             &(),
-            &mut OsRng,
+            &mut OsCsRng,
         );
 
         assert!(matches!(res.err().unwrap(), Error::ThresholdNotReached));
@@ -884,16 +627,18 @@ mod tests {
                 .collect(),
             None,
             &(),
-            &mut OsRng,
+            &mut OsCsRng,
         )
         .unwrap()
         {
-            AsynchronousRoundResult::Finalize {
-                public_output,
+            GuaranteedOutputDeliveryRoundResult::Finalize {
+                public_output_value,
                 malicious_parties,
                 private_output: _,
             } => {
                 assert_eq!(malicious_parties, vec![1, 2, 6]);
+
+                let public_output: u64 = bcs::from_bytes(&public_output_value).unwrap();
 
                 let first_round_messages_sum = 88 + 7 + 1;
                 let second_round_messages_product = 7 * 11 * 3 * 2;
@@ -911,6 +656,412 @@ mod tests {
             _ => panic!(),
         };
     }
+
+    struct BitMaskParty;
+
+    impl Party for BitMaskParty {
+        type Error = Error;
+        type PublicInput = ();
+        type PrivateOutput = ();
+        type PublicOutputValue = Vec<U256>;
+        type PublicOutput = Vec<U256>;
+        type Message = (u64, U256);
+    }
+
+    impl AsynchronouslyAdvanceable for BitMaskParty {
+        type PrivateInput = ();
+
+        fn advance(
+            _session_id: CommitmentSizedNumber,
+            party_id: PartyID,
+            access_structure: &WeightedThresholdAccessStructure,
+            messages: Vec<HashMap<PartyID, Self::Message>>,
+            _private_input: Option<Self::PrivateInput>,
+            _public_input: &Self::PublicInput,
+            _malicious_parties_by_round: HashMap<u64, HashSet<PartyID>>,
+            rng: &mut impl CsRng,
+        ) -> Result<
+            AsynchronousRoundResult<Self::Message, Self::PrivateOutput, Self::PublicOutput>,
+            Self::Error,
+        > {
+            match &messages[..] {
+                [] => {
+                    // First round: encode party ID into bottom 3 bits
+                    // Malicious parties have 3 bits of zero
+                    let mut val = U256::random(rng);
+                    let bottom_bits = (party_id as u8) & 0b111;
+                    val = ((val >> 3) << 3) | (U256::from(bottom_bits as u64));
+                    Ok(AsynchronousRoundResult::Advance {
+                        malicious_parties: vec![],
+                        message: (1, val),
+                    })
+                }
+                [_] => {
+                    // Second round: encode party ID into following 3 LSBs
+                    // Malicious parties have LSBs 3-4-5 of zero
+                    let mut val = U256::random(rng);
+                    let top_bits = ((party_id >> 3) as u8) & 0b111;
+                    val = (val >> 3) | ((U256::from(top_bits as u64)) << (256 - 3));
+                    Ok(AsynchronousRoundResult::Advance {
+                        malicious_parties: vec![],
+                        message: (2, val),
+                    })
+                }
+                [first_round, second_round] => {
+                    // Check we have a threshold in each round
+                    let round1_msgs = first_round;
+                    let round2_msgs = second_round;
+
+                    let (malicious1, r1_filtered): (Vec<_>, HashMap<_, _>) = round1_msgs
+                        .iter()
+                        .map(|(&id, &raw_msg)| {
+                            let val = raw_msg.1;
+                            let is_valid = val & U256::from(7u8) != U256::ZERO;
+                            (
+                                id,
+                                if is_valid {
+                                    Ok(val)
+                                } else {
+                                    Err(Error::InvalidParameters)
+                                },
+                            )
+                        })
+                        .handle_invalid_messages_async();
+
+                    let (malicious2, r2_filtered): (Vec<_>, HashMap<_, _>) = round2_msgs
+                        .iter()
+                        .map(|(&id, &raw_msg)| {
+                            let val = raw_msg.1;
+                            let is_valid = val >= U256::ONE << 253;
+                            (
+                                id,
+                                if is_valid {
+                                    Ok(val)
+                                } else {
+                                    Err(Error::InvalidParameters)
+                                },
+                            )
+                        })
+                        .handle_invalid_messages_async();
+
+                    let all_malicious: HashSet<_> =
+                        malicious1.into_iter().chain(malicious2).collect();
+                    let valid_ids: HashSet<_> = r1_filtered
+                        .keys()
+                        .chain(r2_filtered.keys())
+                        .copied()
+                        .collect();
+
+                    access_structure.is_authorized_subset(&valid_ids)?;
+
+                    // Malicious parties have 3 bits of zero
+                    let mut val = U256::random(rng);
+                    let bottom_bits = (party_id as u8) & 0b111;
+                    val = ((val >> 3) << 3) | (U256::from(bottom_bits as u64));
+                    Ok(AsynchronousRoundResult::Advance {
+                        malicious_parties: all_malicious
+                            .into_iter()
+                            .filter(|&x| x % 2 != 0)
+                            .collect(),
+                        message: (3, val),
+                    })
+                }
+                [_, _, _] => {
+                    // Fourth round: encode party ID into following 3 LSBs
+                    // Malicious parties have LSBs 3-4-5 of zero
+                    let mut val = U256::random(rng);
+                    let top_bits = ((party_id >> 3) as u8) & 0b111;
+                    val = (val >> 3) | ((U256::from(top_bits as u64)) << (256 - 3));
+                    Ok(AsynchronousRoundResult::Advance {
+                        malicious_parties: vec![],
+                        message: (4, val),
+                    })
+                }
+                [first_round, second_round, third_round, fourth_round] => {
+                    // Final Round:
+                    // Check we have a threshold in each round
+                    let round1_msgs = first_round;
+                    let round2_msgs = second_round;
+                    let round3_msgs = third_round;
+                    let round4_msgs = fourth_round;
+
+                    let (malicious1, r1_filtered): (Vec<_>, HashMap<_, _>) = round1_msgs
+                        .iter()
+                        .map(|(&id, &raw_msg)| {
+                            let val = raw_msg.1;
+                            let is_valid = val & U256::from(7u8) != U256::ZERO;
+                            (
+                                id,
+                                if is_valid {
+                                    Ok(val)
+                                } else {
+                                    Err(Error::InvalidParameters)
+                                },
+                            )
+                        })
+                        .handle_invalid_messages_async();
+
+                    let (malicious2, r2_filtered): (Vec<_>, HashMap<_, _>) = round2_msgs
+                        .iter()
+                        .map(|(&id, &raw_msg)| {
+                            let val = raw_msg.1;
+                            let is_valid = val >= U256::ONE << 253;
+                            (
+                                id,
+                                if is_valid {
+                                    Ok(val)
+                                } else {
+                                    Err(Error::InvalidParameters)
+                                },
+                            )
+                        })
+                        .handle_invalid_messages_async();
+
+                    let (malicious3, r3_filtered): (Vec<_>, HashMap<_, _>) = round3_msgs
+                        .iter()
+                        .map(|(&id, &raw_msg)| {
+                            let val = raw_msg.1;
+                            let is_valid = val & U256::from(7u8) != U256::ZERO;
+                            (
+                                id,
+                                if is_valid {
+                                    Ok(val)
+                                } else {
+                                    Err(Error::InvalidParameters)
+                                },
+                            )
+                        })
+                        .handle_invalid_messages_async();
+
+                    let (malicious4, r4_filtered): (Vec<_>, HashMap<_, _>) = round4_msgs
+                        .iter()
+                        .map(|(&id, &raw_msg)| {
+                            let val = raw_msg.1;
+                            let is_valid = val >= U256::ONE << 253;
+                            (
+                                id,
+                                if is_valid {
+                                    Ok(val)
+                                } else {
+                                    Err(Error::InvalidParameters)
+                                },
+                            )
+                        })
+                        .handle_invalid_messages_async();
+
+                    let all_malicious: HashSet<_> = malicious1
+                        .into_iter()
+                        .chain(
+                            malicious2
+                                .into_iter()
+                                .chain(malicious3.into_iter().chain(malicious4)),
+                        )
+                        .collect();
+                    let valid_ids: HashSet<_> = r1_filtered
+                        .keys()
+                        .chain(
+                            r2_filtered
+                                .keys()
+                                .chain(r3_filtered.keys().chain(r4_filtered.keys())),
+                        )
+                        .copied()
+                        .collect();
+
+                    access_structure.is_authorized_subset(&valid_ids)?;
+
+                    let mut result: Vec<_> = r3_filtered
+                        .into_values()
+                        .chain(r4_filtered.into_values())
+                        .collect();
+                    result.sort();
+
+                    Ok(AsynchronousRoundResult::Finalize {
+                        public_output: result,
+                        private_output: (),
+                        malicious_parties: all_malicious.into_iter().collect(),
+                    })
+                }
+                _ => panic!("Too many rounds"),
+            }
+        }
+
+        fn round_causing_threshold_not_reached(failed_round: u64) -> Option<u64> {
+            match failed_round {
+                5 => Some(3),
+                3 => Some(1),
+                _ => None,
+            }
+        }
+    }
+
+    #[test]
+    fn test_bitmask_protocol_termination_and_consistency() {
+        let mut cs_rng = OsCsRng;
+        let session_id = Uint::random(&mut cs_rng);
+        let n = 301;
+        let threshold = 201; // ceil(2n/3)
+
+        let access_structure =
+            WeightedThresholdAccessStructure::uniform(threshold, n, n, &mut cs_rng).unwrap();
+
+        let mut all_messages: HashMap<u64, HashMap<PartyID, Vec<u8>>> = HashMap::new();
+        let mut timeline_visible_messages: HashMap<u64, HashMap<u64, HashMap<_, _>>> =
+            HashMap::new();
+        let mut output_refs: Option<Vec<u8>> = None;
+        let mut malicious_acc: HashSet<PartyID> = HashSet::new();
+
+        let mut finalised = 0;
+        let mut counter = 0;
+
+        while finalised < threshold {
+            counter += 1;
+            if counter == 20000 {
+                panic!("No delivery");
+            }
+
+            // Sample a party
+            let pid: PartyID = cs_rng.random::<PartyID>() % n + 1;
+
+            // Find max round where pid sent a message
+            let round = all_messages
+                .iter()
+                .filter_map(|(round, pid_map)| {
+                    if pid_map.contains_key(&pid) {
+                        Some(*round)
+                    } else {
+                        None
+                    }
+                })
+                .max()
+                .unwrap_or(0)
+                + 1;
+
+            // Check if we can advance
+            if round > 1
+                && timeline_visible_messages
+                    .get(&(round - 1))
+                    .unwrap_or(&HashMap::new())
+                    .get(&(round - 1))
+                    .is_none_or(|round_map| {
+                        access_structure
+                            .is_authorized_subset(&round_map.keys().cloned().collect())
+                            .is_err()
+                    })
+            {
+                // Can't advance, we are not in the first round and didn't get a threshold of messages yet
+                continue;
+            }
+
+            let result = BitMaskParty::advance_with_guaranteed_output(
+                session_id,
+                pid,
+                &access_structure,
+                timeline_visible_messages
+                    .get(&(round - 1))
+                    .unwrap_or(&HashMap::new())
+                    .clone(),
+                None,
+                &(),
+                &mut cs_rng,
+            );
+
+            match result {
+                Ok(GuaranteedOutputDeliveryRoundResult::Advance { message }) => {
+                    // Add message to all messages
+                    match all_messages.entry(round) {
+                        Entry::Occupied(mut entry) => {
+                            entry.get_mut().insert(pid, message);
+                        }
+                        Entry::Vacant(entry) => {
+                            let mut map = HashMap::new();
+                            map.insert(pid, message);
+                            entry.insert(map);
+                        }
+                    }
+
+                    // If reached a threshold for the first time, copy into visible
+                    match all_messages.entry(round) {
+                        Entry::Occupied(mut entry) => {
+                            let parties_in_round: HashSet<PartyID> = entry
+                                .get_mut()
+                                .keys()
+                                .copied()
+                                .filter(|party_id| !malicious_acc.contains(party_id))
+                                .collect();
+
+                            // Only add to visible messages if we have more than a threshold of round messages sent
+                            // and this is the first time it happens, namely, we don't pass without pid
+                            if access_structure
+                                .is_authorized_subset(&parties_in_round)
+                                .is_ok()
+                            {
+                                // Remove the pid from the set
+                                let mut parties_without_pid = parties_in_round.clone();
+                                parties_without_pid.remove(&pid);
+
+                                // Check if the subset without the pid is not authorized
+                                if access_structure
+                                    .is_authorized_subset(&parties_without_pid)
+                                    .is_err()
+                                {
+                                    // Insert the current round map into the timeline_visible_messages
+                                    if let Some(round_map) = all_messages.get(&round) {
+                                        timeline_visible_messages
+                                            .entry(round)
+                                            .or_insert_with(HashMap::new)
+                                            .insert(round, round_map.clone());
+                                    }
+                                    // Now, for each previous round < current round, copy the round map
+                                    if let Some(prev_round_map) =
+                                        timeline_visible_messages.get(&(round - 1)).cloned()
+                                    {
+                                        // Get a mutable reference to the current round, or insert an empty HashMap if it doesn't exist
+                                        let current_round_map = timeline_visible_messages
+                                            .entry(round)
+                                            .or_insert_with(HashMap::new);
+
+                                        // Clone and extend the current round with the previous round's map
+                                        for (key, value) in prev_round_map {
+                                            current_round_map.insert(key, value);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Entry::Vacant(_) => panic!(),
+                    }
+                }
+
+                Ok(GuaranteedOutputDeliveryRoundResult::Finalize {
+                    public_output_value,
+                    malicious_parties,
+                    ..
+                }) => {
+                    for m in malicious_parties {
+                        malicious_acc.insert(m);
+                    }
+
+                    if let Some(prev_output_value) = &output_refs {
+                        assert_eq!(prev_output_value, &public_output_value);
+                    } else {
+                        output_refs = Some(public_output_value);
+                    }
+
+                    finalised += 1;
+                }
+                Err(Error::ThresholdNotReached) => {
+                    // Need to get more messages.
+                    // Extend the visible messages at previous round by copying from all messages received so far
+                    // Then when it tries again, it will have more messages and will get a chance to pass threshold
+                    timeline_visible_messages
+                        .entry(round - 1)
+                        .or_insert_with(HashMap::new)
+                        .extend(all_messages.clone());
+                }
+                Err(e) => panic!("Unexpected error: {e:?}"),
+            }
+        }
+    }
 }
 
 // Since exporting rust `#[cfg(test)]` is impossible, these test helpers exist in a dedicated feature-gated
@@ -921,13 +1072,13 @@ pub mod test_helpers {
     use crate::WeightedThresholdAccessStructure;
     use criterion::measurement::{Measurement, WallTime};
     use group::helpers::DeduplicateAndSort;
-    use rand_core::OsRng;
+
+    use super::*;
+    use group::OsCsRng;
     #[cfg(feature = "parallel")]
     use rayon::prelude::*;
     use std::collections::HashSet;
     use std::time::Duration;
-
-    use super::*;
 
     pub fn asynchronous_session_terminates_successfully<P: Party + AsynchronouslyAdvanceable>(
         session_id: CommitmentSizedNumber,
@@ -958,7 +1109,7 @@ pub mod test_helpers {
         private_inputs: HashMap<PartyID, P::PrivateInput>,
         public_inputs: HashMap<PartyID, P::PublicInput>,
         number_of_rounds: usize,
-        parties_per_round: HashMap<usize, HashSet<PartyID>>,
+        parties_by_round: HashMap<u64, HashSet<PartyID>>,
         bench_separately: bool,
         debug: bool,
     ) -> (Duration, Vec<Duration>, P::PublicOutput) {
@@ -969,7 +1120,7 @@ pub mod test_helpers {
             public_inputs,
             HashMap::new(),
             number_of_rounds,
-            parties_per_round,
+            parties_by_round,
             bench_separately,
             debug,
         )
@@ -983,9 +1134,9 @@ pub mod test_helpers {
         access_structure: &WeightedThresholdAccessStructure,
         private_inputs: HashMap<PartyID, P::PrivateInput>,
         public_inputs: HashMap<PartyID, P::PublicInput>,
-        malicious_parties: HashMap<usize, HashSet<PartyID>>,
+        malicious_parties_by_round: HashMap<u64, HashSet<PartyID>>,
         number_of_rounds: usize,
-        parties_per_round: HashMap<usize, HashSet<PartyID>>,
+        parties_by_round: HashMap<u64, HashSet<PartyID>>,
         bench_separately: bool,
         debug: bool,
     ) -> (Duration, Vec<Duration>, P::PublicOutput)
@@ -1006,24 +1157,35 @@ pub mod test_helpers {
         let mut messages: Vec<HashMap<_, _>> = vec![];
         loop {
             let current_round = messages.len() + 1;
-            let current_round_malicious_parties = malicious_parties
-                .get(&current_round)
+            let current_round_malicious_parties = malicious_parties_by_round
+                .get(&(current_round as u64))
                 .unwrap_or(&HashSet::new())
                 .clone()
                 .deduplicate_and_sort();
-            let expected_malicious_parties = malicious_parties
-                .get(&(current_round - 1))
+            let expected_malicious_parties = malicious_parties_by_round
+                .get(&((current_round - 1) as u64))
                 .unwrap_or(&HashSet::new())
                 .clone()
                 .deduplicate_and_sort();
 
-            let mut subset = parties_per_round
-                .get(&current_round)
+            let current_malicious_parties_by_round: HashMap<_, _> = (1..current_round as u64)
+                .map(|round| {
+                    let malicious_parties = malicious_parties_by_round
+                        .get(&(round - 1))
+                        .cloned()
+                        .unwrap_or_default();
+
+                    (round, malicious_parties)
+                })
+                .collect();
+
+            let mut subset = parties_by_round
+                .get(&(current_round as u64))
                 .cloned()
                 .unwrap_or_else(|| {
                     // Let's try a different subset in every time.
                     access_structure
-                        .random_authorized_subset(&mut OsRng)
+                        .random_authorized_subset(&mut OsCsRng)
                         .unwrap()
                 })
                 .into_iter()
@@ -1053,14 +1215,12 @@ pub mod test_helpers {
                     messages.clone(),
                     Some(private_input.clone()),
                     public_inputs.get(&evaluation_party_id).unwrap(),
-                    &mut OsRng,
+                    current_malicious_parties_by_round.clone(),
+                    &mut OsCsRng,
                 );
                 let res = res.unwrap_or_else(|e| {
                     panic!(
-                        "Failed to advance round #{:?} in party {evaluation_party_id}. Got error: {:?}",
-                        current_round,
-                        e
-                    )
+                        "Failed to advance round #{current_round:?} in party {evaluation_party_id}. Got error: {e:?}")
                 });
 
                 let time = measurement.end(now);
@@ -1078,9 +1238,7 @@ pub mod test_helpers {
                     } => {
                         assert_eq!(
                             malicious_parties, expected_malicious_parties,
-                            "expected malicious parties for round #{current_round} {:?} got {:?}",
-                            expected_malicious_parties, malicious_parties
-                        );
+                            "expected malicious parties for round #{current_round} {expected_malicious_parties:?} got {malicious_parties:?}");
 
                         if current_round == number_of_rounds {
                             panic!("protocol did not finish on round #{number_of_rounds} in party {evaluation_party_id} as expected");
@@ -1095,9 +1253,7 @@ pub mod test_helpers {
                     } => {
                         assert_eq!(
                             malicious_parties, expected_malicious_parties,
-                            "expected malicious parties {:?} got {:?}",
-                            expected_malicious_parties, malicious_parties
-                        );
+                            "expected malicious parties {expected_malicious_parties:?} got {malicious_parties:?}");
 
                         return (total_time, total_times, public_output);
                     }
@@ -1124,7 +1280,8 @@ pub mod test_helpers {
                                 messages.clone(),
                                 Some(private_input),
                                 public_inputs.get(&party_id).unwrap(),
-                                &mut OsRng,
+                                current_malicious_parties_by_round.clone(),
+                                &mut OsCsRng,
                             )
                         } else {
                             P::advance(
@@ -1134,7 +1291,8 @@ pub mod test_helpers {
                                 messages.clone(),
                                 Some(private_input),
                                 public_inputs.get(&party_id).unwrap(),
-                                &mut OsRng,
+                                current_malicious_parties_by_round.clone(),
+                                &mut OsCsRng,
                             )
                         };
                         let time = measurement.end(now);
@@ -1143,11 +1301,7 @@ pub mod test_helpers {
                         }
 
                         let res = res.unwrap_or_else(|e| {
-                            panic!(
-                                "Failed to advance round #{:?} in party {party_id}. Got error: {:?}",
-                                current_round,
-                                e
-                            )
+                            panic!("Failed to advance round #{current_round:?} in party {party_id}. Got error: {e:?}")
                         });
 
                         (time, (party_id, res))
@@ -1166,7 +1320,7 @@ pub mod test_helpers {
                             malicious_parties,
                             message,
                         } => {
-                            assert_eq!(malicious_parties, expected_malicious_parties,"expected malicious parties for round #{current_round} {:?} got {:?}", expected_malicious_parties, malicious_parties);
+                            assert_eq!(malicious_parties, expected_malicious_parties,"expected malicious parties for round #{current_round} {expected_malicious_parties:?} got {malicious_parties:?}");
 
                             Some((party_id, message))
                         }
@@ -1175,7 +1329,7 @@ pub mod test_helpers {
                             private_output: _,
                             public_output: _,
                         } => {
-                            panic!("party {party_id} protocol finished early on round #{:?} instead of round #{number_of_rounds} as expected", current_round);
+                            panic!("party {party_id} protocol finished early on round #{current_round:?} instead of round #{number_of_rounds} as expected");
                         },
                     })
                     .chain(outgoing_messages)

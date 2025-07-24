@@ -3,16 +3,16 @@
 
 #![allow(dead_code)]
 
-use crate::common;
-use class_groups::Secp256k1DecryptionKeyShare;
+use std::collections::HashMap;
+
 use crypto_bigint::U256;
+
+use class_groups::Secp256k1DecryptionKeyShare;
 use group::secp256k1::Scalar as GroupSecpScalar;
-use group::{secp256k1::group_element::Value as GroupSecpGroupElementValue, PartyID};
+use group::{secp256k1::group_element::Value as GroupSecpGroupElementValue, OsCsRng, PartyID};
 use homomorphic_encryption::AdditivelyHomomorphicDecryptionKeyShare;
 use mpc::two_party::Round;
 use mpc::{AsynchronousRoundResult, AsynchronouslyAdvanceable, WeightedThresholdAccessStructure};
-use rand_core::OsRng;
-use std::collections::HashMap;
 use twopc_mpc::class_groups::DKGDecentralizedPartyOutput;
 use twopc_mpc::class_groups::DecryptionKeySharePublicParameters;
 use twopc_mpc::class_groups::ProtocolPublicParameters;
@@ -29,6 +29,8 @@ use twopc_mpc::secp256k1::GroupElement as SecpGroupElement;
 use twopc_mpc::secp256k1::Scalar as SecpScalar;
 use twopc_mpc::secp256k1::MESSAGE_LIMBS;
 use twopc_mpc::secp256k1::SCALAR_LIMBS;
+
+use crate::common;
 
 #[derive(Clone)]
 pub struct CentralizedPartyInitializationContext {
@@ -171,9 +173,9 @@ impl ProtocolContext {
     /// A new ProtocolContext initialized with the given parameters
     pub fn new(session_id: u64, num_parties: usize, threshold: usize) -> Self {
         println!("Initializing new Protocol Context with:");
-        println!("  Session ID: {}", session_id);
-        println!("  Number of parties: {}", num_parties);
-        println!("  Threshold: {}", threshold);
+        println!("  Session ID: {session_id}");
+        println!("  Number of parties: {num_parties}");
+        println!("  Threshold: {threshold}");
 
         assert!(
             num_parties >= threshold,
@@ -194,7 +196,7 @@ impl ProtocolContext {
 
         let base = setup_parameters.h;
         let secret_key_bits = setup_parameters.decryption_key_bits();
-        println!("Secret key bits length: {}", secret_key_bits);
+        println!("Secret key bits length: {secret_key_bits}");
 
         println!("Dealing trusted shares to parties...");
         let (decryption_key_share_public_parameters, decryption_key_shares) =
@@ -224,6 +226,7 @@ impl ProtocolContext {
                         party_id,
                         share,
                         &decryption_key_share_public_parameters,
+                        &mut OsCsRng,
                     )
                     .unwrap(),
                 )
@@ -257,7 +260,7 @@ impl ProtocolContext {
         let decentralized_parties = party_ids
             .iter()
             .map(|&id| {
-                println!("  Creating context for party ID: {}", id);
+                println!("  Creating context for party ID: {id}");
                 let key_share = decryption_key_shares
                     .get(&id)
                     .expect("Missing decryption key share")
@@ -365,7 +368,7 @@ pub type CentralizedPartyResult = mpc::two_party::RoundResult<
 /// # Returns
 /// A map from party IDs to their public outputs from the encryption phase
 pub fn run_dkg_phase1(
-    rng: &mut OsRng,
+    rng: &mut OsCsRng,
     protocol_context: &ProtocolContext,
 ) -> Result<HashMap<PartyID, EncryptionOutput>, DKGError> {
     println!("Starting Phase 1: Decentralized parties encryption of secret key shares");
@@ -390,7 +393,7 @@ pub fn run_dkg_phase1(
 
 /// Execute Round 1 of the encryption phase
 pub fn execute_encryption_round1(
-    rng: &mut OsRng,
+    rng: &mut OsCsRng,
     protocol_context: &ProtocolContext,
 ) -> Result<HashMap<PartyID, <EncryptionParty as mpc::Party>::Message>, DKGError> {
     let mut round1_messages = HashMap::new();
@@ -405,6 +408,7 @@ pub fn execute_encryption_round1(
             &party_context
                 .initialization_context
                 .protocol_public_parameters,
+            HashMap::new(),
             rng,
         )?;
 
@@ -428,7 +432,7 @@ pub fn execute_encryption_round1(
 
 /// Execute Round 2 of the encryption phase
 pub fn execute_encryption_round2(
-    rng: &mut OsRng,
+    rng: &mut OsCsRng,
     protocol_context: &ProtocolContext,
     decentralized_messages: &[HashMap<PartyID, <EncryptionParty as mpc::Party>::Message>],
 ) -> Result<HashMap<PartyID, EncryptionOutput>, DKGError> {
@@ -444,6 +448,7 @@ pub fn execute_encryption_round2(
             &party_context
                 .initialization_context
                 .protocol_public_parameters,
+            HashMap::new(),
             rng,
         )?;
 
@@ -471,7 +476,7 @@ pub fn execute_encryption_round2(
 /// # Returns
 /// The centralized party result and updated protocol context
 pub fn run_dkg_phase2(
-    rng: &mut OsRng,
+    rng: &mut OsCsRng,
     protocol_context: &mut ProtocolContext,
     decentralized_party_outputs: &HashMap<PartyID, EncryptionOutput>,
 ) -> Result<CentralizedPartyResult, DKGError> {
@@ -546,7 +551,7 @@ pub fn update_protocol_context_with_dkg_results(
 /// # Returns
 /// A map from party IDs to their verification results
 pub fn run_dkg_phase3(
-    rng: &mut OsRng,
+    rng: &mut OsCsRng,
     protocol_context: &mut ProtocolContext,
     decentralized_party_outputs: &HashMap<PartyID, EncryptionOutput>,
     centralized_party_result: &CentralizedPartyResult,
@@ -580,7 +585,7 @@ pub fn run_dkg_phase3(
 
 /// Execute verification for a single decentralized party
 pub fn execute_verification_for_party(
-    rng: &mut OsRng,
+    rng: &mut OsCsRng,
     party_context: &mut DecentralizedPartyContext,
     decentralized_output: &EncryptionOutput,
     centralized_party_result: &CentralizedPartyResult,
@@ -604,6 +609,7 @@ pub fn execute_verification_for_party(
         vec![], // No messages needed for verification
         None,   // No private input
         &verification_public_input,
+        HashMap::new(),
         rng,
     )?;
 
@@ -647,7 +653,7 @@ pub fn execute_verification_for_party(
 ///
 /// A map from party IDs to their public outputs
 pub fn run_dkg_protocol(
-    rng: &mut OsRng,
+    rng: &mut OsCsRng,
     protocol_context: &mut ProtocolContext,
     skip_parties: Option<Vec<PartyID>>,
 ) -> Result<HashMap<PartyID, VerificationOutput>, DKGError> {
@@ -728,7 +734,7 @@ type DKGOutput = <proof_verification_round::Party<
 ///
 /// A map from party IDs to their presign outputs
 pub fn run_presign_protocol(
-    rng: &mut OsRng,
+    rng: &mut OsCsRng,
     protocol_context: &mut ProtocolContext,
     dkg_outputs: &HashMap<PartyID, DKGOutput>,
 ) -> Result<HashMap<PartyID, PresignOutput>, PresignError> {
@@ -781,10 +787,9 @@ pub fn run_presign_protocol(
     // Update each decentralized party's presign context
     for party_context in &mut protocol_context.decentralized_parties {
         if let Some(output) = presign_outputs.get(&party_context.id) {
-            party_context.presign_context =
-                Some(common::DecentralizedPartyPresignContext {
-                    presign_output: output.clone(),
-                });
+            party_context.presign_context = Some(common::DecentralizedPartyPresignContext {
+                presign_output: output.clone(),
+            });
         }
     }
 
@@ -797,7 +802,7 @@ pub fn run_presign_protocol(
 /// # Returns
 /// Updated messages from all rounds executed so far
 fn execute_presign_phase1(
-    rng: &mut OsRng,
+    rng: &mut OsCsRng,
     protocol_context: &ProtocolContext,
     dkg_outputs: &HashMap<PartyID, DKGOutput>,
     participating_party_ids: &[PartyID],
@@ -836,7 +841,7 @@ fn execute_presign_phase1(
 /// # Returns
 /// Updated messages from all rounds executed so far
 fn execute_presign_phase2(
-    rng: &mut OsRng,
+    rng: &mut OsCsRng,
     protocol_context: &ProtocolContext,
     dkg_outputs: &HashMap<PartyID, DKGOutput>,
     participating_party_ids: &[PartyID],
@@ -862,7 +867,7 @@ fn execute_presign_phase2(
 /// # Returns
 /// Map of party IDs to their generated messages for this round
 fn execute_presign_round(
-    rng: &mut OsRng,
+    rng: &mut OsCsRng,
     protocol_context: &ProtocolContext,
     dkg_outputs: &HashMap<PartyID, DKGOutput>,
     participating_party_ids: &[PartyID],
@@ -888,12 +893,11 @@ fn execute_presign_round(
             } => {
                 assert!(
                     malicious_parties.is_empty(),
-                    "No parties should be flagged as malicious in Presign {}",
-                    round_name
+                    "No parties should be flagged as malicious in Presign {round_name}"
                 );
                 round_messages.insert(party_id, message);
             }
-            _ => panic!("Expected Advance result in Presign {}", round_name),
+            _ => panic!("Expected Advance result in Presign {round_name}"),
         }
     }
 
@@ -902,7 +906,7 @@ fn execute_presign_round(
 
 /// Advance a presign party with the given inputs
 pub fn advance_presign_party(
-    rng: &mut OsRng,
+    rng: &mut OsCsRng,
     party_context: &DecentralizedPartyContext,
     messages: &[HashMap<PartyID, PresignMessage>],
     dkg_outputs: &HashMap<PartyID, DKGOutput>,
@@ -928,6 +932,7 @@ pub fn advance_presign_party(
         messages.to_vec(),
         None, // No private input
         &public_input,
+        HashMap::new(),
         rng,
     )
 }
@@ -937,7 +942,7 @@ pub fn advance_presign_party(
 /// # Returns
 /// Map of party IDs to their final presign outputs
 pub fn finalize_presign(
-    rng: &mut OsRng,
+    rng: &mut OsCsRng,
     protocol_context: &ProtocolContext,
     dkg_outputs: &HashMap<PartyID, DKGOutput>,
     participating_party_ids: &[PartyID],

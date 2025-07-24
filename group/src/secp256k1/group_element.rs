@@ -3,18 +3,16 @@
 
 use std::ops::{Add, AddAssign, Neg, Sub, SubAssign};
 
-use crypto_bigint::{Uint, U256};
+use crypto_bigint::{Int, Uint, U256};
+use hash2curve::{ExpandMsgXof, GroupDigest};
 use k256::{
-    elliptic_curve,
     elliptic_curve::{
-        group::prime::PrimeCurveAffine,
-        hash2curve::{ExpandMsgXof, GroupDigest},
-        ops::Reduce,
-        point::AffineCoordinates,
-        BatchNormalize as _, Group,
+        group::prime::PrimeCurveAffine, ops::Reduce, point::AffineCoordinates, BatchNormalize as _,
+        Group,
     },
     AffinePoint, ProjectivePoint, Secp256k1,
 };
+
 use serde::{Deserialize, Serialize};
 use sha3::Shake256;
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
@@ -24,6 +22,7 @@ use crate::{
     secp256k1::{scalar::Scalar, CURVE_EQUATION_A, CURVE_EQUATION_B, MODULUS, ORDER},
     AffineXCoordinate, BoundedGroupElement, CyclicGroupElement, GroupElement as _, HashToGroup,
     KnownOrderGroupElement, LinearlyCombinable, MulByGenerator, PrimeGroupElement, Scale,
+    Transcribeable,
 };
 
 use super::SCALAR_LIMBS;
@@ -42,6 +41,10 @@ pub struct PublicParameters {
     pub generator: Value,
     pub curve_equation_a: U256,
     pub curve_equation_b: U256,
+}
+
+impl Transcribeable for PublicParameters {
+    type CanonicalRepresentation = Self;
 }
 
 impl Default for PublicParameters {
@@ -143,10 +146,6 @@ impl crate::GroupElement for GroupElement {
 
     type PublicParameters = PublicParameters;
 
-    fn public_parameters(&self) -> Self::PublicParameters {
-        PublicParameters::default()
-    }
-
     fn new(value: Self::Value, _public_parameters: &Self::PublicParameters) -> crate::Result<Self> {
         // `k256::AffinePoint` assures deserialized values are on curve,
         // and `Value` can only be instantiated through deserialization, so
@@ -172,8 +171,28 @@ impl crate::GroupElement for GroupElement {
         crate::scale_bounded(self, scalar, scalar_bits)
     }
 
+    fn scale_bounded_vartime<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        scalar_bits: u32,
+    ) -> Self {
+        self.scale_bounded(scalar, scalar_bits)
+    }
+
+    fn add_randomized(self, other: &Self) -> Self {
+        self + other
+    }
+
+    fn add_vartime(self, other: &Self) -> Self {
+        self + other
+    }
+
     fn double(&self) -> Self {
         Self(<ProjectivePoint as Group>::double(&self.0))
+    }
+
+    fn double_vartime(&self) -> Self {
+        self.double()
     }
 }
 
@@ -280,16 +299,110 @@ impl CyclicGroupElement for GroupElement {
 }
 
 impl Scale<Scalar> for GroupElement {
-    fn scale_generic(&self, scalar: &Scalar) -> Self {
+    fn scale_randomized_accelerated(
+        &self,
+        scalar: &Scalar,
+        _public_parameters: &Self::PublicParameters,
+    ) -> Self {
         scalar * self
     }
 
-    fn scale_bounded_generic(&self, scalar: &Scalar, scalar_bits: u32) -> Self {
+    fn scale_vartime_accelerated(
+        &self,
+        scalar: &Scalar,
+        _public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_vartime(&scalar.into())
+    }
+
+    fn scale_randomized_bounded_accelerated(
+        &self,
+        scalar: &Scalar,
+        _public_parameters: &Self::PublicParameters,
+        scalar_bits: u32,
+    ) -> Self {
         self.scale_bounded(&scalar.into(), scalar_bits)
     }
 
-    fn scale_bounded_vartime_generic(&self, scalar: &Scalar, scalar_bits: u32) -> Self {
+    fn scale_bounded_vartime_accelerated(
+        &self,
+        scalar: &Scalar,
+        _public_parameters: &Self::PublicParameters,
+        scalar_bits: u32,
+    ) -> Self {
         self.scale_bounded_vartime(&scalar.into(), scalar_bits)
+    }
+}
+
+impl<const LIMBS: usize> Scale<Uint<LIMBS>> for GroupElement {
+    fn scale_randomized_accelerated(
+        &self,
+        scalar: &Uint<LIMBS>,
+        _public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale(scalar)
+    }
+
+    fn scale_vartime_accelerated(
+        &self,
+        scalar: &Uint<LIMBS>,
+        _public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_vartime(scalar)
+    }
+
+    fn scale_randomized_bounded_accelerated(
+        &self,
+        scalar: &Uint<LIMBS>,
+        _public_parameters: &Self::PublicParameters,
+        scalar_bits: u32,
+    ) -> Self {
+        self.scale_bounded(scalar, scalar_bits)
+    }
+
+    fn scale_bounded_vartime_accelerated(
+        &self,
+        scalar: &Uint<LIMBS>,
+        _public_parameters: &Self::PublicParameters,
+        scalar_bits: u32,
+    ) -> Self {
+        self.scale_bounded_vartime(scalar, scalar_bits)
+    }
+}
+
+impl<const LIMBS: usize> Scale<Int<LIMBS>> for GroupElement {
+    fn scale_randomized_accelerated(
+        &self,
+        scalar: &Int<LIMBS>,
+        _public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_integer(scalar)
+    }
+
+    fn scale_vartime_accelerated(
+        &self,
+        scalar: &Int<LIMBS>,
+        _public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_integer_vartime(scalar)
+    }
+
+    fn scale_randomized_bounded_accelerated(
+        &self,
+        scalar: &Int<LIMBS>,
+        _public_parameters: &Self::PublicParameters,
+        scalar_bits: u32,
+    ) -> Self {
+        self.scale_integer_bounded(scalar, scalar_bits)
+    }
+
+    fn scale_bounded_vartime_accelerated(
+        &self,
+        scalar: &Int<LIMBS>,
+        _public_parameters: &Self::PublicParameters,
+        scalar_bits: u32,
+    ) -> Self {
+        self.scale_integer_bounded_vartime(scalar, scalar_bits)
     }
 }
 
@@ -302,10 +415,6 @@ impl BoundedGroupElement<SCALAR_LIMBS> for GroupElement {
 impl KnownOrderGroupElement<SCALAR_LIMBS> for GroupElement {
     type Scalar = Scalar;
 
-    fn order(&self) -> Uint<SCALAR_LIMBS> {
-        ORDER
-    }
-
     fn order_from_public_parameters(
         _public_parameters: &Self::PublicParameters,
     ) -> Uint<SCALAR_LIMBS> {
@@ -315,9 +424,7 @@ impl KnownOrderGroupElement<SCALAR_LIMBS> for GroupElement {
 
 impl MulByGenerator<Scalar> for GroupElement {
     fn mul_by_generator(&self, scalar: Scalar) -> Self {
-        GroupElement(
-            <ProjectivePoint as elliptic_curve::ops::MulByGenerator>::mul_by_generator(&scalar.0),
-        )
+        GroupElement(ProjectivePoint::mul_by_generator(&scalar.0))
     }
 }
 

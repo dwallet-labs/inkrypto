@@ -6,12 +6,13 @@ use std::marker::PhantomData;
 use crypto_bigint::{Encoding, NonZero, Uint};
 use serde::{Deserialize, Serialize};
 
+use group::bounded_natural_numbers_group::MAURER_RANDOMIZER_DIFF_BITS;
 use group::direct_product::ThreeWayPublicParameters;
-use group::Reduce;
 use group::{
     bounded_natural_numbers_group, direct_product, self_product, GroupElement as _,
     KnownOrderGroupElement,
 };
+use group::{Reduce, Transcribeable};
 use homomorphic_encryption::{AdditivelyHomomorphicEncryptionKey, GroupsPublicParametersAccessors};
 use proof::GroupsPublicParameters;
 
@@ -145,6 +146,8 @@ where
     fn homomorphose(
         witness: &Self::WitnessSpaceGroupElement,
         language_public_parameters: &Self::PublicParameters,
+        is_randomizer: bool,
+        is_verify: bool,
     ) -> crate::Result<Self::StatementSpaceGroupElement> {
         if SCALAR_LIMBS > PLAINTEXT_SPACE_SCALAR_LIMBS {
             return Err(Error::InvalidPublicParameters);
@@ -194,6 +197,7 @@ where
             &multiplicand_plaintext,
             witness.multiplicand_randomness(),
             &language_public_parameters.encryption_scheme_public_parameters,
+            is_verify,
         );
 
         // No masking of the plaintext is needed, as we don't need secure function evaluation.
@@ -203,14 +207,30 @@ where
                 .plaintext_space_public_parameters(),
         )?;
 
+        let coefficient = witness.multiplicand().value();
+        let coefficient_upper_bound_bits: u32 = if is_verify {
+            coefficient.bits_vartime()
+        } else if is_randomizer {
+            language_public_parameters
+                .message_group_public_parameters()
+                .sample_bits
+                + MAURER_RANDOMIZER_DIFF_BITS
+        } else {
+            language_public_parameters
+                .message_group_public_parameters()
+                .sample_bits
+        };
+
         let encryption_of_product = encryption_key
             .securely_evaluate_linear_combination_with_randomness(
-                &[witness.multiplicand().value()],
+                &[coefficient],
+                coefficient_upper_bound_bits,
                 [(ciphertext, language_public_parameters.upper_bound)],
                 &group_order,
                 &mask,
                 witness.product_randomness(),
                 &language_public_parameters.encryption_scheme_public_parameters,
+                is_verify,
             )
             .map_err(|_| crate::Error::InvalidPublicParameters)?;
 
@@ -219,9 +239,10 @@ where
 }
 
 pub(super) mod private {
-    use crypto_bigint::Encoding;
-
     use super::*;
+    use crypto_bigint::Encoding;
+    use group::Transcribeable;
+    use proof::CanonicalGroupsPublicParameters;
 
     #[derive(Clone, Debug, PartialEq, Serialize, Eq)]
     pub struct PublicParameters<
@@ -249,6 +270,36 @@ pub(super) mod private {
         pub encryption_scheme_public_parameters: EncryptionKeyPublicParameters,
         pub ciphertext: CiphertextSpaceValue,
         pub upper_bound: Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>,
+    }
+
+    #[derive(Serialize)]
+    pub struct CanonicalPublicParameters<
+        const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
+        const MESSAGE_LIMBS: usize,
+        ScalarPublicParameters: Transcribeable + Serialize,
+        RandomnessSpacePublicParameters: Transcribeable + Serialize,
+        CiphertextSpacePublicParameters: Transcribeable + Serialize,
+        EncryptionKeyPublicParameters: Transcribeable + Serialize,
+        CiphertextSpaceValue: Serialize,
+    >
+    where
+        Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>: Encoding,
+        Uint<MESSAGE_LIMBS>: Encoding,
+    {
+        pub(super) canonical_groups_public_parameters: CanonicalGroupsPublicParameters<
+            ThreeWayPublicParameters<
+                bounded_natural_numbers_group::PublicParameters<MESSAGE_LIMBS>,
+                RandomnessSpacePublicParameters,
+                RandomnessSpacePublicParameters,
+            >,
+            self_product::PublicParameters<2, CiphertextSpacePublicParameters>,
+        >,
+        pub(super) canonical_scalar_group_public_parameters:
+            ScalarPublicParameters::CanonicalRepresentation,
+        pub(super) canonical_encryption_scheme_public_parameters:
+            EncryptionKeyPublicParameters::CanonicalRepresentation,
+        pub(super) ciphertext: CiphertextSpaceValue,
+        pub(super) upper_bound: Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>,
     }
 }
 
@@ -389,6 +440,95 @@ where
 
         message_group_public_parameters
     }
+}
+
+impl<
+        const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
+        const MESSAGE_LIMBS: usize,
+        ScalarPublicParameters: Transcribeable + Serialize,
+        RandomnessSpacePublicParameters: Transcribeable + Serialize,
+        CiphertextSpacePublicParameters: Transcribeable + Serialize,
+        EncryptionKeyPublicParameters: Transcribeable + Serialize,
+        CiphertextSpaceValue: Serialize,
+    >
+    From<
+        private::PublicParameters<
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            MESSAGE_LIMBS,
+            ScalarPublicParameters,
+            RandomnessSpacePublicParameters,
+            CiphertextSpacePublicParameters,
+            EncryptionKeyPublicParameters,
+            CiphertextSpaceValue,
+        >,
+    >
+    for private::CanonicalPublicParameters<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        MESSAGE_LIMBS,
+        ScalarPublicParameters,
+        RandomnessSpacePublicParameters,
+        CiphertextSpacePublicParameters,
+        EncryptionKeyPublicParameters,
+        CiphertextSpaceValue,
+    >
+where
+    Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>: Encoding,
+    Uint<MESSAGE_LIMBS>: Encoding,
+{
+    fn from(
+        value: private::PublicParameters<
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            MESSAGE_LIMBS,
+            ScalarPublicParameters,
+            RandomnessSpacePublicParameters,
+            CiphertextSpacePublicParameters,
+            EncryptionKeyPublicParameters,
+            CiphertextSpaceValue,
+        >,
+    ) -> Self {
+        Self {
+            canonical_groups_public_parameters: value.groups_public_parameters.into(),
+            canonical_encryption_scheme_public_parameters: value
+                .encryption_scheme_public_parameters
+                .into(),
+            canonical_scalar_group_public_parameters: value.scalar_group_public_parameters.into(),
+            ciphertext: value.ciphertext,
+            upper_bound: value.upper_bound,
+        }
+    }
+}
+
+impl<
+        const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
+        const MESSAGE_LIMBS: usize,
+        ScalarPublicParameters: Transcribeable + Serialize,
+        RandomnessSpacePublicParameters: Transcribeable + Serialize,
+        CiphertextSpacePublicParameters: Transcribeable + Serialize,
+        EncryptionKeyPublicParameters: Transcribeable + Serialize,
+        CiphertextSpaceValue: Serialize,
+    > Transcribeable
+    for private::PublicParameters<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        MESSAGE_LIMBS,
+        ScalarPublicParameters,
+        RandomnessSpacePublicParameters,
+        CiphertextSpacePublicParameters,
+        EncryptionKeyPublicParameters,
+        CiphertextSpaceValue,
+    >
+where
+    Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>: Encoding,
+    Uint<MESSAGE_LIMBS>: Encoding,
+{
+    type CanonicalRepresentation = private::CanonicalPublicParameters<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        MESSAGE_LIMBS,
+        ScalarPublicParameters,
+        RandomnessSpacePublicParameters,
+        CiphertextSpacePublicParameters,
+        EncryptionKeyPublicParameters,
+        CiphertextSpaceValue,
+    >;
 }
 
 pub trait WitnessAccessors<

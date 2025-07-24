@@ -4,20 +4,28 @@
 
 use std::ops::Deref;
 
-use crypto_bigint::rand_core::CryptoRngCore;
 use crypto_bigint::subtle::CtOption;
-use crypto_bigint::{CheckedMul, Concat, Encoding, Gcd, Int, InvMod, NonZero, Split, Uint, Word};
-use crypto_primes::is_prime_with_rng;
+use crypto_bigint::{CheckedMul, Concat, Encoding, Int, NonZero, NonZeroUint, Split, Uint, Word};
+use crypto_primes::{is_prime, Flavor};
 use serde::{Deserialize, Serialize};
+
+use group::{CsRng, Transcribeable};
 
 use crate::discriminant::Discriminant;
 use crate::equivalence_class::EquivalenceClass;
 use crate::helpers::math;
 use crate::helpers::math::FIRST_100_PRIMES;
-use crate::ibqf::Ibqf;
 use crate::Error;
 
+/// The bit-length of the prime being targeted during the construction of `h`.
+const H_PRIME_BIT_LENGTH_TARGET: u32 = 128;
+
+/// The maximum number of primes sampled during the construction of `h` before aborting.
+const H_PRIME_MAX_SAMPLE_ATTEMPTS: u32 = 128;
+
 /// Set of parameters used in ClassGroup cryptography.
+///
+/// TODO(#300): the serialization of this object should not be sent over a wire.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Parameters<
     const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
@@ -42,7 +50,6 @@ pub(crate) struct Parameters<
     // Parameters relating to the order.
     // BICYCL (https://eprint.iacr.org/2022/1466) uses `q` as the conductor.
     pub k: u8,
-    pub q_exp_k: NonZero<Uint<DELTA_QK_LIMBS>>,
     pub q_exp_2k: NonZero<Uint<DELTA_QK_LIMBS>>,
 
     // Parameters related to the security of the scheme
@@ -62,19 +69,11 @@ where
     Int<DELTA_K_LIMBS>: Encoding,
     Uint<DELTA_K_LIMBS>: Encoding,
 
-    Int<HALF_DELTA_QK_LIMBS>:
-        InvMod<Modulus = NonZero<Uint<HALF_DELTA_QK_LIMBS>>, Output = Uint<HALF_DELTA_QK_LIMBS>>,
-    Uint<HALF_DELTA_QK_LIMBS>: Concat<Output = Uint<DELTA_QK_LIMBS>>
-        + Gcd<Output = Uint<HALF_DELTA_QK_LIMBS>>
-        + InvMod<Modulus = Uint<HALF_DELTA_QK_LIMBS>, Output = Uint<HALF_DELTA_QK_LIMBS>>,
-
     Int<DELTA_QK_LIMBS>: Encoding,
+    Uint<HALF_DELTA_QK_LIMBS>: Concat<Output = Uint<DELTA_QK_LIMBS>>,
     Uint<DELTA_QK_LIMBS>: Encoding
         + Concat<Output = Uint<DOUBLE_DELTA_QK_LIMBS>>
-        + Gcd<Output = Uint<DELTA_QK_LIMBS>>
         + Split<Output = Uint<HALF_DELTA_QK_LIMBS>>,
-
-    Int<DOUBLE_DELTA_QK_LIMBS>: Encoding,
     Uint<DOUBLE_DELTA_QK_LIMBS>: Split<Output = Uint<DELTA_QK_LIMBS>>,
 {
     pub(crate) fn new(
@@ -82,15 +81,14 @@ where
         k: u8,
         p: NonZero<Uint<DELTA_K_LIMBS>>,
         computational_security_parameter: u32,
-        rng: &mut impl CryptoRngCore,
     ) -> Result<Self, Error> {
-        Self::validate_parameters(&q, k, &p, computational_security_parameter, rng)?;
+        Self::validate_parameters(&q, k, &p, computational_security_parameter)?;
 
         let q_upsized = q.resize::<DELTA_QK_LIMBS>();
-        let q_ = CtOption::from(q_upsized.to_int())
+        let q_ = CtOption::from(q_upsized.try_into_int())
             .into_option()
             .ok_or(Error::InternalError)?;
-        let p_ = CtOption::from((*p).to_int())
+        let p_ = CtOption::from((*p).try_into_int())
             .into_option()
             .ok_or(Error::InternalError)?;
 
@@ -122,12 +120,15 @@ where
         let delta_qk_nz = delta_qk.to_nz().unwrap();
 
         Ok(Self {
-            delta_k: Discriminant::new(delta_k_nz)?,
-            delta_qk: Discriminant::new(delta_qk_nz)?,
+            delta_k: Discriminant::new(delta_k_nz)
+                .into_option()
+                .ok_or(Error::InvalidDiscriminantParameters)?,
+            delta_qk: Discriminant::new(delta_qk_nz)
+                .into_option()
+                .ok_or(Error::InvalidDiscriminantParameters)?,
             q,
             p,
             k,
-            q_exp_k,
             q_exp_2k,
             computational_security_parameter,
         })
@@ -139,7 +140,6 @@ where
         k: u8,
         p: &NonZero<Uint<DELTA_K_LIMBS>>,
         computational_security_parameter: u32,
-        rng: &mut impl CryptoRngCore,
     ) -> Result<(), Error> {
         // Verify that the resulting discriminant will fit inside DISCRIMINANT_LIMBS.
         // `∆_{q^k}` will be computed as `- q^{2k+1} * p`
@@ -168,18 +168,18 @@ where
         }
 
         // Verify q is valid
-        Self::validate_q(q, rng)?;
+        Self::validate_q(q)?;
 
         // Verify k is valid
         Self::validate_k(k)?;
 
         // Verify that p is prime, or one.
-        if !(p.get() == Uint::ONE || is_prime_with_rng(rng, p.deref())) {
+        if !(p.get() == Uint::ONE || is_prime(Flavor::Any, p.deref())) {
             return Err(Error::InvalidPublicParameters);
         }
 
         // If p ≠ 1, check that (q/p) = -1
-        let q_ = CtOption::from((*q).resize::<DELTA_QK_LIMBS>().to_int())
+        let q_ = CtOption::from((*q).resize::<DELTA_QK_LIMBS>().try_into_int())
             .into_option()
             .ok_or(Error::InternalError)?;
         let p_ = p
@@ -196,12 +196,9 @@ where
     }
 
     /// Validate `q`.
-    fn validate_q(
-        q: &Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>,
-        rng: &mut impl CryptoRngCore,
-    ) -> Result<(), Error> {
+    fn validate_q(q: &Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>) -> Result<(), Error> {
         // Only requirement: `q` must be prime.
-        if !is_prime_with_rng(rng, q) {
+        if !is_prime(Flavor::Any, q) {
             return Err(Error::InvalidPublicParameters);
         }
         Ok(())
@@ -219,37 +216,30 @@ where
 
     /// Construct `h`.
     /// The encryption scheme composes this with the randomness.
-    pub(crate) fn h(&self) -> Result<EquivalenceClass<DELTA_QK_LIMBS>, Error> {
+    ///
+    /// Uses `rng` to sample a random prime form.
+    ///
+    /// TODO: use hash-to-group instead (#225)
+    pub(crate) fn h(
+        &self,
+        rng: &mut impl CsRng,
+    ) -> Result<EquivalenceClass<DELTA_QK_LIMBS>, Error> {
+        let kronecker_prime: NonZero<Uint<HALF_DELTA_QK_LIMBS>> = math::random_kronecker_prime(
+            self.delta_qk.deref(),
+            rng,
+            H_PRIME_BIT_LENGTH_TARGET,
+            H_PRIME_MAX_SAMPLE_ATTEMPTS,
+        )
+        .ok_or(Error::InvalidPublicParameters)?
+        .to_nz()
+        .expect("is non-zero; kronecker_prime is a prime");
+
         // Construct t, a prime form for CL(∆_{q^k})²
-        let kronecker_prime = math::smallest_kronecker_prime(self.delta_qk.deref())
-            .map_err(|_| Error::InvalidPublicParameters)?;
-
-        // safe to unwrap; kroncker_prime is a prime, i.e. non-zero
-        let kronecker_prime = Uint::from(kronecker_prime).to_nz().unwrap();
-
-        let t = EquivalenceClass::prime_form(&self.delta_qk, &kronecker_prime)?.square();
+        let t = EquivalenceClass::prime_form(&self.delta_qk, kronecker_prime)?.square_vartime();
 
         // Construct h as t^{q^k}
         // TODO(#17): use t.pow(q_exp_k) instead.
-        // TODO(#46): make const-time; replace `pow_vartime` by `pow`
         Ok(t.pow_vartime(&self.q))
-    }
-
-    /// Construct `f`.
-    /// The encryption scheme composes this with the message.
-    pub(crate) fn f(&self) -> Result<EquivalenceClass<DELTA_QK_LIMBS>, Error> {
-        let form = Ibqf::new_reduced(
-            // safe to unwrap; q is non-zero.
-            CtOption::from(self.q_exp_2k.to_int())
-                .and_then(|q_exp_2k| q_exp_2k.to_nz().into())
-                .into_option()
-                .ok_or(Error::InternalError)?,
-            CtOption::from(self.q_exp_k.to_int())
-                .into_option()
-                .ok_or(Error::InternalError)?,
-            &self.delta_qk,
-        )?;
-        EquivalenceClass::try_from(form)
     }
 
     /// Construct new class group parameters, using a randomly sampled `p`.
@@ -257,9 +247,9 @@ where
         q: NonZero<Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>>,
         k: u8,
         computational_security_parameter: u32,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<Self, Error> {
-        Self::validate_q(&q, rng)?;
+        Self::validate_q(&q)?;
         Self::validate_k(k)?;
 
         let large_discriminant_bits = Uint::<DELTA_QK_LIMBS>::BITS;
@@ -286,7 +276,7 @@ where
 
         // Test if `p=1` can be selected
         if min_p_bits <= 1 {
-            let params = Self::new(q, k, NonZero::ONE, computational_security_parameter, rng);
+            let params = Self::new(q, k, NonZero::ONE, computational_security_parameter);
             if params.is_ok() {
                 return params;
             };
@@ -303,7 +293,7 @@ where
                 .find_map(|candidate| {
                     // safe to unwrap; candidate is a non-zero prime.
                     let p = NonZero::new(Uint::<DELTA_K_LIMBS>::from(*candidate)).unwrap();
-                    Self::new(q, k, p, computational_security_parameter, rng).ok()
+                    Self::new(q, k, p, computational_security_parameter).ok()
                 })
                 .ok_or(Error::InvalidPublicParameters);
         }
@@ -311,11 +301,13 @@ where
         // Attempt to sample a prime for the given bit-length
         const SAMPLE_ITERATIONS: u32 = 1000;
         for _ in 0..SAMPLE_ITERATIONS {
-            let candidate = NonZero::<Uint<DELTA_K_LIMBS>>::new(
-                crypto_primes::generate_prime_with_rng(rng, min_p_bits),
-            )
+            let candidate = NonZero::<Uint<DELTA_K_LIMBS>>::new(crypto_primes::random_prime(
+                rng,
+                Flavor::Any,
+                min_p_bits,
+            ))
             .unwrap();
-            let params = Self::new(q, k, candidate, computational_security_parameter, rng);
+            let params = Self::new(q, k, candidate, computational_security_parameter);
             if params.is_ok() {
                 return params;
             }
@@ -341,12 +333,65 @@ pub(crate) const fn minimum_discriminant_bits(
     }
 }
 
+#[derive(Serialize)]
+pub struct CanonicalParameters<
+    const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
+    const DELTA_K_LIMBS: usize,
+> where
+    Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>: Encoding,
+    Uint<DELTA_K_LIMBS>: Encoding,
+{
+    q: NonZeroUint<PLAINTEXT_SPACE_SCALAR_LIMBS>,
+    k: u8,
+    p: NonZeroUint<DELTA_K_LIMBS>,
+    computational_security_parameter: u32,
+}
+
+impl<
+        const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
+        const DELTA_K_LIMBS: usize,
+        const DELTA_QK_LIMBS: usize,
+    > From<Parameters<PLAINTEXT_SPACE_SCALAR_LIMBS, DELTA_K_LIMBS, DELTA_QK_LIMBS>>
+    for CanonicalParameters<PLAINTEXT_SPACE_SCALAR_LIMBS, DELTA_K_LIMBS>
+where
+    Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>: Encoding,
+    Int<DELTA_K_LIMBS>: Encoding,
+    Uint<DELTA_K_LIMBS>: Encoding,
+    Int<DELTA_QK_LIMBS>: Encoding,
+    Uint<DELTA_QK_LIMBS>: Encoding,
+{
+    fn from(
+        value: Parameters<PLAINTEXT_SPACE_SCALAR_LIMBS, DELTA_K_LIMBS, DELTA_QK_LIMBS>,
+    ) -> Self {
+        Self {
+            q: value.q,
+            k: value.k,
+            p: value.p,
+            computational_security_parameter: value.computational_security_parameter,
+        }
+    }
+}
+
+impl<
+        const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
+        const DELTA_K_LIMBS: usize,
+        const DELTA_QK_LIMBS: usize,
+    > Transcribeable for Parameters<PLAINTEXT_SPACE_SCALAR_LIMBS, DELTA_K_LIMBS, DELTA_QK_LIMBS>
+where
+    Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>: Encoding,
+    Int<DELTA_K_LIMBS>: Encoding,
+    Uint<DELTA_K_LIMBS>: Encoding,
+    Int<DELTA_QK_LIMBS>: Encoding,
+    Uint<DELTA_QK_LIMBS>: Encoding,
+{
+    type CanonicalRepresentation = CanonicalParameters<PLAINTEXT_SPACE_SCALAR_LIMBS, DELTA_K_LIMBS>;
+}
+
 #[cfg(test)]
 mod tests {
     use crypto_bigint::{NonZero, U1280, U1536, U2048, U256, U4096, U768};
-    use rand_core::OsRng;
 
-    use group::secp256k1;
+    use group::{secp256k1, OsCsRng};
 
     use crate::parameters::Parameters;
     use crate::Error;
@@ -380,7 +425,7 @@ mod tests {
 
     #[test]
     fn test_new_random_vartime_success() {
-        assert!(Parameters::<PTL, SDL, LDL>::new_random_vartime(Q, K, 112, &mut OsRng).is_ok());
+        assert!(Parameters::<PTL, SDL, LDL>::new_random_vartime(Q, K, 112, &mut OsCsRng).is_ok());
     }
 
     #[test]
@@ -395,7 +440,10 @@ mod tests {
         ]));
         let res =
             Parameters::<{ U1536::LIMBS }, { U1536::LIMBS }, { U4096::LIMBS }>::new_random_vartime(
-                large_q, K, CSP, &mut OsRng,
+                large_q,
+                K,
+                CSP,
+                &mut OsCsRng,
             );
         assert!(res.is_ok());
         assert_eq!(res.unwrap().p, NonZero::ONE);
@@ -403,14 +451,15 @@ mod tests {
 
     #[test]
     fn test_new_random_vartime_non_prime_q_errors() {
-        let res = Parameters::<PTL, SDL, LDL>::new_random_vartime(NonZero::ONE, K, CSP, &mut OsRng);
+        let res =
+            Parameters::<PTL, SDL, LDL>::new_random_vartime(NonZero::ONE, K, CSP, &mut OsCsRng);
         assert!(res.is_err());
         matches!(res.unwrap_err(), Error::InvalidPublicParameters);
     }
 
     #[test]
     fn test_new_random_vartime_non_unit_k_is_error() {
-        let res = Parameters::<PTL, SDL, LDL>::new_random_vartime(Q, 0, CSP, &mut OsRng);
+        let res = Parameters::<PTL, SDL, LDL>::new_random_vartime(Q, 0, CSP, &mut OsCsRng);
         assert!(res.is_err());
         matches!(res.unwrap_err(), Error::InvalidPublicParameters);
     }
@@ -418,30 +467,33 @@ mod tests {
     #[test]
     fn test_new_random_vartime_fundamental_discriminant_limbs_errors() {
         let res =
-            Parameters::<PTL, SDL, { U1536::LIMBS }>::new_random_vartime(Q, K, CSP, &mut OsRng);
+            Parameters::<PTL, SDL, { U1536::LIMBS }>::new_random_vartime(Q, K, CSP, &mut OsCsRng);
         assert!(res.is_err());
         matches!(res.unwrap_err(), Error::InvalidPublicParameters);
     }
 
     #[test]
     fn test_new_random_vartime_csp_too_high_errors() {
-        let res = Parameters::<PTL, SDL, LDL>::new_random_vartime(Q, K, 128, &mut OsRng);
+        let res = Parameters::<PTL, SDL, LDL>::new_random_vartime(Q, K, 128, &mut OsCsRng);
         assert!(res.is_err());
         matches!(res.unwrap_err(), Error::ComputationalSecurityTooHigh);
     }
 
     #[test]
     fn test_new_random_vartime_sdl_too_small_fails() {
-        assert!(
-            Parameters::<PTL, { U768::LIMBS }, LDL>::new_random_vartime(Q, K, 112, &mut OsRng)
-                .is_err()
-        );
+        assert!(Parameters::<PTL, { U768::LIMBS }, LDL>::new_random_vartime(
+            Q,
+            K,
+            112,
+            &mut OsCsRng
+        )
+        .is_err());
     }
 
     #[test]
     fn test_new_random_vartime_ldl_too_small_fails() {
         assert!(
-            Parameters::<PTL, SDL, { U1536::LIMBS }>::new_random_vartime(Q, K, 112, &mut OsRng)
+            Parameters::<PTL, SDL, { U1536::LIMBS }>::new_random_vartime(Q, K, 112, &mut OsCsRng)
                 .is_err()
         );
     }
@@ -452,41 +504,64 @@ mod tests {
 
     #[test]
     fn test_validate_success() {
-        let res = Parameters::<PTL, SDL, LDL>::validate_parameters(&Q, K, &P, 112, &mut OsRng);
+        let res = Parameters::<PTL, SDL, LDL>::validate_parameters(&Q, K, &P, 112);
         assert!(res.is_ok());
     }
 
     #[test]
     fn test_validate_ldl_too_small_errors() {
-        let res = Parameters::<PTL, SDL, { U1536::LIMBS }>::validate_parameters(
-            &Q, K, &P, 112, &mut OsRng,
-        );
+        let res = Parameters::<PTL, SDL, { U1536::LIMBS }>::validate_parameters(&Q, K, &P, 112);
         assert!(res.is_err());
     }
 
     #[test]
     fn test_validate_p_too_small_errors() {
-        assert!(Parameters::<PTL, SDL, SDL>::validate_parameters(
-            &Q,
-            K,
-            &NonZero::ONE,
-            112,
-            &mut OsRng
-        )
-        .is_err());
+        assert!(
+            Parameters::<PTL, SDL, SDL>::validate_parameters(&Q, K, &NonZero::ONE, 112).is_err()
+        );
     }
 
     #[test]
     fn test_validate_k_is_zero_errors() {
-        assert!(
-            Parameters::<PTL, SDL, LDL>::validate_parameters(&Q, 0, &P, 112, &mut OsRng).is_err()
-        );
+        assert!(Parameters::<PTL, SDL, LDL>::validate_parameters(&Q, 0, &P, 112).is_err());
     }
 
     #[test]
     fn test_validate_csp_too_high_fails() {
-        assert!(
-            Parameters::<PTL, SDL, LDL>::validate_parameters(&Q, K, &P, 128, &mut OsRng).is_err()
-        );
+        assert!(Parameters::<PTL, SDL, LDL>::validate_parameters(&Q, K, &P, 128).is_err());
+    }
+}
+
+#[cfg(feature = "benchmarking")]
+pub(crate) mod benches {
+    use criterion::measurement::WallTime;
+    use criterion::{BenchmarkGroup, Criterion};
+    use rand_chacha::rand_core::SeedableRng;
+    use rand_chacha::ChaChaRng;
+
+    use group::CsRng;
+
+    use crate::parameters::Parameters;
+    use crate::{
+        SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS, SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        SECP256K1_SCALAR_LIMBS,
+    };
+
+    /// Benchmark the time it takes to execute `Parameters::h` for the `SECP256K1` message space.
+    pub fn benchmark_secp256k1_h(g: &mut BenchmarkGroup<WallTime>, rng: &mut impl CsRng) {
+        let q = group::secp256k1::ORDER.to_nz().unwrap();
+        let class_group_parameters = Parameters::<
+            SECP256K1_SCALAR_LIMBS,
+            SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        >::new_random_vartime(q, 1, 112, rng)
+        .unwrap();
+
+        g.bench_function("h", |b| b.iter(|| class_group_parameters.h(rng)));
+    }
+
+    pub(crate) fn benchmark(_c: &mut Criterion) {
+        let mut rng = ChaChaRng::seed_from_u64(123456789u64);
+        benchmark_secp256k1_h(&mut _c.benchmark_group("parameters/secp256k1"), &mut rng);
     }
 }

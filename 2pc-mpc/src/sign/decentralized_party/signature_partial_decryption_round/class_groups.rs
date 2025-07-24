@@ -3,6 +3,17 @@
 
 //! This file implements the Signature Partial Decryption round party for Class Groups
 
+use crate::class_groups::DecryptionShare;
+use crate::class_groups::{
+    DKGDecentralizedPartyOutput, DecryptionKeySharePublicParameters, PartialDecryptionProof,
+    Presign,
+};
+use crate::languages::class_groups::verify_committed_linear_evaluation;
+use crate::sign::centralized_party::message::class_groups::Message;
+use ::class_groups::decryption_key_share;
+use ::class_groups::equivalence_class::EquivalenceClassOps;
+use ::class_groups::MultiFoldNupowAccelerator;
+use ::class_groups::SecretKeyShareSizedInteger;
 use ::class_groups::{encryption_key, CompactIbqf, EquivalenceClass};
 use ::class_groups::{
     equivalence_class, CiphertextSpacePublicParameters, RandomnessSpaceGroupElement,
@@ -12,14 +23,7 @@ use ::class_groups::{CiphertextSpaceGroupElement, DecryptionKeyShare, Encryption
 use ::class_groups::{DecryptionKey, DiscreteLogInF};
 use crypto_bigint::Int;
 use group::{GroupElement, HashToGroup};
-
-use crate::class_groups::DecryptionShare;
-use crate::class_groups::{
-    DKGDecentralizedPartyOutput, DecryptionKeySharePublicParameters, PartialDecryptionProof,
-    Presign,
-};
-use crate::languages::class_groups::verify_committed_linear_evaluation;
-use crate::sign::centralized_party::message::class_groups::Message;
+use mpc::secret_sharing::shamir::over_the_integers::AdjustedLagrangeCoefficientSizedNumber;
 
 use super::*;
 
@@ -97,6 +101,9 @@ impl Party {
             PublicParameters = equivalence_class::PublicParameters<
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
         >,
         EncryptionKey<
             SCALAR_LIMBS,
@@ -141,6 +148,31 @@ impl Party {
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             GroupElement,
+        >,
+        DecryptionKeyShare<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >: AdditivelyHomomorphicDecryptionKeyShare<
+            SCALAR_LIMBS,
+            EncryptionKey<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+            PublicParameters = decryption_key_share::PublicParameters<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                group::PublicParameters<GroupElement::Scalar>,
+            >,
+            SecretKeyShare = SecretKeyShareSizedInteger,
+            PartialDecryptionProof = decryption_key_share::PartialDecryptionProof<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            DecryptionShare = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            LagrangeCoefficient = AdjustedLagrangeCoefficientSizedNumber,
+            Error = ::class_groups::Error
         >,
         Uint<MESSAGE_LIMBS>: Encoding,
     {
@@ -232,7 +264,7 @@ impl Party {
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             GroupElement,
         >,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> crate::Result<
         HashMap<
             PartyID,
@@ -256,6 +288,9 @@ impl Party {
             PublicParameters = equivalence_class::PublicParameters<
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
         >,
         EncryptionKey<
             SCALAR_LIMBS,
@@ -300,6 +335,31 @@ impl Party {
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             GroupElement,
+        >,
+        DecryptionKeyShare<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >: AdditivelyHomomorphicDecryptionKeyShare<
+            SCALAR_LIMBS,
+            EncryptionKey<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+            PublicParameters = decryption_key_share::PublicParameters<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                group::PublicParameters<GroupElement::Scalar>,
+            >,
+            SecretKeyShare = SecretKeyShareSizedInteger,
+            PartialDecryptionProof = decryption_key_share::PartialDecryptionProof<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            DecryptionShare = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            LagrangeCoefficient = AdjustedLagrangeCoefficientSizedNumber,
+            Error = ::class_groups::Error
         >,
         Uint<MESSAGE_LIMBS>: Encoding,
     {
@@ -394,6 +454,9 @@ impl Party {
             PublicParameters = equivalence_class::PublicParameters<
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
         >,
         EncryptionKey<
             SCALAR_LIMBS,

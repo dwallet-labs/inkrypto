@@ -3,23 +3,22 @@
 
 #![allow(clippy::type_complexity)]
 
-use crypto_bigint::rand_core::CryptoRngCore;
-use crypto_bigint::{ConstChoice, Encoding, Int, Uint};
 use std::array;
 use std::collections::{HashMap, HashSet};
 
-use group::helpers::{DeduplicateAndSort, FlatMapResults, TryCollectHashMap};
-use group::{bounded_integers_group, GroupElement, PrimeGroupElement};
-use homomorphic_encryption::GroupsPublicParametersAccessors;
-use mpc::secret_sharing::shamir::over_the_integers::deal_shares;
-use mpc::HandleInvalidMessages;
-use mpc::{MajorityVote, PartyID};
-
-#[cfg(feature = "parallel")]
-use crypto_bigint::rand_core::OsRng;
+use crypto_bigint::{ConstChoice, Encoding, Int, Uint};
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
+use group::helpers::{DeduplicateAndSort, FlatMapResults, TryCollectHashMap};
+use group::{bounded_integers_group, CsRng, GroupElement, PrimeGroupElement};
+use homomorphic_encryption::GroupsPublicParametersAccessors;
+use mpc::secret_sharing::shamir::over_the_integers::deal_shares;
+use mpc::{HandleInvalidMessages, SeedableCollection};
+use mpc::{MajorityVote, PartyID};
+
+use crate::accelerator::MultiFoldNupowAccelerator;
+use crate::equivalence_class::EquivalenceClassOps;
 use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::*;
 use crate::publicly_verifiable_secret_sharing::{
     DealSecretMessage, DealtSecretShare, DealtSecretShareMessage, Party,
@@ -62,9 +61,16 @@ where
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
 
     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-        Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        PublicParameters = equivalence_class::PublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    >,
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
 {
     /// Deals PVSS shares:
     /// * verify proofs of encryption keys
@@ -79,7 +85,7 @@ where
         secret: Int<SECRET_LIMBS>,
         preverified_parties: HashSet<PartyID>,
         verify_non_pre_verified: bool,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<(
         Vec<PartyID>,
         DealSecretMessage<
@@ -100,7 +106,7 @@ where
             verify_knowledge_of_decryption_key_proofs(
                 language_public_parameters_per_crt_prime,
                 preverified_parties,
-                self.parties_sending_invalid_encryption_keys.clone(),
+                self.parties_without_valid_encryption_keys.clone(),
                 verify_non_pre_verified,
                 self.encryption_keys_and_proofs_per_crt_prime.clone(),
             )?;
@@ -125,6 +131,7 @@ where
             self.participating_parties_n_factorial,
             Int::<SECRET_SHARE_LIMBS>::from(&secret),
             self.public_verification_key_base,
+            &self.equivalence_class_public_parameters,
             self.secret_bits,
             rng,
         )?;
@@ -145,15 +152,16 @@ where
             })
             .try_collect_hash_map()?;
 
+        let seeded_participating_parties_with_valid_encryption_keys =
+            participating_parties_with_valid_encryption_keys.seed(rng);
+
         #[cfg(not(feature = "parallel"))]
-        let iter = participating_parties_with_valid_encryption_keys
-            .deduplicate_and_sort()
-            .into_iter();
+        let iter = seeded_participating_parties_with_valid_encryption_keys.into_iter();
         #[cfg(feature = "parallel")]
-        let iter = participating_parties_with_valid_encryption_keys.into_par_iter();
+        let iter = seeded_participating_parties_with_valid_encryption_keys.into_par_iter();
 
         let encryptions_of_secret_shares_and_proofs = iter
-            .map(|participating_tangible_party_id| {
+            .map(|(participating_tangible_party_id, mut unique_rng)| {
                 // $\textsf{ct}_{i}=\textsf{E}_{\textsf{pk}_{i}([s]_{i},\eta)$
                 if let Ok(virtual_subset) = self
                     .participating_parties_access_structure
@@ -181,10 +189,7 @@ where
                                     participating_tangible_party_id,
                                     participating_virtual_party_id,
                                     *secret_share,
-                                    #[cfg(not(feature = "parallel"))]
-                                    rng,
-                                    #[cfg(feature = "parallel")]
-                                    &mut OsRng,
+                                    &mut unique_rng,
                                 )
                                 .map(|message| {
                                     (
@@ -611,7 +616,7 @@ where
                 // We do this by each virtual party, and then collect it as a `HashSet` and assure there is only one entry,
                 // so that all virtual parties dealt to the same recipients.
                 // Otherwise, we don't take this party into account.
-                let parties_with_valid_encryption_keys_verified_by_virtual_parties = dealt_secret_shares.iter().map(|(_, encryptions_of_shares_and_proofs)| {
+                let parties_with_valid_encryption_keys_verified_by_virtual_parties = dealt_secret_shares.values().map(|encryptions_of_shares_and_proofs| {
                     // Sort it for consistency.
                     let parties_with_valid_encryption_keys_verified_by_current_party: Vec<PartyID> = encryptions_of_shares_and_proofs
                         .keys()

@@ -3,26 +3,29 @@
 
 //! This file implements the Signature Homomorphic Evaluation round party for Paillier
 
-use group::PrimeGroupElement;
-use mpc::two_party::RoundResult;
-
+use super::*;
 use crate::languages::paillier::prove_committed_linear_evaluation;
 use crate::paillier::bulletproofs::PaillierProtocolPublicParameters;
 use crate::paillier::CiphertextSpaceGroupElement;
 use crate::paillier::{EncryptionKey, PLAINTEXT_SPACE_SCALAR_LIMBS};
+use crate::sign::centralized_party::message::paillier::Message;
 use crate::{
     bulletproofs::{RangeProof, COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS},
     paillier::bulletproofs::UnboundedDComEvalWitness,
 };
-
-use super::*;
+use group::{PrimeGroupElement, Scale};
+use mpc::two_party::RoundResult;
+use tiresias::LargeBiPrimeSizedNumber;
 
 impl<
         const RANGE_CLAIMS_PER_SCALAR: usize,
         const RANGE_CLAIMS_PER_MASK: usize,
         const NUM_RANGE_CLAIMS: usize,
         const SCALAR_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + AffineXCoordinate<SCALAR_LIMBS> + HashToGroup,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS>
+            + Scale<LargeBiPrimeSizedNumber>
+            + AffineXCoordinate<SCALAR_LIMBS>
+            + HashToGroup,
     > mpc::two_party::Round
     for Party<
         SCALAR_LIMBS,
@@ -94,7 +97,7 @@ where
         _message: Self::IncomingMessage,
         secret_key_share: &Self::PrivateInput,
         public_input: &Self::PublicInput,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> std::result::Result<
         RoundResult<Self::OutgoingMessage, Self::PrivateOutput, Self::PublicOutput>,
         Self::Error,
@@ -120,7 +123,10 @@ impl<
         const RANGE_CLAIMS_PER_MASK: usize,
         const NUM_RANGE_CLAIMS: usize,
         const SCALAR_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + AffineXCoordinate<SCALAR_LIMBS> + HashToGroup,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS>
+            + Scale<LargeBiPrimeSizedNumber>
+            + AffineXCoordinate<SCALAR_LIMBS>
+            + HashToGroup,
     >
     Party<
         SCALAR_LIMBS,
@@ -167,7 +173,7 @@ where
             group::PublicParameters<GroupElement::Scalar>,
             GroupElement::PublicParameters,
         >,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<
         Message<
             SCALAR_LIMBS,

@@ -1,11 +1,10 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
-use rand_core::OsRng;
 use std::collections::HashMap;
 
-use group::PartyID;
 use common::ProtocolContext;
+use group::PartyID;
 use mpc::two_party::RoundResult;
 use mpc::{AsynchronousRoundResult, AsynchronouslyAdvanceable};
 use twopc_mpc::dkg::centralized_party;
@@ -14,10 +13,13 @@ pub mod common;
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::*;
+    use group::OsCsRng;
+
     use crate::common::{
         run_dkg_phase1, run_dkg_phase2, run_dkg_phase3, run_dkg_protocol, EncryptionParty,
     };
+
+    use super::*;
 
     /// This test verifies that:
     /// 1. The DKG protocol completes through all three phases
@@ -31,7 +33,7 @@ pub(crate) mod tests {
     /// finalization with the remaining 3 parties.
     #[test]
     pub fn test_dkg_success_case() {
-        let mut rng = OsRng;
+        let mut rng = OsCsRng;
         let num_parties = 5;
         let threshold = 3;
         let skip_parties = Some(vec![1, 2]);
@@ -57,14 +59,12 @@ pub(crate) mod tests {
         for (party_id, result) in &dkt_outputs {
             assert_eq!(
                 *first_public_key, result.public_key,
-                "Public keys should match for all parties (party {})",
-                party_id
+                "Public keys should match for all parties (party {party_id})"
             );
         }
 
         println!(
-            "DKG completed successfully with 3 parties. Final public key: {:?}",
-            first_public_key
+            "DKG completed successfully with 3 parties. Final public key: {first_public_key:?}"
         );
     }
 
@@ -75,7 +75,7 @@ pub(crate) mod tests {
     /// 3. The decentralized parties detect this manipulation attempt
     #[test]
     pub fn test_dkg_malicious_centralized_party_proof_manipulation() {
-        let mut rng = OsRng;
+        let mut rng = OsCsRng;
         let num_parties = 5;
         let threshold = 3;
 
@@ -121,7 +121,7 @@ pub(crate) mod tests {
         );
         match verification_result {
             Err(e) => {
-                println!("DKG correctly failed with error: {:?}", e);
+                println!("DKG correctly failed with error: {e:?}");
                 // You can add more specific error checks here if the error type allows it
             }
             Ok(_) => panic!("DKG should not succeed with mismatched proof"),
@@ -134,7 +134,7 @@ pub(crate) mod tests {
     /// 3. The malicious party is identified
     #[test]
     pub fn test_dkg_malicious_session_id_during_encryption_phase() {
-        let mut rng = OsRng;
+        let mut rng = OsCsRng;
         let num_parties = 3;
         let threshold = 2;
 
@@ -158,6 +158,7 @@ pub(crate) mod tests {
                 &party_context
                     .initialization_context
                     .protocol_public_parameters,
+                HashMap::new(),
                 &mut rng,
             )
             .expect("Honest parties should complete round 1");
@@ -187,6 +188,7 @@ pub(crate) mod tests {
             &malicious_party
                 .initialization_context
                 .protocol_public_parameters,
+            HashMap::new(),
             &mut rng,
         )
         .expect("Malicious party should complete round 1");
@@ -219,6 +221,7 @@ pub(crate) mod tests {
                 &party_context
                     .initialization_context
                     .protocol_public_parameters,
+                HashMap::new(),
                 &mut rng,
             )
             .expect("Round 2 should complete");

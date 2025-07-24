@@ -1,21 +1,22 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
-use group::PartyID;
-
-use mpc::AsynchronousRoundResult;
-use rand_core::OsRng;
 use std::collections::HashMap;
 
 use common::run_dkg_protocol;
 use common::ProtocolContext;
+use group::PartyID;
+use mpc::AsynchronousRoundResult;
 
 mod common;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use group::OsCsRng;
+
     use crate::common::{advance_presign_party, run_presign_protocol, PresignMessage};
+
+    use super::*;
 
     /// This test demonstrates the complete workflow:
     /// 1. First, the DKG protocol is executed to establish key shares
@@ -24,7 +25,7 @@ mod tests {
     /// The test uses a 2-out-of-3 threshold scheme.
     #[test]
     fn test_dkg_and_presign() {
-        let mut rng = OsRng;
+        let mut rng = OsCsRng;
         let num_parties = 3;
         let threshold = 2;
         let skip_parties = None;
@@ -70,8 +71,7 @@ mod tests {
         for party_id in &participating_party_ids {
             assert!(
                 presign_results.contains_key(party_id),
-                "Party {} should have a presign output",
-                party_id
+                "Party {party_id} should have a presign output"
             );
         }
 
@@ -84,7 +84,7 @@ mod tests {
     /// 3. Other honest parties can detect this malicious behavior
     #[test]
     fn test_presign_phase1_malicious_session_id() {
-        let mut rng = OsRng;
+        let mut rng = OsCsRng;
         let num_parties = 3;
         let threshold = 2;
 
@@ -177,7 +177,7 @@ mod tests {
     /// 3. Other honest parties can detect this malicious behavior
     #[test]
     fn test_presign_malicious_proof_manipulation() {
-        let mut rng = OsRng;
+        let mut rng = OsCsRng;
         let num_parties = 3;
         let threshold = 2;
 
@@ -259,7 +259,7 @@ mod tests {
                     }
                 }
                 Err(e) => {
-                    println!("Protocol failed with error: {:?}", e);
+                    println!("Protocol failed with error: {e:?}");
                     detected_malicious_party = true;
                 }
                 _ => {}
@@ -279,7 +279,7 @@ mod tests {
     /// 3. Other honest parties can detect this malicious behavior
     #[test]
     fn test_presign_phase2_malicious_proof() {
-        let mut rng = OsRng;
+        let mut rng = OsCsRng;
         let num_parties = 3;
         let threshold = 2;
 

@@ -4,11 +4,10 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 
-use crypto_bigint::rand_core::CryptoRngCore;
 use serde::Serialize;
 
 use group::helpers::DeduplicateAndSort;
-use group::{PartyID, Samplable};
+use group::{CsRng, PartyID, Samplable};
 use proof::{aggregation, range, AggregatableRangeProof};
 
 use crate::{
@@ -117,7 +116,7 @@ where
     fn aggregate_proof_shares(
         self,
         proof_shares: HashMap<PartyID, Self::ProofShare>,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<
         Output<
             REPETITIONS,

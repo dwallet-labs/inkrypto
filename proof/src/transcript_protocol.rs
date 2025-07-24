@@ -2,12 +2,18 @@
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 use crypto_bigint::{ConcatMixed, Encoding, Limb, NonZero, Uint};
-use group::StatisticalSecuritySizedNumber;
+use group::{StatisticalSecuritySizedNumber, Transcribeable};
 use merlin::Transcript;
 use serde::Serialize;
 
 /// A transcript protocol for fiat-shamir transforms of interactive to non-interactive proofs.
 pub trait TranscriptProtocol {
+    fn transcribe<T: Transcribeable>(
+        &mut self,
+        label: &'static [u8],
+        message: T,
+    ) -> crate::Result<()>;
+
     fn serialize_to_transcript_as_json<T: Serialize>(
         &mut self,
         label: &'static [u8],
@@ -35,6 +41,18 @@ pub trait TranscriptProtocol {
 }
 
 impl TranscriptProtocol for Transcript {
+    fn transcribe<T: Transcribeable>(
+        &mut self,
+        label: &'static [u8],
+        message: T,
+    ) -> crate::Result<()> {
+        let transcibed_message = message.transcribe()?;
+
+        self.append_message(label, transcibed_message.as_slice());
+
+        Ok(())
+    }
+
     fn serialize_to_transcript_as_json<T: Serialize>(
         &mut self,
         label: &'static [u8],

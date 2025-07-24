@@ -2,12 +2,11 @@
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 use crypto_bigint::{Limb, Uint, Word};
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
 use subtle::{ConditionallySelectable, ConstantTimeEq};
 
 use crate::Error;
-
-#[cfg(feature = "parallel")]
-use rayon::prelude::*;
 
 const WINDOW: u32 = 4;
 const WINDOW_MASK: Word = (1 << WINDOW) - 1;
@@ -135,7 +134,7 @@ pub fn linearly_combine_bounded<
             }
 
             #[cfg(not(feature = "parallel"))]
-            let iter = (0..products_and_multiplicands.len()).into_iter();
+            let iter = 0..products_and_multiplicands.len();
             #[cfg(feature = "parallel")]
             let iter = (0..products_and_multiplicands.len()).into_par_iter();
 
@@ -180,7 +179,7 @@ pub fn linearly_combine_bounded<
             }
             #[cfg(feature = "parallel")]
             {
-                z += powers.reduce(
+                let sum = powers.reduce(
                     || neutral,
                     |a, b| {
                         if constant_time {
@@ -190,6 +189,12 @@ pub fn linearly_combine_bounded<
                         }
                     },
                 );
+
+                z = if constant_time {
+                    z + sum
+                } else {
+                    z.add_vartime(&sum)
+                };
             }
         }
     }
@@ -220,9 +225,9 @@ pub fn linearly_combine_bounded_or_scale<
 
 #[cfg(test)]
 mod tests {
-    use crypto_bigint::rand_core::OsRng;
     use crypto_bigint::U256;
 
+    use crate::OsCsRng;
     use crate::Samplable;
     use crate::{secp256k1, CyclicGroupElement};
 
@@ -238,9 +243,9 @@ mod tests {
             secp256k1::GroupElement::generator_from_public_parameters(&group_public_parameters)
                 .unwrap();
         let scalars =
-            secp256k1::Scalar::sample_batch(&scalar_public_parameters, 3, &mut OsRng).unwrap();
+            secp256k1::Scalar::sample_batch(&scalar_public_parameters, 3, &mut OsCsRng).unwrap();
         let bases: Vec<_> =
-            secp256k1::Scalar::sample_batch(&scalar_public_parameters, 3, &mut OsRng)
+            secp256k1::Scalar::sample_batch(&scalar_public_parameters, 3, &mut OsCsRng)
                 .unwrap()
                 .into_iter()
                 .map(|scalar| scalar * generators)
@@ -286,10 +291,9 @@ mod tests {
 pub(crate) mod benches {
     use criterion::Criterion;
     use crypto_bigint::U256;
-    use rand_core::OsRng;
 
     use crate::linear_combination::LinearlyCombinable;
-    use crate::{ristretto, secp256k1, CyclicGroupElement, Samplable};
+    use crate::{ristretto, secp256k1, CyclicGroupElement, OsCsRng, Samplable};
 
     pub(crate) fn benchmark(c: &mut Criterion) {
         let mut g = c.benchmark_group("Linear Combination in secp256k1");
@@ -301,23 +305,29 @@ pub(crate) mod benches {
             secp256k1::GroupElement::generator_from_public_parameters(&group_public_parameters)
                 .unwrap();
 
-        let exponent = secp256k1::Scalar::sample(&scalar_public_parameters, &mut OsRng).unwrap();
+        let exponent = secp256k1::Scalar::sample(&scalar_public_parameters, &mut OsCsRng).unwrap();
 
         g.bench_function("single exponentiation", |bench| {
             bench.iter(|| exponent * generator);
         });
 
         for batch_size in [1, 2, 4, 8, 16, 32, 64, 128] {
-            let multiplicands: Vec<_> =
-                secp256k1::Scalar::sample_batch(&scalar_public_parameters, batch_size, &mut OsRng)
-                    .unwrap()
-                    .into_iter()
-                    .map(U256::from)
-                    .collect();
+            let multiplicands: Vec<_> = secp256k1::Scalar::sample_batch(
+                &scalar_public_parameters,
+                batch_size,
+                &mut OsCsRng,
+            )
+            .unwrap()
+            .into_iter()
+            .map(U256::from)
+            .collect();
 
-            let scalars =
-                secp256k1::Scalar::sample_batch(&scalar_public_parameters, batch_size, &mut OsRng)
-                    .unwrap();
+            let scalars = secp256k1::Scalar::sample_batch(
+                &scalar_public_parameters,
+                batch_size,
+                &mut OsCsRng,
+            )
+            .unwrap();
             let bases: Vec<_> = scalars.into_iter().map(|s| s * generator).collect();
 
             let bases_and_multiplicands: Vec<_> = bases
@@ -345,23 +355,29 @@ pub(crate) mod benches {
             ristretto::GroupElement::generator_from_public_parameters(&group_public_parameters)
                 .unwrap();
 
-        let exponent = ristretto::Scalar::sample(&scalar_public_parameters, &mut OsRng).unwrap();
+        let exponent = ristretto::Scalar::sample(&scalar_public_parameters, &mut OsCsRng).unwrap();
 
         g.bench_function("single exponentiation", |bench| {
             bench.iter(|| exponent * generator);
         });
 
         for batch_size in [1, 2, 4, 8, 16, 32, 64, 128] {
-            let multiplicands: Vec<_> =
-                ristretto::Scalar::sample_batch(&scalar_public_parameters, batch_size, &mut OsRng)
-                    .unwrap()
-                    .into_iter()
-                    .map(U256::from)
-                    .collect();
+            let multiplicands: Vec<_> = ristretto::Scalar::sample_batch(
+                &scalar_public_parameters,
+                batch_size,
+                &mut OsCsRng,
+            )
+            .unwrap()
+            .into_iter()
+            .map(U256::from)
+            .collect();
 
-            let scalars =
-                ristretto::Scalar::sample_batch(&scalar_public_parameters, batch_size, &mut OsRng)
-                    .unwrap();
+            let scalars = ristretto::Scalar::sample_batch(
+                &scalar_public_parameters,
+                batch_size,
+                &mut OsCsRng,
+            )
+            .unwrap();
             let bases: Vec<_> = scalars.into_iter().map(|s| s * generator).collect();
 
             let bases_and_multiplicands: Vec<_> = bases

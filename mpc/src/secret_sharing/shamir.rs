@@ -6,9 +6,9 @@ use std::{
     ops::{Add, Mul},
 };
 
-use crypto_bigint::{rand_core::CryptoRngCore, Random};
-
 use crate::Error;
+use crypto_bigint::Random;
+use group::CsRng;
 
 pub mod over_the_integers;
 
@@ -39,7 +39,7 @@ where
     /// `degree` as it's allowed to end with zero coefficients. Actual polynomial
     /// degree equals to index of the last non-zero coefficient or zero if all the coefficients are
     /// zero.
-    pub fn sample(degree: u16, rng: &mut impl CryptoRngCore) -> Result<Self>
+    pub fn sample(degree: u16, rng: &mut impl CsRng) -> Result<Self>
     where
         T: Random,
     {
@@ -63,7 +63,7 @@ where
     pub fn sample_with_constant_term(
         degree: u16,
         constant_term: T,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<Self>
     where
         T: Random,
@@ -113,9 +113,9 @@ mod tests {
     use std::collections::HashSet;
 
     use crypto_bigint::{Wrapping, U64};
-    use rand_core::OsRng;
 
     use super::*;
+    use group::OsCsRng;
 
     #[test]
     fn evaluates() {
@@ -140,7 +140,8 @@ mod tests {
     #[test]
     fn samples() {
         let degree = 10;
-        let polynomial: Polynomial<Wrapping<U64>> = Polynomial::sample(degree, &mut OsRng).unwrap();
+        let polynomial: Polynomial<Wrapping<U64>> =
+            Polynomial::sample(degree, &mut OsCsRng).unwrap();
 
         assert_eq!(
             polynomial

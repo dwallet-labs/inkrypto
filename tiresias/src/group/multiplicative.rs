@@ -5,14 +5,16 @@ use std::ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign};
 use crypto_bigint::modular::SafeGcdInverter;
 use crypto_bigint::{
     modular::{MontyForm, MontyParams},
-    rand_core::CryptoRngCore,
-    Concat, Encoding, Invert, NonZero, Odd, PrecomputeInverter, RandomMod, Split, Uint,
+    Concat, Encoding, Int, NonZero, Odd, PrecomputeInverter, RandomMod, Split, Uint,
 };
 use serde::{de::Error, Deserialize, Deserializer, Serialize, Serializer};
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 
 use group::linear_combination::linearly_combine_bounded_or_scale;
-use group::{BoundedGroupElement, GroupElement as _, LinearlyCombinable, Samplable};
+use group::{
+    BoundedGroupElement, CsRng, GroupElement as _, LinearlyCombinable, Samplable, Scale,
+    Transcribeable,
+};
 
 /// An element of the [Multiplicative group of integers modulo N](https://en.wikipedia.org/wiki/Multiplicative_group_of_integers_modulo_n)
 /// where `N = PQ` $\mathbb{Z}_N^*$ for the randomness space of the Paillier cryptosystem
@@ -30,7 +32,7 @@ where
 {
     fn sample(
         public_parameters: &Self::PublicParameters,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> group::Result<Self> {
         // Montgomery form only works for odd modulus, and this is assured in `MontyForm`
         // instantiation; therefore, the modulus of an instance can never be zero and it is safe to
@@ -51,6 +53,13 @@ where
                 Err(e) => return Err(e),
             }
         }
+    }
+
+    fn sample_randomizer(
+        public_parameters: &Self::PublicParameters,
+        rng: &mut impl CsRng,
+    ) -> group::Result<Self> {
+        Self::sample(public_parameters, rng)
     }
 }
 
@@ -148,6 +157,17 @@ where
 
         PublicParameters::new(modulus).map_err(Error::custom)
     }
+}
+
+impl<const LIMBS: usize, const WIDE_LIMBS: usize, const UNSAT_LIMBS: usize> Transcribeable
+    for PublicParameters<LIMBS>
+where
+    Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
+    Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
+    Odd<Uint<LIMBS>>:
+        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
+{
+    type CanonicalRepresentation = Self;
 }
 
 impl<const LIMBS: usize, const WIDE_LIMBS: usize, const UNSAT_LIMBS: usize> PublicParameters<LIMBS>
@@ -258,6 +278,26 @@ where
         Ok(GroupElement(MontyForm::<LIMBS>::one(
             public_parameters.params,
         )))
+    }
+
+    fn scale_bounded_vartime<const SCALAR_LIMBS: usize>(
+        &self,
+        scalar: &Uint<SCALAR_LIMBS>,
+        scalar_bits: u32,
+    ) -> Self {
+        self.scale_bounded(scalar, scalar_bits)
+    }
+
+    fn add_vartime(self, other: &Self) -> Self {
+        self + other
+    }
+
+    fn double_vartime(&self) -> Self {
+        self.double()
+    }
+
+    fn add_randomized(self, other: &Self) -> Self {
+        self + other
     }
 }
 
@@ -658,13 +698,106 @@ where
     }
 }
 
+impl<
+        const LIMBS: usize,
+        const WIDE_LIMBS: usize,
+        const UNSAT_LIMBS: usize,
+        const SCALAR_LIMBS: usize,
+    > Scale<Uint<SCALAR_LIMBS>> for GroupElement<LIMBS>
+where
+    Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
+    Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
+    Odd<Uint<LIMBS>>:
+        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
+{
+    fn scale_randomized_accelerated(
+        &self,
+        scalar: &Uint<SCALAR_LIMBS>,
+        _public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale(scalar)
+    }
+
+    fn scale_vartime_accelerated(
+        &self,
+        scalar: &Uint<SCALAR_LIMBS>,
+        _public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_vartime(scalar)
+    }
+
+    fn scale_randomized_bounded_accelerated(
+        &self,
+        scalar: &Uint<SCALAR_LIMBS>,
+        _public_parameters: &Self::PublicParameters,
+        scalar_bits: u32,
+    ) -> Self {
+        self.scale_bounded(scalar, scalar_bits)
+    }
+
+    fn scale_bounded_vartime_accelerated(
+        &self,
+        scalar: &Uint<SCALAR_LIMBS>,
+        _public_parameters: &Self::PublicParameters,
+        scalar_bits: u32,
+    ) -> Self {
+        self.scale_bounded_vartime(scalar, scalar_bits)
+    }
+}
+
+impl<
+        const LIMBS: usize,
+        const WIDE_LIMBS: usize,
+        const UNSAT_LIMBS: usize,
+        const SCALAR_LIMBS: usize,
+    > Scale<Int<SCALAR_LIMBS>> for GroupElement<LIMBS>
+where
+    Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
+    Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
+    Odd<Uint<LIMBS>>:
+        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
+{
+    fn scale_randomized_accelerated(
+        &self,
+        scalar: &Int<SCALAR_LIMBS>,
+        _public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_integer(scalar)
+    }
+
+    fn scale_vartime_accelerated(
+        &self,
+        scalar: &Int<SCALAR_LIMBS>,
+        _public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_integer_vartime(scalar)
+    }
+
+    fn scale_randomized_bounded_accelerated(
+        &self,
+        scalar: &Int<SCALAR_LIMBS>,
+        _public_parameters: &Self::PublicParameters,
+        scalar_bits: u32,
+    ) -> Self {
+        self.scale_integer_bounded(scalar, scalar_bits)
+    }
+
+    fn scale_bounded_vartime_accelerated(
+        &self,
+        scalar: &Int<SCALAR_LIMBS>,
+        _public_parameters: &Self::PublicParameters,
+        scalar_bits: u32,
+    ) -> Self {
+        self.scale_integer_bounded_vartime(scalar, scalar_bits)
+    }
+}
+
 #[cfg(feature = "benchmarking")]
 pub(crate) mod benches {
     use criterion::{BatchSize, Criterion};
     use crypto_bigint::{Integer, MultiExponentiate, Random};
-    use rand_core::OsRng;
 
-    use group::LinearlyCombinable;
+    use group::{LinearlyCombinable, OsCsRng};
 
     use crate::PaillierModulusSizedNumber;
 
@@ -673,7 +806,7 @@ pub(crate) mod benches {
     pub(crate) fn benchmark(c: &mut Criterion) {
         let mut g = c.benchmark_group("Linear Combination in multiplicative");
 
-        let modulus = PaillierModulusSizedNumber::random(&mut OsRng);
+        let modulus = PaillierModulusSizedNumber::random(&mut OsCsRng);
         let modulus = if modulus.is_even().into() {
             modulus.wrapping_add(&PaillierModulusSizedNumber::ONE)
         } else {
@@ -681,9 +814,9 @@ pub(crate) mod benches {
         };
         let public_parameters = PublicParameters::new(modulus).unwrap();
 
-        let base = GroupElement::sample(&public_parameters, &mut OsRng).unwrap();
+        let base = GroupElement::sample(&public_parameters, &mut OsCsRng).unwrap();
 
-        let multiplicand = GroupElement::sample(&public_parameters, &mut OsRng).unwrap();
+        let multiplicand = GroupElement::sample(&public_parameters, &mut OsCsRng).unwrap();
 
         g.bench_function("single exponentiation", |bench| {
             bench.iter(|| multiplicand * base);
@@ -691,9 +824,9 @@ pub(crate) mod benches {
 
         for batch_size in [1, 2, 4, 8, 16, 32, 64, 128] {
             let bases =
-                GroupElement::sample_batch(&public_parameters, batch_size, &mut OsRng).unwrap();
+                GroupElement::sample_batch(&public_parameters, batch_size, &mut OsCsRng).unwrap();
             let multiplicands: Vec<_> =
-                GroupElement::sample_batch(&public_parameters, batch_size, &mut OsRng)
+                GroupElement::sample_batch(&public_parameters, batch_size, &mut OsCsRng)
                     .unwrap()
                     .into_iter()
                     .map(PaillierModulusSizedNumber::from)

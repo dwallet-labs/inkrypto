@@ -3,15 +3,15 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crypto_bigint::rand_core::CryptoRngCore;
-use rand::distributions::Distribution;
-use rand::distributions::WeightedIndex;
+use rand::distr::weighted::WeightedIndex;
+use rand::distr::Distribution;
 use rand::Rng;
+
 use serde::{Deserialize, Serialize};
 
-use group::PartyID;
-
 use crate::Error;
+use group::helpers::DeduplicateAndSort;
+use group::{CsRng, PartyID};
 
 /// The weight of a player. Represents the number of `virtual players` this `tangible party` acts for.
 pub type Weight = PartyID;
@@ -65,7 +65,7 @@ impl Threshold {
         threshold: Weight,
         number_of_tangible_parties: PartyID,
         total_weight: Weight,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> crate::Result<Self> {
         Self::random_with_initial_weight(
             threshold,
@@ -82,7 +82,7 @@ impl Threshold {
         threshold: Weight,
         number_of_tangible_parties: PartyID,
         total_weight: Weight,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> crate::Result<Self> {
         let weight_per_party = total_weight / number_of_tangible_parties;
 
@@ -102,7 +102,7 @@ impl Threshold {
         number_of_tangible_parties: PartyID,
         total_weight: Weight,
         initial_weight: Weight,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> crate::Result<Self> {
         let mut party_to_weight: HashMap<_, _> = (1..=number_of_tangible_parties)
             .map(|party_id| (party_id, initial_weight))
@@ -114,7 +114,7 @@ impl Threshold {
                 .try_fold(0 as Weight, |acc, &x| acc.checked_add(x))
                 .ok_or(Error::InternalError)?
         {
-            let party_id = rng.gen_range(1..=number_of_tangible_parties);
+            let party_id = rng.random_range(1..=number_of_tangible_parties);
             let new_weight = party_to_weight
                 .get(&party_id)
                 .and_then(|weight| weight.checked_add(1))
@@ -189,12 +189,7 @@ impl Threshold {
             return Err(Error::InvalidParameters);
         }
 
-        let subset_total_weight: Weight = self
-            .party_to_weight
-            .iter()
-            .filter(|(party, _)| tangible_parties.contains(party))
-            .map(|(_, weight)| weight)
-            .sum();
+        let subset_total_weight = self.subset_total_weight(tangible_parties)?;
 
         if subset_total_weight < self.threshold {
             return Err(Error::ThresholdNotReached);
@@ -203,10 +198,29 @@ impl Threshold {
         Ok(())
     }
 
+    pub fn subset_total_weight(
+        &self,
+        tangible_parties: &HashSet<PartyID>,
+    ) -> crate::Result<Weight> {
+        let known_parties = self.party_to_weight.keys().copied().collect();
+        if !tangible_parties.is_subset(&known_parties) {
+            return Err(Error::InvalidParameters);
+        }
+
+        let subset_total_weight: Weight = self
+            .party_to_weight
+            .iter()
+            .filter(|(party, _)| tangible_parties.contains(party))
+            .map(|(_, weight)| weight)
+            .sum();
+
+        Ok(subset_total_weight)
+    }
+
     /// Generates a random subset of tangible parties which are authorized within the access structure.
     pub fn random_authorized_subset(
         &self,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> crate::Result<HashSet<PartyID>> {
         self.random_authorized_subset_of_active_parties(
             &self.party_to_weight.keys().cloned().collect(),
@@ -214,15 +228,47 @@ impl Threshold {
         )
     }
 
-    /// Generates a random subset of tangible parties from a set of active parties, which form an authorized withing the access structure.
+    /// Generates a random subset of tangible parties which form a subset with at least `target_weight` weight.
+    ///
+    /// The subset is sampled in accordance to the weight of the party.
+    pub fn random_subset_with_target_weight(
+        &self,
+        target_weight: Weight,
+        rng: &mut impl CsRng,
+    ) -> crate::Result<HashSet<PartyID>> {
+        self.random_subset_of_active_parties_with_target_weight(
+            &self.party_to_weight.keys().cloned().collect(),
+            target_weight,
+            rng,
+        )
+    }
+
+    /// Generates a random subset of tangible parties from a set of active parties, which form an authorized within the access structure.
     pub fn random_authorized_subset_of_active_parties(
         &self,
         active_parties: &HashSet<PartyID>,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> crate::Result<HashSet<PartyID>> {
-        self.is_authorized_subset(active_parties)?;
-        let mut parties: Vec<_> = active_parties.iter().cloned().collect();
-        parties.sort();
+        self.random_subset_of_active_parties_with_target_weight(active_parties, self.threshold, rng)
+    }
+
+    /// Generates a random subset of tangible parties from a set of active parties,
+    /// which form a subset with at least `target_weight` weight.
+    ///
+    /// The subset is sampled in accordance to the weight of the party.
+    pub fn random_subset_of_active_parties_with_target_weight(
+        &self,
+        active_parties: &HashSet<PartyID>,
+        target_weight: Weight,
+        rng: &mut impl CsRng,
+    ) -> crate::Result<HashSet<PartyID>> {
+        let active_parties_total_weight = self.subset_total_weight(active_parties)?;
+
+        if active_parties_total_weight < target_weight {
+            return Err(Error::InvalidParameters);
+        };
+
+        let parties: Vec<_> = active_parties.clone().deduplicate_and_sort();
 
         // Safe to `.unwrap()` since the keys were retrieved from the same map.
         let weights: Vec<_> = parties
@@ -232,7 +278,7 @@ impl Threshold {
         let distribution = WeightedIndex::new(weights).map_err(|_| Error::InternalError)?;
         let mut subset = HashSet::new();
 
-        while self.is_authorized_subset(&subset).is_err() {
+        while self.subset_total_weight(&subset)? < target_weight {
             let party_id = *parties
                 .get(distribution.sample(rng))
                 .ok_or(Error::InternalError)?;

@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 
 use commitment::CommitmentSizedNumber;
 use group::{direct_product, self_product, PrimeGroupElement};
-
 use mpc::AsynchronouslyAdvanceable;
 
 use crate::dkg;
@@ -38,6 +37,9 @@ pub struct Presign<GroupElementValue, CiphertextValue> {
     pub(crate) decentralized_party_nonce_public_share_first_part: GroupElementValue,
     // $ R_{B,1} $
     pub(crate) decentralized_party_nonce_public_share_second_part: GroupElementValue,
+    // The public key to which this Presign belongs,
+    // used as an extra verification to assure a presign corresponds to the same key during Sign.
+    pub(crate) public_key: GroupElementValue,
 }
 
 impl<
@@ -50,6 +52,7 @@ impl<
         encryption_of_mask_and_masked_key_share: self_product::Value<2, CiphertextValue>,
         nonce_public_share_and_encryption_of_masked_nonce_share_parts: [direct_product::Value<CiphertextValue, GroupElementValue>;
             2],
+        public_key: GroupElementValue,
     ) -> Self {
         let [nonce_public_share_and_encryption_of_masked_nonce_share_first_part, nonce_public_share_and_encryption_of_masked_nonce_share_second_part] =
             nonce_public_share_and_encryption_of_masked_nonce_share_parts;
@@ -74,6 +77,7 @@ impl<
             encryption_of_masked_decentralized_party_nonce_share_second_part,
             decentralized_party_nonce_public_share_first_part,
             decentralized_party_nonce_public_share_second_part,
+            public_key,
         }
     }
 }
@@ -120,11 +124,10 @@ pub(crate) mod tests {
     use criterion::measurement::{Measurement, WallTime};
     use crypto_bigint::{Random, Uint};
     use rand::prelude::IteratorRandom;
-    use rand_core::OsRng;
     use rstest::rstest;
 
     use commitment::CommitmentSizedNumber;
-    use group::{secp256k1, GroupElement as _, PartyID, Samplable};
+    use group::{secp256k1, GroupElement as _, OsCsRng, PartyID, Samplable};
     use homomorphic_encryption::{
         AdditivelyHomomorphicDecryptionKey, AdditivelyHomomorphicEncryptionKey,
         GroupsPublicParametersAccessors,
@@ -166,7 +169,7 @@ pub(crate) mod tests {
             .copied()
             .collect();
 
-        let session_id = CommitmentSizedNumber::random(&mut OsRng);
+        let session_id = CommitmentSizedNumber::random(&mut OsCsRng);
 
         let encryption_of_mask_and_masked_key_share_round_public_inputs = parties
             .iter()
@@ -341,7 +344,7 @@ pub(crate) mod tests {
             .map(|party_id| (party_id, ()))
             .collect();
 
-        let (presign_time, _, presign) =
+        let (presign_time, times, presign) =
             asynchronous_session_terminates_successfully_internal::<P::PresignParty>(
                 session_id,
                 &access_structure,
@@ -361,8 +364,11 @@ pub(crate) mod tests {
         let threshold = access_structure.threshold;
 
         println!(
-            "{description} Presign, {number_of_tangible_parties}, {number_of_virtual_parties}, {threshold}, {:?}",
-            decentralized_party_total_time.as_millis()
+            "{description} Presign, {number_of_tangible_parties}, {number_of_virtual_parties}, {threshold}, {:?}, {:?}, {:?}, {:?}",
+            decentralized_party_total_time.as_millis(),
+            times[0].as_millis(),
+            times[1].as_millis(),
+            times[2].as_millis(),
         );
 
         presign
@@ -397,7 +403,7 @@ pub(crate) mod tests {
 
         let mask = GroupElement::Scalar::sample(
             &protocol_public_parameters.scalar_group_public_parameters,
-            &mut OsRng,
+            &mut OsCsRng,
         )
         .unwrap();
 
@@ -426,19 +432,20 @@ pub(crate) mod tests {
             .encrypt(
                 &mask_plaintext,
                 &protocol_public_parameters.encryption_scheme_public_parameters,
-                &mut OsRng,
+                true,
+                &mut OsCsRng,
             )
             .unwrap();
 
         let nonce_share_first_part = GroupElement::Scalar::sample(
             &protocol_public_parameters.scalar_group_public_parameters,
-            &mut OsRng,
+            &mut OsCsRng,
         )
         .unwrap();
 
         let nonce_share_second_part = GroupElement::Scalar::sample(
             &protocol_public_parameters.scalar_group_public_parameters,
-            &mut OsRng,
+            &mut OsCsRng,
         )
         .unwrap();
 
@@ -468,36 +475,31 @@ pub(crate) mod tests {
                 decentralized_party_nonce_public_share_first_part.value(),
             decentralized_party_nonce_public_share_second_part:
                 decentralized_party_nonce_public_share_second_part.value(),
+            public_key: dkg_output.public_key,
         }
     }
 }
 
 #[cfg(all(test, feature = "benchmarking"))]
 mod benches {
-    use rand_core::OsRng;
-
+    use group::OsCsRng;
     use mpc::WeightedThresholdAccessStructure;
 
     #[test]
     #[ignore]
+    #[allow(clippy::single_element_loop)]
     fn benchmark() {
-        println!("\nProtocol, Number of Tangible Parties, Number of Virtual Parties, Threshold, Decentralized Party Total Time (ms)", );
+        println!("\nProtocol, Number of Tangible Parties, Number of Virtual Parties, Threshold, Decentralized Party Total Time (ms), Decentralized Party First Round Time (ms), Decentralized Party Second Round Time (ms), Decentralized Party Third Round Time (ms)", );
 
-        for (threshold, number_of_tangible_parties, total_weight) in
-            [(10, 5, 15), (20, 10, 30), (67, 50, 100), (67, 100, 100)]
-        {
+        for (threshold, number_of_tangible_parties, total_weight) in [(67, 100, 100)] {
             let access_structure = WeightedThresholdAccessStructure::random(
                 threshold,
                 number_of_tangible_parties,
                 total_weight,
-                &mut OsRng,
+                &mut OsCsRng,
             )
             .unwrap();
 
-            super::tests::generates_presignatures_async_paillier_secp256k1_internal(
-                access_structure.threshold,
-                access_structure.party_to_weight.clone(),
-            );
             super::tests::generates_presignatures_async_class_groups_secp256k1_internal(
                 access_structure.threshold,
                 access_structure.party_to_weight,

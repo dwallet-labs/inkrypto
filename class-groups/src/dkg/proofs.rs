@@ -5,7 +5,27 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(unused_variables)]
 
+use std::array;
+use std::collections::{HashMap, HashSet};
+
+use crypto_bigint::{Encoding, Int, Uint};
+
+use commitment::CommitmentSizedNumber;
+use group::helpers::FlatMapResults;
+use group::{
+    bounded_integers_group, direct_product, CsRng, GroupElement, PartyID, PrimeGroupElement,
+    Samplable,
+};
+use homomorphic_encryption::GroupsPublicParametersAccessors;
+use maurer::knowledge_of_discrete_log;
+use maurer::SOUND_PROOFS_REPETITIONS;
+use mpc::WeightedThresholdAccessStructure;
+use proof::Proof;
+
+use crate::accelerator::MultiFoldNupowAccelerator;
 use crate::dkg::ProveEqualityOfDiscreteLog;
+use crate::encryption_key::public_parameters::Instantiate;
+use crate::equivalence_class::EquivalenceClassOps;
 use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
     SecretKeyShareCRTPrimeEncryptionSchemePublicParameters, SecretKeyShareCRTPrimeGroupElement,
     SecretKeyShareCRTPrimeSetupParameters, CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -21,22 +41,6 @@ use crate::{
     encryption_key, equivalence_class, CiphertextSpaceValue, CompactIbqf, EncryptionKey,
     EquivalenceClass, Error, RandomnessSpaceGroupElement, Result,
 };
-use commitment::CommitmentSizedNumber;
-use crypto_bigint::rand_core::CryptoRngCore;
-#[cfg(feature = "parallel")]
-use crypto_bigint::rand_core::OsRng;
-use crypto_bigint::{Encoding, Int, Uint};
-use group::helpers::FlatMapResults;
-use group::{
-    bounded_integers_group, direct_product, GroupElement, PartyID, PrimeGroupElement, Samplable,
-};
-use homomorphic_encryption::GroupsPublicParametersAccessors;
-use maurer::knowledge_of_discrete_log;
-use maurer::SOUND_PROOFS_REPETITIONS;
-use mpc::WeightedThresholdAccessStructure;
-use proof::Proof;
-use std::array;
-use std::collections::{HashMap, HashSet};
 
 /// A proof of equality of descrete logs $(g_1,g_1^x), $g_2,g_2^x)$ under different hidden order groups $g_1\in G_1, g_2 \in G_2$.
 /// In a hidden order we group, we can use a knowledge of discrete log proof to prove the equality of discrete logs of two bases:
@@ -114,9 +118,16 @@ where
     Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-        Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        PublicParameters = equivalence_class::PublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    >,
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
     GroupElement::Scalar: Default,
 {
     let base = (
@@ -134,6 +145,7 @@ where
     )
         .into();
 
+    let upper_bound_bits = Some(discrete_log_group_public_parameters.sample_bits);
     KnowledgeOfDiscreteLogPublicParameters::new::<
         bounded_integers_group::GroupElement<DISCRETE_LOG_WITNESS_LIMBS>,
         direct_product::GroupElement<
@@ -144,6 +156,7 @@ where
         discrete_log_group_public_parameters,
         group_public_parameters,
         base,
+        upper_bound_bits,
     )
 }
 
@@ -172,7 +185,7 @@ pub(crate) fn prove_equality_of_discrete_log<
         group::PublicParameters<GroupElement::Scalar>,
     >,
     secret_bits: u32,
-    rng: &mut impl CryptoRngCore,
+    rng: &mut impl CsRng,
 ) -> crate::Result<
     [(
         EqualityOfDiscreteLogsInHiddenOrderGroupProof<
@@ -195,9 +208,16 @@ where
     Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-        Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        PublicParameters = equivalence_class::PublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    >,
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
     GroupElement::Scalar: Default,
 {
     array::from_fn(|i| {
@@ -277,7 +297,7 @@ pub(crate) fn verify_equality_of_discrete_log_proofs<
         >,
     >,
     secret_bits: u32,
-    rng: &mut impl CryptoRngCore,
+    rng: &mut impl CsRng,
 ) -> Result<HashSet<PartyID>>
 where
     Int<PLAINTEXT_SPACE_SCALAR_LIMBS>: Encoding,
@@ -292,9 +312,16 @@ where
     Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-        Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        PublicParameters = equivalence_class::PublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    >,
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
     GroupElement::Scalar: Default,
 {
     let parties_with_no_commitments: HashSet<_> = encryption_key_shares_and_proofs
@@ -391,10 +418,7 @@ where
             let (parties_sending_invalid_proofs, _) = Proof::verify_batch_asynchronously(
                 proofs_and_protocol_contexts_and_statements,
                 &language_public_parameters,
-                #[cfg(not(feature = "parallel"))]
                 rng,
-                #[cfg(feature = "parallel")]
-                &mut OsRng,
             );
 
             parties_sending_invalid_proofs
@@ -456,11 +480,18 @@ where
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
 
     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-        Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        PublicParameters = equivalence_class::PublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    >,
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
 {
-    let upper_bound_bits = discrete_log_witness_group_public_parameters.upper_bound_bits;
+    let discrete_log_sample_bits = Some(discrete_log_witness_group_public_parameters.sample_bits);
 
     EncryptionOfDiscreteLogPublicParameters::<
         DISCRETE_LOG_WITNESS_LIMBS,
@@ -480,7 +511,7 @@ where
         equivalence_class_public_parameters,
         encryption_scheme_public_parameters,
         public_verification_key_base.value(),
-        Some(upper_bound_bits),
+        discrete_log_sample_bits,
     )
 }
 
@@ -505,7 +536,7 @@ pub fn prove_encryption_of_discrete_log_per_crt_prime<
     setup_parameters_per_crt_prime: &[SecretKeyShareCRTPrimeSetupParameters; MAX_PRIMES],
     base_protocol_context: BaseProtocolContext,
     discrete_log_bits: u32,
-    rng: &mut impl CryptoRngCore,
+    rng: &mut impl CsRng,
 ) -> Result<
     [(
         EncryptionOfDiscreteLogProof<
@@ -527,9 +558,16 @@ where
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
 
     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-        Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        PublicParameters = equivalence_class::PublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    >,
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
 {
     let discrete_log_witness_group_public_parameters = bounded_integers_group::PublicParameters::<
         DISCRETE_LOG_WITNESS_LIMBS,
@@ -571,10 +609,7 @@ where
         // Sample $\eta_{i}\gets \mathcal{D}_{q}$
         let encryption_randomness = RandomnessSpaceGroupElement::sample(
             encryption_scheme_public_parameters.randomness_space_public_parameters(),
-            #[cfg(not(feature = "parallel"))]
             rng,
-            #[cfg(feature = "parallel")]
-            &mut OsRng,
         )?;
 
         let (proof, statement) = EncryptionOfDiscreteLogProof::<
@@ -585,10 +620,7 @@ where
             &protocol_context,
             &language_public_parameters,
             vec![(discrete_log, encryption_randomness).into()],
-            #[cfg(not(feature = "parallel"))]
             rng,
-            #[cfg(feature = "parallel")]
-            &mut OsRng,
         )?;
 
         let (encryption_of_discrete_log, _) =
@@ -637,7 +669,7 @@ pub fn verify_encryptions_of_secrets_per_crt_prime<
     public_verification_key_base: EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
     base_protocol_context: BaseProtocolContext,
     discrete_log_bits: u32,
-    rng: &mut impl CryptoRngCore,
+    rng: &mut impl CsRng,
 ) -> Result<HashSet<PartyID>>
 where
     Int<DISCRETE_LOG_WITNESS_LIMBS>: Encoding,
@@ -650,9 +682,16 @@ where
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
 
     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-        Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        PublicParameters = equivalence_class::PublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    >,
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
 {
     let discrete_log_witness_group_public_parameters = bounded_integers_group::PublicParameters::<
         DISCRETE_LOG_WITNESS_LIMBS,

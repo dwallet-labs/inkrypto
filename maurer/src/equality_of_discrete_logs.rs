@@ -4,10 +4,14 @@ use std::ops::Mul;
 
 use serde::Serialize;
 
-use crate::{Result, SOUND_PROOFS_REPETITIONS};
+use group::bounded_natural_numbers_group::MAURER_RANDOMIZER_DIFF_BITS;
 use group::helpers::{const_generic_array_serialization, FlatMapResults};
-use group::{self_product, Samplable};
-use proof::GroupsPublicParameters;
+use group::{self_product, Samplable, Scale, Transcribeable};
+use proof::{
+    CanonicalGroupsPublicParameters, GroupsPublicParameters, GroupsPublicParametersAccessors,
+};
+
+use crate::{Result, SOUND_PROOFS_REPETITIONS};
 
 /// Equality of Discrete Logs Maurer Language.
 ///
@@ -27,7 +31,7 @@ impl<
         const BATCH_SIZE: usize,
         const REPETITIONS: usize,
         Scalar: group::GroupElement + Samplable + Mul<GroupElement, Output = GroupElement> + Copy,
-        GroupElement: group::GroupElement,
+        GroupElement: group::GroupElement + Scale<Scalar::Value>,
     > crate::Language<REPETITIONS> for Language<BATCH_SIZE, Scalar, GroupElement>
 {
     type WitnessSpaceGroupElement = Scalar;
@@ -45,6 +49,8 @@ impl<
     fn homomorphose(
         witness: &Self::WitnessSpaceGroupElement,
         language_public_parameters: &Self::PublicParameters,
+        is_randomizer: bool,
+        is_verify: bool,
     ) -> Result<Self::StatementSpaceGroupElement> {
         let bases = language_public_parameters
             .bases
@@ -54,12 +60,45 @@ impl<
                     &language_public_parameters
                         .groups_public_parameters
                         .statement_space_public_parameters
-                        .public_parameters,
+                        .0,
                 )
             })
             .flat_map_results()?;
 
-        let bases_by_discrete_log = bases.map(|base| *witness * base);
+        let bases_by_discrete_log = bases.map(|base| {
+            if is_verify {
+                base.scale_vartime_accelerated(
+                    &witness.value(),
+                    &language_public_parameters
+                        .statement_space_public_parameters()
+                        .0,
+                )
+            } else if let Some(discrete_log_upper_bound_bits) = language_public_parameters
+                .discrete_log_sample_bits
+                .map(|discrete_log_upper_sample_bits| {
+                    if is_randomizer {
+                        discrete_log_upper_sample_bits + MAURER_RANDOMIZER_DIFF_BITS
+                    } else {
+                        discrete_log_upper_sample_bits
+                    }
+                })
+            {
+                base.scale_randomized_bounded_accelerated(
+                    &witness.value(),
+                    &language_public_parameters
+                        .statement_space_public_parameters()
+                        .0,
+                    discrete_log_upper_bound_bits,
+                )
+            } else {
+                base.scale_randomized_accelerated(
+                    &witness.value(),
+                    &language_public_parameters
+                        .statement_space_public_parameters()
+                        .0,
+                )
+            }
+        });
 
         Ok(bases_by_discrete_log.into())
     }
@@ -81,6 +120,7 @@ pub struct PublicParameters<
     >,
     #[serde(with = "const_generic_array_serialization")]
     pub bases: [GroupElementValue; BATCH_SIZE],
+    pub discrete_log_sample_bits: Option<u32>,
 }
 
 impl<const BATCH_SIZE: usize, ScalarPublicParameters, GroupPublicParameters, GroupElementValue>
@@ -92,6 +132,7 @@ where
         scalar_group_public_parameters: Scalar::PublicParameters,
         group_public_parameters: GroupElement::PublicParameters,
         bases: [GroupElementValue; BATCH_SIZE],
+        discrete_log_sample_bits: Option<u32>,
     ) -> Self
     where
         Scalar: group::GroupElement<PublicParameters = ScalarPublicParameters>
@@ -112,6 +153,7 @@ where
                 >::new(group_public_parameters),
             },
             bases,
+            discrete_log_sample_bits,
         }
     }
 }
@@ -142,6 +184,81 @@ where
     }
 }
 
+/// The Canonical Representation of the Public Parameters of Equality of Discrete Logs Maurer Language.
+#[derive(Serialize)]
+pub struct CanonicalPublicParameters<
+    const BATCH_SIZE: usize,
+    ScalarPublicParameters: Transcribeable + Serialize,
+    GroupPublicParameters: Transcribeable + Serialize,
+    GroupElementValue: Serialize,
+> {
+    canonical_groups_public_parameters: CanonicalGroupsPublicParameters<
+        ScalarPublicParameters,
+        self_product::PublicParameters<BATCH_SIZE, GroupPublicParameters>,
+    >,
+    #[serde(with = "const_generic_array_serialization")]
+    bases: [GroupElementValue; BATCH_SIZE],
+    discrete_log_sample_bits: Option<u32>,
+}
+
+impl<
+        const BATCH_SIZE: usize,
+        ScalarPublicParameters: Transcribeable + Serialize,
+        GroupPublicParameters: Transcribeable + Serialize,
+        GroupElementValue: Serialize,
+    >
+    From<
+        PublicParameters<
+            BATCH_SIZE,
+            ScalarPublicParameters,
+            GroupPublicParameters,
+            GroupElementValue,
+        >,
+    >
+    for CanonicalPublicParameters<
+        BATCH_SIZE,
+        ScalarPublicParameters,
+        GroupPublicParameters,
+        GroupElementValue,
+    >
+{
+    fn from(
+        value: PublicParameters<
+            BATCH_SIZE,
+            ScalarPublicParameters,
+            GroupPublicParameters,
+            GroupElementValue,
+        >,
+    ) -> Self {
+        Self {
+            canonical_groups_public_parameters: value.groups_public_parameters.into(),
+            bases: value.bases,
+            discrete_log_sample_bits: value.discrete_log_sample_bits,
+        }
+    }
+}
+
+impl<
+        const BATCH_SIZE: usize,
+        ScalarPublicParameters: Transcribeable + Serialize,
+        GroupPublicParameters: Transcribeable + Serialize,
+        GroupElementValue: Serialize,
+    > Transcribeable
+    for PublicParameters<
+        BATCH_SIZE,
+        ScalarPublicParameters,
+        GroupPublicParameters,
+        GroupElementValue,
+    >
+{
+    type CanonicalRepresentation = CanonicalPublicParameters<
+        BATCH_SIZE,
+        ScalarPublicParameters,
+        GroupPublicParameters,
+        GroupElementValue,
+    >;
+}
+
 pub type Proof<const BATCH_SIZE: usize, Scalar, GroupElement, ProtocolContext> = crate::Proof<
     SOUND_PROOFS_REPETITIONS,
     Language<BATCH_SIZE, Scalar, GroupElement>,
@@ -163,9 +280,8 @@ pub(super) mod private {
 #[cfg(any(test, feature = "test_helpers"))]
 pub mod test_helpers {
     use crypto_bigint::U2048;
-    use rand_core::OsRng;
 
-    use group::{bounded_natural_numbers_group, GroupElement};
+    use group::{bounded_natural_numbers_group, GroupElement, OsCsRng};
     use homomorphic_encryption::GroupsPublicParametersAccessors;
     use tiresias::test_helpers::N;
 
@@ -198,16 +314,17 @@ pub mod test_helpers {
 
         let first_base = tiresias::CiphertextSpaceGroupElement::sample(
             &ciphertext_space_public_parameters,
-            &mut OsRng,
+            &mut OsCsRng,
         )
         .unwrap();
 
         let second_base = tiresias::CiphertextSpaceGroupElement::sample(
             &ciphertext_space_public_parameters,
-            &mut OsRng,
+            &mut OsCsRng,
         )
         .unwrap();
 
+        let discrete_log_sample_bits = Some(scalar_public_parameters.upper_bound_bits);
         PublicParameters::new::<
             bounded_natural_numbers_group::GroupElement<
                 { tiresias::PaillierModulusSizedNumber::LIMBS },
@@ -217,6 +334,7 @@ pub mod test_helpers {
             scalar_public_parameters,
             ciphertext_space_public_parameters,
             [first_base.value(), second_base.value()],
+            discrete_log_sample_bits,
         )
     }
 }
@@ -227,14 +345,14 @@ mod tests {
     use std::iter;
 
     use crypto_bigint::{Concat, Uint, U2048, U256};
-    use rand_core::OsRng;
     use rstest::rstest;
 
     use class_groups::test_helpers::get_setup_parameters_secp256k1_112_bits_deterministic;
     use class_groups::EquivalenceClass;
-    use group::GroupElement;
-    use group::{bounded_natural_numbers_group, PartyID};
-    use group::{secp256k1, CyclicGroupElement};
+    use group::{
+        bounded_natural_numbers_group, secp256k1, CyclicGroupElement, GroupElement, OsCsRng,
+        PartyID,
+    };
     use mpc::secret_sharing::shamir::over_the_integers::SecretKeyShareSizedNumber;
     use mpc::Weight;
 
@@ -256,7 +374,7 @@ mod tests {
             secp256k1::group_element::PublicParameters::default();
 
         let second_base =
-            secp256k1::Scalar::sample(&secp256k1_scalar_public_parameters, &mut OsRng).unwrap()
+            secp256k1::Scalar::sample(&secp256k1_scalar_public_parameters, &mut OsCsRng).unwrap()
                 * secp256k1::GroupElement::generator_from_public_parameters(
                     &secp256k1_group_public_parameters,
                 )
@@ -269,6 +387,7 @@ mod tests {
                 secp256k1_group_public_parameters.generator,
                 second_base.value(),
             ],
+            None,
         )
     }
 
@@ -296,6 +415,7 @@ mod tests {
         let first_base = setup_parameters.h;
         let second_base = first_base + first_base + first_base;
 
+        let discrete_log_sample_bits = Some(scalar_public_parameters.sample_bits);
         PublicParameters::new::<
             bounded_natural_numbers_group::GroupElement<{ SecretKeyShareSizedNumber::LIMBS }>,
             EquivalenceClass<DISCRIMINANT_LIMBS>,
@@ -303,6 +423,7 @@ mod tests {
             scalar_public_parameters,
             group_public_parameters,
             [first_base.value(), second_base.value()],
+            discrete_log_sample_bits,
         )
     }
 
@@ -316,7 +437,7 @@ mod tests {
         test_helpers::valid_proof_verifies::<SOUND_PROOFS_REPETITIONS, Lang>(
             &language_public_parameters,
             batch_size,
-            &mut OsRng,
+            &mut OsCsRng,
         );
 
         let language_public_parameters = tiresias_language_public_parameters();
@@ -324,14 +445,14 @@ mod tests {
         test_helpers::valid_proof_verifies::<SOUND_PROOFS_REPETITIONS, TiresiasLang>(
             &language_public_parameters,
             batch_size,
-            &mut OsRng,
+            &mut OsCsRng,
         );
 
         let language_public_parameters = class_groups_language_public_parameters();
         test_helpers::valid_proof_verifies::<SOUND_PROOFS_REPETITIONS, ClassGroupsLang>(
             &language_public_parameters,
             batch_size,
-            &mut OsRng,
+            &mut OsCsRng,
         );
     }
 
@@ -349,15 +470,20 @@ mod tests {
             let witnesses = sample_witnesses::<SOUND_PROOFS_REPETITIONS, Lang>(
                 &language_public_parameters,
                 batch_size,
-                &mut OsRng,
+                &mut OsCsRng,
             );
 
-            generate_valid_proof(&language_public_parameters, witnesses, &mut OsRng)
+            generate_valid_proof(&language_public_parameters, witnesses, &mut OsCsRng)
         })
         .take(number_of_proofs)
         .unzip();
 
-        batch_verifies(proofs, statements, &language_public_parameters, &mut OsRng);
+        batch_verifies(
+            proofs,
+            statements,
+            &language_public_parameters,
+            &mut OsCsRng,
+        );
     }
 
     #[rstest]
@@ -377,15 +503,20 @@ mod tests {
             let witnesses = sample_witnesses::<SOUND_PROOFS_REPETITIONS, TiresiasLang>(
                 &language_public_parameters,
                 batch_size,
-                &mut OsRng,
+                &mut OsCsRng,
             );
 
-            generate_valid_proof(&language_public_parameters, witnesses, &mut OsRng)
+            generate_valid_proof(&language_public_parameters, witnesses, &mut OsCsRng)
         })
         .take(number_of_proofs)
         .unzip();
 
-        batch_verifies(proofs, statements, &language_public_parameters, &mut OsRng);
+        batch_verifies(
+            proofs,
+            statements,
+            &language_public_parameters,
+            &mut OsCsRng,
+        );
     }
 
     #[rstest]
@@ -405,15 +536,20 @@ mod tests {
             let witnesses = sample_witnesses::<SOUND_PROOFS_REPETITIONS, ClassGroupsLang>(
                 &language_public_parameters,
                 batch_size,
-                &mut OsRng,
+                &mut OsCsRng,
             );
 
-            generate_valid_proof(&language_public_parameters, witnesses, &mut OsRng)
+            generate_valid_proof(&language_public_parameters, witnesses, &mut OsCsRng)
         })
         .take(number_of_proofs)
         .unzip();
 
-        batch_verifies(proofs, statements, &language_public_parameters, &mut OsRng);
+        batch_verifies(
+            proofs,
+            statements,
+            &language_public_parameters,
+            &mut OsCsRng,
+        );
     }
 
     #[rstest]
@@ -431,7 +567,7 @@ mod tests {
             None,
             &language_public_parameters,
             batch_size,
-            &mut OsRng,
+            &mut OsCsRng,
         )
     }
 
@@ -462,14 +598,14 @@ mod tests {
             &prover_public_parameters,
             &verifier_public_parameters,
             batch_size,
-            &mut OsRng,
+            &mut OsCsRng,
         );
 
         let mut prover_public_parameters = verifier_public_parameters.clone();
         prover_public_parameters
             .groups_public_parameters
             .statement_space_public_parameters
-            .public_parameters
+            .0
             .curve_equation_a = U256::from(42u8);
 
         test_helpers::proof_over_invalid_public_parameters_fails_verification::<
@@ -479,7 +615,7 @@ mod tests {
             &prover_public_parameters,
             &verifier_public_parameters,
             batch_size,
-            &mut OsRng,
+            &mut OsCsRng,
         );
     }
 
@@ -493,7 +629,7 @@ mod tests {
         test_helpers::proof_with_incomplete_transcript_fails::<SOUND_PROOFS_REPETITIONS, Lang>(
             &language_public_parameters,
             batch_size,
-            &mut OsRng,
+            &mut OsCsRng,
         )
     }
 
@@ -530,7 +666,7 @@ mod tests {
             threshold,
             party_to_weight,
             batch_size,
-            &mut OsRng,
+            &mut OsCsRng,
         );
     }
 

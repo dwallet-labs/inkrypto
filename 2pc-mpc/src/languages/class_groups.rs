@@ -1,21 +1,25 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
-use crypto_bigint::rand_core::CryptoRngCore;
-use crypto_bigint::{Encoding, Int, Uint};
+use std::fmt::Debug;
 
+use crypto_bigint::{Encoding, Int, Uint};
+use serde::Serialize;
+
+use class_groups::equivalence_class::EquivalenceClassOps;
+use class_groups::MultiFoldNupowAccelerator;
 use class_groups::{
     encryption_key, equivalence_class, CiphertextSpaceGroupElement,
-    CiphertextSpacePublicParameters, CompactIbqf, EncryptionKey, EquivalenceClass,
-    RandomnessSpaceGroupElement, RandomnessSpacePublicParameters,
+    CiphertextSpacePublicParameters, CiphertextSpaceValue, CompactIbqf, EncryptionKey,
+    EquivalenceClass, RandomnessSpaceGroupElement, RandomnessSpacePublicParameters,
 };
 use commitment::MultiPedersen;
 use group::helpers::FlatMapResults;
-use group::GroupElement as _;
 use group::{
     bounded_natural_numbers_group, direct_product, self_product, KnownOrderGroupElement,
     PrimeGroupElement, Samplable,
 };
+use group::{CsRng, GroupElement as _};
 use homomorphic_encryption::AdditivelyHomomorphicEncryptionKey;
 use homomorphic_encryption::GroupsPublicParametersAccessors;
 use maurer::committed_linear_evaluation::StatementAccessors;
@@ -157,6 +161,7 @@ pub type EncryptionOfDiscreteLogProof<
     const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
     const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
     GroupElement,
+    PC,
 > = maurer::Proof<
     SOUND_PROOFS_REPETITIONS,
     EncryptionOfDiscreteLogLanguage<
@@ -165,7 +170,7 @@ pub type EncryptionOfDiscreteLogProof<
         NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
         GroupElement,
     >,
-    ProtocolContext,
+    PC,
 >;
 
 /// Scaling of Discrete Log Language $L_{\textsf{ScaleDL}}$.
@@ -391,9 +396,16 @@ where
     Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-        Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        PublicParameters = equivalence_class::PublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    >,
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
     EncryptionKey<
         SCALAR_LIMBS,
         FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -538,7 +550,7 @@ pub fn prove_committed_linear_evaluation<
     >,
     protocol_context: &ProtocolContext,
     rerandomize_coefficients: bool,
-    rng: &mut impl CryptoRngCore,
+    rng: &mut impl CsRng,
 ) -> Result<(
     CommittedLinearEvaluationProof<
         SCALAR_LIMBS,
@@ -557,9 +569,16 @@ where
     Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-        Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        PublicParameters = equivalence_class::PublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    >,
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
     EncryptionKey<
         SCALAR_LIMBS,
         FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -760,9 +779,16 @@ where
     Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-        Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        PublicParameters = equivalence_class::PublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    >,
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
     EncryptionKey<
         SCALAR_LIMBS,
         FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -863,9 +889,16 @@ where
     Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-        Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        PublicParameters = equivalence_class::PublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    >,
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
     EncryptionKey<
         SCALAR_LIMBS,
         FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -923,6 +956,220 @@ where
     )
 }
 
+/// Prove $\Pi_{\textsf{zk}}^{L_{\textsf{EncDL}$.
+pub fn prove_encryption_of_discrete_log<
+    const SCALAR_LIMBS: usize,
+    const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    PC: Clone + Serialize + Debug + PartialEq + Eq + Send + Sync,
+>(
+    scalar_group_public_parameters: group::PublicParameters<GroupElement::Scalar>,
+    group_public_parameters: GroupElement::PublicParameters,
+    encryption_scheme_public_parameters: homomorphic_encryption::PublicParameters<
+        SCALAR_LIMBS,
+        EncryptionKey<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >,
+    >,
+    protocol_context: &PC,
+    discrete_log: GroupElement::Scalar,
+    rng: &mut impl CsRng,
+) -> Result<(
+    EncryptionOfDiscreteLogProof<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        GroupElement,
+        PC,
+    >,
+    CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+)>
+where
+    Int<SCALAR_LIMBS>: Encoding,
+    Uint<SCALAR_LIMBS>: Encoding,
+    Int<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
+    EncryptionKey<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        GroupElement,
+    >: AdditivelyHomomorphicEncryptionKey<
+        SCALAR_LIMBS,
+        PublicParameters = encryption_key::PublicParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >,
+        PlaintextSpaceGroupElement = GroupElement::Scalar,
+        RandomnessSpaceGroupElement = RandomnessSpaceGroupElement<FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+        CiphertextSpaceGroupElement = CiphertextSpaceGroupElement<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        >,
+    >,
+    encryption_key::PublicParameters<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<GroupElement::Scalar>,
+    >: AsRef<
+        homomorphic_encryption::GroupsPublicParameters<
+            group::PublicParameters<GroupElement::Scalar>,
+            RandomnessSpacePublicParameters<FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            CiphertextSpacePublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+        >,
+    >,
+{
+    let language_public_parameters = construct_encryption_of_discrete_log_public_parameters(
+        scalar_group_public_parameters,
+        group_public_parameters,
+        encryption_scheme_public_parameters.clone(),
+    );
+
+    let encryption_randomness =
+        RandomnessSpaceGroupElement::<FUNDAMENTAL_DISCRIMINANT_LIMBS>::sample(
+            encryption_scheme_public_parameters.randomness_space_public_parameters(),
+            rng,
+        )?;
+
+    let (proof, statement) = EncryptionOfDiscreteLogProof::<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        GroupElement,
+        PC,
+    >::prove(
+        protocol_context,
+        &language_public_parameters,
+        vec![(discrete_log, encryption_randomness).into()],
+        rng,
+    )?;
+
+    let (&encryption_of_discrete_log, _) =
+        statement.first().ok_or(crate::Error::InternalError)?.into();
+
+    Ok((proof, encryption_of_discrete_log))
+}
+
+/// Verify $\Pi_{\textsf{zk}}^{L_{\textsf{EncDL}$.
+pub fn verify_encryption_of_discrete_log<
+    const SCALAR_LIMBS: usize,
+    const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    PC: Clone + Serialize + Debug + PartialEq + Eq + Send + Sync,
+>(
+    scalar_group_public_parameters: group::PublicParameters<GroupElement::Scalar>,
+    group_public_parameters: GroupElement::PublicParameters,
+    encryption_scheme_public_parameters: homomorphic_encryption::PublicParameters<
+        SCALAR_LIMBS,
+        EncryptionKey<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >,
+    >,
+    protocol_context: &PC,
+    proof: EncryptionOfDiscreteLogProof<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        GroupElement,
+        PC,
+    >,
+    base_by_discrete_log: GroupElement::Value,
+    encryption_of_discrete_log: CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+) -> Result<()>
+where
+    Int<SCALAR_LIMBS>: Encoding,
+    Uint<SCALAR_LIMBS>: Encoding,
+    Int<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
+    EncryptionKey<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        GroupElement,
+    >: AdditivelyHomomorphicEncryptionKey<
+        SCALAR_LIMBS,
+        PublicParameters = encryption_key::PublicParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >,
+        PlaintextSpaceGroupElement = GroupElement::Scalar,
+        RandomnessSpaceGroupElement = RandomnessSpaceGroupElement<FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+        CiphertextSpaceGroupElement = CiphertextSpaceGroupElement<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        >,
+    >,
+    encryption_key::PublicParameters<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<GroupElement::Scalar>,
+    >: AsRef<
+        homomorphic_encryption::GroupsPublicParameters<
+            group::PublicParameters<GroupElement::Scalar>,
+            RandomnessSpacePublicParameters<FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            CiphertextSpacePublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+        >,
+    >,
+{
+    let base_by_discrete_log = GroupElement::new(base_by_discrete_log, &group_public_parameters)?;
+    let encryption_of_discrete_log = CiphertextSpaceGroupElement::new(
+        encryption_of_discrete_log,
+        encryption_scheme_public_parameters.ciphertext_space_public_parameters(),
+    )?;
+
+    let language_public_parameters = construct_encryption_of_discrete_log_public_parameters(
+        scalar_group_public_parameters,
+        group_public_parameters,
+        encryption_scheme_public_parameters,
+    );
+
+    proof.verify(
+        protocol_context,
+        &language_public_parameters,
+        vec![(encryption_of_discrete_log, base_by_discrete_log).into()],
+    )?;
+
+    Ok(())
+}
+
 /// Construct $L_\textsf{ScaleDL}$ language parameters.
 pub fn construct_scaling_of_discrete_log_public_parameters<
     const SCALAR_LIMBS: usize,
@@ -968,9 +1215,16 @@ where
     Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-        Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        PublicParameters = equivalence_class::PublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    >,
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
     EncryptionKey<
         SCALAR_LIMBS,
         FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -1086,9 +1340,16 @@ where
     Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-        Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        PublicParameters = equivalence_class::PublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    >,
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
     EncryptionKey<
         SCALAR_LIMBS,
         FUNDAMENTAL_DISCRIMINANT_LIMBS,

@@ -5,8 +5,8 @@ use std::marker::PhantomData;
 use serde::{Deserialize, Serialize};
 
 use commitment::{GroupsPublicParametersAccessors, HomomorphicCommitmentScheme};
-use group::{direct_product, self_product, Samplable};
-use proof::GroupsPublicParameters;
+use group::{direct_product, self_product, Samplable, Transcribeable};
+use proof::{CanonicalGroupsPublicParameters, GroupsPublicParameters};
 
 use crate::{Result, SOUND_PROOFS_REPETITIONS};
 
@@ -47,6 +47,8 @@ where
     fn homomorphose(
         witness: &Self::WitnessSpaceGroupElement,
         language_public_parameters: &Self::PublicParameters,
+        _is_randomizer: bool,
+        _is_verify: bool,
     ) -> Result<Self::StatementSpaceGroupElement> {
         let first_commitment_scheme = CommitmentScheme::new(
             &language_public_parameters.first_commitment_scheme_public_parameters,
@@ -225,12 +227,98 @@ impl<
     }
 }
 
+/// The Canonical Representation of the Public Parameters of the Equality Between Two Commitments With Different Public Parameters
+/// Maurer Language.
+#[derive(Serialize)]
+pub struct CanonicalPublicParameters<
+    MessageSpacePublicParameters: Transcribeable + Serialize,
+    RandomnessSpacePublicParameters: Transcribeable + Serialize,
+    CommitmentSpacePublicParameters: Transcribeable + Serialize,
+    CommitmentSchemePublicParameters: Transcribeable + Serialize,
+> {
+    canonical_groups_public_parameters: CanonicalGroupsPublicParameters<
+        direct_product::PublicParameters<
+            MessageSpacePublicParameters,
+            self_product::PublicParameters<2, RandomnessSpacePublicParameters>,
+        >,
+        self_product::PublicParameters<2, CommitmentSpacePublicParameters>,
+    >,
+    canonical_first_commitment_scheme_public_parameters:
+        CommitmentSchemePublicParameters::CanonicalRepresentation,
+    canonical_second_commitment_scheme_public_parameters:
+        CommitmentSchemePublicParameters::CanonicalRepresentation,
+}
+
+impl<
+        MessageSpacePublicParameters: Transcribeable + Serialize,
+        RandomnessSpacePublicParameters: Transcribeable + Serialize,
+        CommitmentSpacePublicParameters: Transcribeable + Serialize,
+        CommitmentSchemePublicParameters: Transcribeable + Serialize,
+    >
+    From<
+        PublicParameters<
+            MessageSpacePublicParameters,
+            RandomnessSpacePublicParameters,
+            CommitmentSpacePublicParameters,
+            CommitmentSchemePublicParameters,
+        >,
+    >
+    for CanonicalPublicParameters<
+        MessageSpacePublicParameters,
+        RandomnessSpacePublicParameters,
+        CommitmentSpacePublicParameters,
+        CommitmentSchemePublicParameters,
+    >
+{
+    fn from(
+        value: PublicParameters<
+            MessageSpacePublicParameters,
+            RandomnessSpacePublicParameters,
+            CommitmentSpacePublicParameters,
+            CommitmentSchemePublicParameters,
+        >,
+    ) -> Self {
+        Self {
+            canonical_groups_public_parameters: value.groups_public_parameters.into(),
+            canonical_first_commitment_scheme_public_parameters: value
+                .first_commitment_scheme_public_parameters
+                .into(),
+            canonical_second_commitment_scheme_public_parameters: value
+                .second_commitment_scheme_public_parameters
+                .into(),
+        }
+    }
+}
+
+impl<
+        MessageSpacePublicParameters: Transcribeable + Serialize,
+        RandomnessSpacePublicParameters: Transcribeable + Serialize,
+        CommitmentSpacePublicParameters: Transcribeable + Serialize,
+        CommitmentSchemePublicParameters: Transcribeable + Serialize,
+    > Transcribeable
+    for PublicParameters<
+        MessageSpacePublicParameters,
+        RandomnessSpacePublicParameters,
+        CommitmentSpacePublicParameters,
+        CommitmentSchemePublicParameters,
+    >
+{
+    type CanonicalRepresentation = CanonicalPublicParameters<
+        MessageSpacePublicParameters,
+        RandomnessSpacePublicParameters,
+        CommitmentSpacePublicParameters,
+        CommitmentSchemePublicParameters,
+    >;
+}
+
 #[cfg(any(test, feature = "test_helpers"))]
 pub mod test_helpers {
-    use super::*;
-    use crate::language;
     use commitment::{pedersen, Pedersen};
     use group::{secp256k1, CyclicGroupElement, GroupElement};
+
+    use crate::language;
+
+    use super::*;
 
     pub type Lang<const BATCH_SIZE: usize> = Language<
         { secp256k1::SCALAR_LIMBS },
@@ -281,16 +369,16 @@ mod tests {
     use std::collections::HashMap;
     use std::iter;
 
-    use rand_core::OsRng;
     use rstest::rstest;
 
-    use group::PartyID;
+    use group::{OsCsRng, PartyID};
     use mpc::Weight;
 
-    use super::test_helpers::*;
     use crate::language::StatementSpaceGroupElement;
     use crate::test_helpers::{batch_verifies, generate_valid_proof, sample_witnesses};
     use crate::{test_helpers, SOUND_PROOFS_REPETITIONS};
+
+    use super::test_helpers::*;
 
     #[rstest]
     #[case(1)]
@@ -302,7 +390,7 @@ mod tests {
         test_helpers::valid_proof_verifies::<SOUND_PROOFS_REPETITIONS, Lang<1>>(
             &language_public_parameters,
             batch_size,
-            &mut OsRng,
+            &mut OsCsRng,
         );
     }
 
@@ -320,15 +408,20 @@ mod tests {
             let witnesses = sample_witnesses::<SOUND_PROOFS_REPETITIONS, Lang<1>>(
                 &language_public_parameters,
                 batch_size,
-                &mut OsRng,
+                &mut OsCsRng,
             );
 
-            generate_valid_proof(&language_public_parameters, witnesses, &mut OsRng)
+            generate_valid_proof(&language_public_parameters, witnesses, &mut OsCsRng)
         })
         .take(number_of_proofs)
         .unzip();
 
-        batch_verifies(proofs, statements, &language_public_parameters, &mut OsRng);
+        batch_verifies(
+            proofs,
+            statements,
+            &language_public_parameters,
+            &mut OsCsRng,
+        );
     }
 
     #[rstest]
@@ -346,7 +439,7 @@ mod tests {
             None,
             &language_public_parameters,
             batch_size,
-            &mut OsRng,
+            &mut OsCsRng,
         )
     }
 
@@ -371,7 +464,7 @@ mod tests {
             &prover_public_parameters,
             &verifier_public_parameters,
             batch_size,
-            &mut OsRng,
+            &mut OsCsRng,
         );
     }
 
@@ -385,7 +478,7 @@ mod tests {
         test_helpers::proof_with_incomplete_transcript_fails::<SOUND_PROOFS_REPETITIONS, Lang<1>>(
             &language_public_parameters,
             batch_size,
-            &mut OsRng,
+            &mut OsCsRng,
         )
     }
 
@@ -422,7 +515,7 @@ mod tests {
             threshold,
             party_to_weight,
             batch_size,
-            &mut OsRng,
+            &mut OsCsRng,
         );
     }
 

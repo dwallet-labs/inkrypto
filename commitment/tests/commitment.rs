@@ -5,9 +5,8 @@
 mod tests {
     use commitment::GroupsPublicParametersAccessors;
     use crypto_bigint::U256;
-    use group::CyclicGroupElement;
     use group::HashToGroup;
-    use rand_core::OsRng;
+    use group::{CyclicGroupElement, OsCsRng};
 
     use group::{
         secp256k1::{self},
@@ -35,8 +34,9 @@ mod tests {
 
         // Sample a message and randomness
         let scalar_public_parameters = secp256k1::scalar::PublicParameters::default();
-        let message = secp256k1::Scalar::sample(&scalar_public_parameters, &mut OsRng).unwrap();
-        let randomness = secp256k1::Scalar::sample(&scalar_public_parameters, &mut OsRng).unwrap();
+        let message = secp256k1::Scalar::sample(&scalar_public_parameters, &mut OsCsRng).unwrap();
+        let randomness =
+            secp256k1::Scalar::sample(&scalar_public_parameters, &mut OsCsRng).unwrap();
 
         // Create the commitment scheme
         let commitment_scheme = Pedersen::<
@@ -84,9 +84,11 @@ mod tests {
         .unwrap();
 
         let scalar_public_parameters = secp256k1::scalar::PublicParameters::default();
-        let message = secp256k1::Scalar::sample(&scalar_public_parameters, &mut OsRng).unwrap();
-        let randomness1 = secp256k1::Scalar::sample(&scalar_public_parameters, &mut OsRng).unwrap();
-        let randomness2 = secp256k1::Scalar::sample(&scalar_public_parameters, &mut OsRng).unwrap();
+        let message = secp256k1::Scalar::sample(&scalar_public_parameters, &mut OsCsRng).unwrap();
+        let randomness1 =
+            secp256k1::Scalar::sample(&scalar_public_parameters, &mut OsCsRng).unwrap();
+        let randomness2 =
+            secp256k1::Scalar::sample(&scalar_public_parameters, &mut OsCsRng).unwrap();
 
         let commitment_scheme = Pedersen::<
             1,
@@ -115,10 +117,10 @@ mod tests {
         .unwrap();
         let scalar_public_parameters = secp256k1::scalar::PublicParameters::default();
 
-        let m1 = secp256k1::Scalar::sample(&scalar_public_parameters, &mut OsRng).unwrap();
-        let r1 = secp256k1::Scalar::sample(&scalar_public_parameters, &mut OsRng).unwrap();
-        let m2 = secp256k1::Scalar::sample(&scalar_public_parameters, &mut OsRng).unwrap();
-        let r2 = secp256k1::Scalar::sample(&scalar_public_parameters, &mut OsRng).unwrap();
+        let m1 = secp256k1::Scalar::sample(&scalar_public_parameters, &mut OsCsRng).unwrap();
+        let r1 = secp256k1::Scalar::sample(&scalar_public_parameters, &mut OsCsRng).unwrap();
+        let m2 = secp256k1::Scalar::sample(&scalar_public_parameters, &mut OsCsRng).unwrap();
+        let r2 = secp256k1::Scalar::sample(&scalar_public_parameters, &mut OsCsRng).unwrap();
 
         let scheme = Pedersen::<
             1,
@@ -151,7 +153,7 @@ mod tests {
 
         let scalar_public_parameters = secp256k1::scalar::PublicParameters::default();
         let zero_message = secp256k1::Scalar::from(U256::ZERO);
-        let r = secp256k1::Scalar::sample(&scalar_public_parameters, &mut OsRng).unwrap();
+        let r = secp256k1::Scalar::sample(&scalar_public_parameters, &mut OsCsRng).unwrap();
 
         let scheme = Pedersen::<
             1,
@@ -184,7 +186,7 @@ mod tests {
         .unwrap();
         let scalar_public_parameters = secp256k1::scalar::PublicParameters::default();
 
-        let message = secp256k1::Scalar::sample(&scalar_public_parameters, &mut OsRng).unwrap();
+        let message = secp256k1::Scalar::sample(&scalar_public_parameters, &mut OsCsRng).unwrap();
         let zero_randomness = secp256k1::Scalar::from(U256::ZERO);
 
         let scheme = Pedersen::<
@@ -271,8 +273,8 @@ mod tests {
         // Just do 50 random samples for demonstration.
         let scalar_public_parameters = secp256k1::scalar::PublicParameters::default();
         for _ in 0..500 {
-            let m = secp256k1::Scalar::sample(&scalar_public_parameters, &mut OsRng).unwrap();
-            let r = secp256k1::Scalar::sample(&scalar_public_parameters, &mut OsRng).unwrap();
+            let m = secp256k1::Scalar::sample(&scalar_public_parameters, &mut OsCsRng).unwrap();
+            let r = secp256k1::Scalar::sample(&scalar_public_parameters, &mut OsCsRng).unwrap();
             // If there's a serious bug (like integer overflow), we'd likely panic or produce nonsense.
             let _ = scheme.commit(&([m].into()), &r);
         }
@@ -301,8 +303,8 @@ mod tests {
 
         // We'll do 100 random commits
         for _ in 0..100 {
-            let m = secp256k1::Scalar::sample(&scalar_pp, &mut OsRng).unwrap();
-            let r = secp256k1::Scalar::sample(&scalar_pp, &mut OsRng).unwrap();
+            let m = secp256k1::Scalar::sample(&scalar_pp, &mut OsCsRng).unwrap();
+            let r = secp256k1::Scalar::sample(&scalar_pp, &mut OsCsRng).unwrap();
             let c = scheme.commit(&([m].into()), &r);
 
             // Check if this commitment equals any previous one
@@ -423,9 +425,9 @@ mod tests {
         // Now commit to a 1024-dimensional message:
         let scalar_public_parameters = secp256k1::scalar::PublicParameters::default();
         let msgs = (0..BATCH_SIZE)
-            .map(|_| secp256k1::Scalar::sample(&scalar_public_parameters, &mut OsRng).unwrap())
+            .map(|_| secp256k1::Scalar::sample(&scalar_public_parameters, &mut OsCsRng).unwrap())
             .collect::<Vec<_>>();
-        let r = secp256k1::Scalar::sample(&scalar_public_parameters, &mut OsRng).unwrap();
+        let r = secp256k1::Scalar::sample(&scalar_public_parameters, &mut OsCsRng).unwrap();
 
         // Convert Vec to array first, then into GroupElement
         let msgs_array: [secp256k1::Scalar; BATCH_SIZE] = msgs.try_into().unwrap();
@@ -505,9 +507,8 @@ mod tests {
 
         println!(
             "Identity point rejection test results:\n\
-             - G rejects identity: {}\n\
-             - H rejects identity: {}",
-            g_rejects_identity, h_rejects_identity
+             - G rejects identity: {g_rejects_identity}\n\
+             - H rejects identity: {h_rejects_identity}"
         );
 
         // Combined assertion to see if both checks pass
@@ -515,9 +516,7 @@ mod tests {
             // @audit-issue this fails so we add it to the report as low / info
             g_rejects_identity && h_rejects_identity,
             "Scheme creation should fail when using identity element as generator. \
-             G rejection: {}, H rejection: {}",
-            g_rejects_identity,
-            h_rejects_identity
+             G rejection: {g_rejects_identity}, H rejection: {h_rejects_identity}"
         );
     }
 }

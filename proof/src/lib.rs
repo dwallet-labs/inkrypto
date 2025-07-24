@@ -4,14 +4,12 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 
-use crypto_bigint::rand_core::CryptoRngCore;
-#[cfg(feature = "parallel")]
-use crypto_bigint::rand_core::OsRng;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use group::{GroupElement, PartyID, Samplable};
+use group::{CsRng, GroupElement, PartyID, Samplable, Transcribeable};
+use mpc::SeedableCollection;
 pub use range::{AggregatableRangeProof, RangeProof};
 pub use transcript_protocol::TranscriptProtocol;
 
@@ -21,7 +19,7 @@ pub mod aggregation;
 pub mod range;
 
 /// Proof error.
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Debug, Clone)]
 pub enum Error {
     #[error("invalid parameters")]
     InvalidParameters,
@@ -32,8 +30,8 @@ pub enum Error {
     #[error("aggregation error")]
     Aggregation(#[from] aggregation::Error),
 
-    #[error("serialization/deserialization error")]
-    Serialization(#[from] serde_json::Error),
+    #[error("serialization/deserialization error: {0:?}")]
+    Serialization(String),
 
     #[error("invalid proof: did not satisfy the verification equation")]
     ProofVerification,
@@ -43,6 +41,12 @@ pub enum Error {
 
     #[error("at least one of the witnesses is out of range")]
     OutOfRange,
+}
+
+impl From<serde_json::Error> for Error {
+    fn from(e: serde_json::Error) -> Self {
+        Error::Serialization(e.to_string())
+    }
 }
 
 /// Proof result.
@@ -55,7 +59,7 @@ impl From<Error> for mpc::Error {
             Error::Group(e) => mpc::Error::Group(e),
             Error::InternalError => mpc::Error::InternalError,
             Error::InvalidParameters => mpc::Error::InvalidParameters,
-            e => mpc::Error::Consumer(format!("proof error {:?}", e)),
+            e => mpc::Error::Consumer(format!("proof error {e:?}")),
         }
     }
 }
@@ -66,12 +70,44 @@ pub struct GroupsPublicParameters<WitnessSpacePublicParameters, StatementSpacePu
     pub statement_space_public_parameters: StatementSpacePublicParameters,
 }
 
+#[derive(Serialize)]
+pub struct CanonicalGroupsPublicParameters<
+    WitnessSpacePublicParameters: Transcribeable,
+    StatementSpacePublicParameters: Transcribeable,
+> {
+    pub canonical_witness_space_public_parameters:
+        WitnessSpacePublicParameters::CanonicalRepresentation,
+    pub canonical_statement_space_public_parameters:
+        StatementSpacePublicParameters::CanonicalRepresentation,
+}
+
+impl<
+        WitnessSpacePublicParameters: Transcribeable,
+        StatementSpacePublicParameters: Transcribeable,
+    > From<GroupsPublicParameters<WitnessSpacePublicParameters, StatementSpacePublicParameters>>
+    for CanonicalGroupsPublicParameters<
+        WitnessSpacePublicParameters,
+        StatementSpacePublicParameters,
+    >
+{
+    fn from(
+        value: GroupsPublicParameters<WitnessSpacePublicParameters, StatementSpacePublicParameters>,
+    ) -> Self {
+        Self {
+            canonical_witness_space_public_parameters: value.witness_space_public_parameters.into(),
+            canonical_statement_space_public_parameters: value
+                .statement_space_public_parameters
+                .into(),
+        }
+    }
+}
+
 /// An (Aggregateable) Proof.
 pub trait Proof:
     Serialize + for<'a> Deserialize<'a> + Clone + Debug + PartialEq + Eq + Send + Sync
 {
     /// Proof error.
-    type Error: Debug + From<Error> + TryInto<Error, Error = Self::Error> + Send + Sync;
+    type Error: Debug + From<Error> + TryInto<Error, Error = Self::Error> + Send + Sync + Clone;
 
     /// A struct used by the protocol using this proof,
     /// used to provide extra necessary context that will parameterize the proof (and thus verifier
@@ -132,7 +168,7 @@ pub trait Proof:
         protocol_context: &Self::ProtocolContext,
         public_parameters: &Self::PublicParameters,
         witnesses: Vec<Self::WitnessSpaceGroupElement>,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> std::result::Result<(Self, Vec<Self::StatementSpaceGroupElement>), Self::Error>;
 
     /// Verify a batched zero-knowledge proof.
@@ -141,7 +177,7 @@ pub trait Proof:
         protocol_context: &Self::ProtocolContext,
         public_parameters: &Self::PublicParameters,
         statements: Vec<Self::StatementSpaceGroupElement>,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> std::result::Result<(), Self::Error>;
 
     /// Verify a batch of batched zero-knowledge proofs.
@@ -150,7 +186,7 @@ pub trait Proof:
         protocol_contexts: Vec<Self::ProtocolContext>,
         public_parameters: &Self::PublicParameters,
         statements: Vec<Vec<Self::StatementSpaceGroupElement>>,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> std::result::Result<(), Self::Error> {
         let batch_size = statements.first().ok_or(Error::InvalidParameters)?.len();
         if proofs.len() != statements.len()
@@ -173,7 +209,7 @@ pub trait Proof:
     /// Returns the list of malicious parties, and a filtered mapping of the statements of each proof that passed verification.
     /// This list is empty in the happy-flow where batch verification passed, and there are no malicious parties.
     ///
-    /// Note: `rng` can only be used when `parallel` is opt-out. Otherwise, `OsRng` is used for random generation.
+    /// Note: `rng` can only be used when `parallel` is opt-out. Otherwise, `OsCsRng` is used for random generation.
     #[allow(unused_variables)]
     #[allow(clippy::type_complexity)]
     fn verify_batch_asynchronously(
@@ -185,7 +221,7 @@ pub trait Proof:
             )>,
         >,
         public_parameters: &Self::PublicParameters,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> (
         Vec<PartyID>,
         HashMap<PartyID, Vec<Vec<Self::StatementSpaceGroupElement>>>,
@@ -201,47 +237,60 @@ pub trait Proof:
             contexts_and_statements.into_iter().unzip();
 
         // Try first to perform batch verification.
-        let parties_sending_invalid_proofs = if Self::verify_batch(
+        let parties_sending_invalid_proofs = match Self::verify_batch(
             proofs,
             protocol_contexts.clone(),
             public_parameters,
             statements.clone(),
             rng,
-        )
-        .is_err()
-        {
-            #[cfg(not(feature = "parallel"))]
-            let iter = proofs_and_protocol_contexts_and_statements.iter();
-            #[cfg(feature = "parallel")]
-            let iter = proofs_and_protocol_contexts_and_statements.par_iter();
+        ) {
+            Err(e) => {
+                let seeded_proofs_and_protocol_contexts_and_statements =
+                    proofs_and_protocol_contexts_and_statements
+                        .clone()
+                        .seed(rng);
 
-            // In case it fails, we need to verify proofs individually.
-            let parties_sending_invalid_proofs: Vec<PartyID> = iter
-                .filter(|(_, proofs_and_protocol_contexts_and_statements)| {
-                    proofs_and_protocol_contexts_and_statements.iter().any(
-                        |(proof, (protocol_context, statements))| {
-                            proof
-                                .verify(
-                                    protocol_context,
-                                    public_parameters,
-                                    statements.clone(),
-                                    #[cfg(not(feature = "parallel"))]
-                                    rng,
-                                    #[cfg(feature = "parallel")]
-                                    &mut OsRng,
-                                )
-                                .is_err()
+                #[cfg(not(feature = "parallel"))]
+                let iter = seeded_proofs_and_protocol_contexts_and_statements.into_iter();
+                #[cfg(feature = "parallel")]
+                let iter = seeded_proofs_and_protocol_contexts_and_statements.into_par_iter();
+
+                // In case it fails, we need to verify proofs individually.
+                let parties_sending_invalid_proofs: Vec<PartyID> = iter
+                    .flat_map(
+                        |(
+                            (party_id, proofs_and_protocol_contexts_and_statements),
+                            mut unique_rng,
+                        )| {
+                            if proofs_and_protocol_contexts_and_statements.iter().any(
+                                |(proof, (protocol_context, statements))| {
+                                    proof
+                                        .verify(
+                                            protocol_context,
+                                            public_parameters,
+                                            statements.clone(),
+                                            &mut unique_rng,
+                                        )
+                                        .is_err()
+                                },
+                            ) {
+                                // This party sent at least one invalid proof, mark it as malicious.
+                                Some(party_id)
+                            } else {
+                                None
+                            }
                         },
                     )
-                })
-                .map(|(party_id, _)| *party_id)
-                .collect();
+                    .collect();
 
-            // We successfully verified the proofs, but some of them failed: report the malicious parties that failed them.
-            parties_sending_invalid_proofs
-        } else {
-            // We're in the happy-flow: batch verification passed, so we succeed without reporting any malicious parties.
-            vec![]
+                assert!(!parties_sending_invalid_proofs.is_empty(), "batch verification failed with error {e:?}, but all proofs passed verification when verified individually. This signifies a bug.");
+                // We successfully verified the proofs, but some of them failed: report the malicious parties that failed them.
+                parties_sending_invalid_proofs
+            }
+            Ok(()) => {
+                // We're in the happy-flow: batch verification passed, so we succeed without reporting any malicious parties.
+                vec![]
+            }
         };
 
         // Filter out all malicious parties, and keep only the statements.

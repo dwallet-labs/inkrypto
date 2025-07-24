@@ -6,9 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::iter;
 
 use crypto_bigint::subtle::{Choice, CtOption};
-use crypto_bigint::{
-    rand_core::CryptoRngCore, Encoding, Int, Limb, NonZero, Uint, I64, U4096, U64,
-};
+use crypto_bigint::{Encoding, Int, Limb, NonZero, Uint, I64, U4096, U64};
 use gcd::Gcd;
 #[cfg(feature = "parallel")]
 use rayon::iter::IntoParallelIterator;
@@ -18,8 +16,8 @@ use serde::{Deserialize, Serialize};
 
 use group::helpers::{FlatMapResults, TryCollectHashMap};
 use group::{
-    bounded_integers_group, bounded_natural_numbers_group, GroupElement, KnownOrderScalar,
-    LinearlyCombinable, PartyID, Samplable, StatisticalSecuritySizedNumber,
+    bounded_integers_group, bounded_natural_numbers_group, CsRng, GroupElement, KnownOrderScalar,
+    LinearlyCombinable, PartyID, Samplable, Scale, StatisticalSecuritySizedNumber,
 };
 
 use crate::secret_sharing::shamir::Polynomial;
@@ -74,7 +72,7 @@ fn stirling<const LIMBS: usize>(t: u32, k: u32) -> Uint<LIMBS> {
 
     let t = usize::try_from(t).unwrap();
     let k = usize::try_from(k).unwrap();
-    let mut hint: Vec<_> = iter::repeat(vec![Uint::ZERO; t + 1]).take(t + 1).collect();
+    let mut hint: Vec<_> = iter::repeat_n(vec![Uint::ZERO; t + 1], t + 1).collect();
     hint[0][0] = Uint::ONE;
 
     for i in 1..=t {
@@ -290,7 +288,7 @@ pub fn factorial(number_of_parties: PartyID) -> FactorialSizedNumber {
     // The default case only happens if `number_of_parties == 1` or `number_of_parties == 0` in both cases result is 1.
     (2..=number_of_parties)
         .map(FactorialSizedNumber::from)
-        .reduce(|a, b| a.wrapping_mul(&b))
+        .reduce(|a, b| a * b)
         .unwrap_or(Uint::ONE)
 }
 
@@ -389,7 +387,7 @@ pub fn generate_expected_decryption_share_base<GroupElement: group::GroupElement
 /// Computes the decryption share and its base for every ciphertext: $(c^{n!}, c^{n!d_i})$
 pub fn generate_decryption_shares<
     const SECRET_KEY_SHARE_LIMBS: usize,
-    GroupElement: group::GroupElement + Send + Sync,
+    GroupElement: group::GroupElement + Send + Sync + Scale<Int<SECRET_KEY_SHARE_LIMBS>>,
 >(
     decryption_key_share: Int<SECRET_KEY_SHARE_LIMBS>,
     decryption_share_bases: Vec<GroupElement>,
@@ -397,6 +395,7 @@ pub fn generate_decryption_shares<
     number_of_parties: PartyID,
     n_factorial: FactorialSizedNumber,
     binomial_coefficient: BinomialCoefficientSizedNumber,
+    group_public_parameters: &GroupElement::PublicParameters,
     secret_key_bits: u32,
 ) -> (Vec<GroupElement>, Vec<GroupElement>) {
     #[cfg(not(feature = "parallel"))]
@@ -412,6 +411,7 @@ pub fn generate_decryption_shares<
             threshold,
             n_factorial,
             binomial_coefficient,
+            group_public_parameters,
             secret_key_bits,
         )
     })
@@ -422,7 +422,7 @@ pub fn generate_decryption_shares<
 /// Computes the decryption share and its base for every ciphertext: $(c^{n!}, c^{n!d_i})$
 pub fn generate_decryption_share<
     const SECRET_KEY_SHARE_LIMBS: usize,
-    GroupElement: group::GroupElement + Send + Sync,
+    GroupElement: group::GroupElement + Send + Sync + Scale<Int<SECRET_KEY_SHARE_LIMBS>>,
 >(
     decryption_key_share: Int<SECRET_KEY_SHARE_LIMBS>,
     decryption_share_base: &GroupElement,
@@ -430,6 +430,7 @@ pub fn generate_decryption_share<
     number_of_parties: PartyID,
     n_factorial: FactorialSizedNumber,
     binomial_coefficient: BinomialCoefficientSizedNumber,
+    group_public_parameters: &GroupElement::PublicParameters,
     secret_key_bits: u32,
 ) -> (GroupElement, GroupElement) {
     let decryption_share_base = decryption_share_base
@@ -437,8 +438,9 @@ pub fn generate_decryption_share<
         .scale_vartime(&binomial_coefficient);
 
     // $ c_i = c^{n! \cdot {{n}\choose{j}} \cdot d_i} $
-    let decryption_share = decryption_share_base.scale_integer_bounded(
+    let decryption_share = decryption_share_base.scale_randomized_bounded_accelerated(
         &decryption_key_share,
+        group_public_parameters,
         secret_key_share_size_upper_bound(
             u32::from(number_of_parties),
             u32::from(threshold),
@@ -453,10 +455,11 @@ pub fn generate_decryption_share<
 /// Computes the decryption share and its base for every ciphertext: $(c^{n!}, c^{n!d_i})$
 /// Depending on the scheme there may be other constants in this exponentiation.
 /// The generation of the decryption share is separated to the generation of the decryption share basis which consists of operations on the ciphertexts which do not involve the secret key and operations which do depend on it.
-/// Security Note: While it seems that the order of these functions could have been reversed there is a non-trivial interaction between the simulation and vartime computations. Thus always do the public operations first in vartime and then the operation using the key in constant time.
+/// Security Note: While it seems that the order of these functions could have been reversed there is a non-trivial interaction between the simulation and vartime computations.
+/// Thus always do the public operations first in vartime and then the operation using the key in constant time.
 pub fn generate_decryption_share_semi_honest<
     const SECRET_KEY_SHARE_LIMBS: usize,
-    GroupElement: group::GroupElement + Send + Sync,
+    GroupElement: group::GroupElement + Send + Sync + Scale<Int<SECRET_KEY_SHARE_LIMBS>>,
     DecryptionShare: Default + From<GroupElement>,
 >(
     decryption_key_share: Int<SECRET_KEY_SHARE_LIMBS>,
@@ -467,11 +470,15 @@ pub fn generate_decryption_share_semi_honest<
     number_of_parties: PartyID,
     n_factorial: FactorialSizedNumber,
     binomial_coefficients: &HashMap<PartyID, BinomialCoefficientSizedNumber>,
+    group_public_parameters: &GroupElement::PublicParameters,
     secret_key_bits: u32,
 ) -> CtOption<DecryptionShare> {
     if !binomial_coefficients.contains_key(&party_id) {
         // This is a public check, so no need for constant time logic here; just return a None.
-        return CtOption::new(DecryptionShare::default(), Choice::from(0u8));
+        return CtOption::new(
+            DecryptionShare::from(*decryption_share_base),
+            Choice::from(0u8),
+        );
     }
 
     // Safe to unwrap due to sanity check.
@@ -491,10 +498,11 @@ pub fn generate_decryption_share_semi_honest<
         number_of_parties,
         n_factorial,
         binomial_coefficient,
+        group_public_parameters,
         secret_key_bits,
     );
 
-    CtOption::new(decryption_share.into(), Choice::from(1u8))
+    CtOption::new(DecryptionShare::from(decryption_share), Choice::from(1u8))
 }
 
 /// This function takes a subset of t decryption shares
@@ -930,8 +938,13 @@ fn interpolate_internal<GroupElement: group::GroupElement + Send + Sync + Linear
                     .flat_map_results()
                     .map_err(Error::from)?;
 
-                    let c_prime =
-                        c_prime_part_not_needing_inversion - c_prime_part_needing_inversion;
+                    let c_prime = if is_vartime {
+                        // TODO: sub vartime
+                        c_prime_part_not_needing_inversion
+                            .add_vartime(&c_prime_part_needing_inversion.neg())
+                    } else {
+                        c_prime_part_not_needing_inversion - c_prime_part_needing_inversion
+                    };
 
                     // $^{\Pi_{j \in S}(v - j)}$
                     // This computation is independent of `j'` so it could be done outside the loop
@@ -1147,15 +1160,16 @@ pub fn compute_unexpected_adjusted_lagrange_coefficient(
 
 pub fn deal_shares<
     const SECRET_KEY_SHARE_LIMBS: usize,
-    GroupElement: group::GroupElement + Send + Sync,
+    GroupElement: group::GroupElement + Send + Sync + Scale<Int<SECRET_KEY_SHARE_LIMBS>>,
 >(
     threshold: PartyID,
     number_of_parties: PartyID,
     n_factorial: FactorialSizedNumber,
     secret: Int<SECRET_KEY_SHARE_LIMBS>,
     commitment_base: GroupElement,
+    group_public_parameters: &GroupElement::PublicParameters,
     secret_key_bits: u32,
-    rng: &mut impl CryptoRngCore,
+    rng: &mut impl CsRng,
 ) -> Result<(
     Vec<GroupElement>,
     HashMap<PartyID, Uint<SECRET_KEY_SHARE_LIMBS>>,
@@ -1218,7 +1232,7 @@ where
                     rng,
                 )?
                 .value()
-                .to_int()
+                .try_into_int()
                 .into()
                 {
                     Ok(value)
@@ -1243,7 +1257,11 @@ where
             let sample_bits = *coefficients_sample_bits
                 .get(k)
                 .ok_or(Error::InternalError)?;
-            Ok(commitment_base.scale_integer_bounded(&coefficient.value(), sample_bits))
+            Ok(commitment_base.scale_randomized_bounded_accelerated(
+                &coefficient.value(),
+                group_public_parameters,
+                sample_bits,
+            ))
         })
         .collect::<Result<Vec<_>>>()?;
 
@@ -1317,10 +1335,9 @@ mod tests {
 
     use crypto_bigint::{ConstChoice, Random, U2048, U256};
     use rand::seq::IteratorRandom;
-    use rand_core::OsRng;
     use rstest::rstest;
 
-    use group::secp256k1;
+    use group::{secp256k1, OsCsRng};
 
     use super::*;
 
@@ -1390,11 +1407,11 @@ mod tests {
             let n_factorial = precomputed_values.n_factorial;
 
             for threshold in (2..=min(number_of_parties, MAX_THRESHOLD as u16))
-                .choose_multiple(&mut OsRng, 4)
+                .choose_multiple(&mut OsCsRng, 4)
                 .into_iter()
             {
                 let interpolation_subset: HashSet<_> = (1..=number_of_parties)
-                    .choose_multiple(&mut OsRng, usize::from(threshold))
+                    .choose_multiple(&mut OsCsRng, usize::from(threshold))
                     .into_iter()
                     .collect();
 
@@ -1443,7 +1460,7 @@ mod tests {
 
                 // First try a positive secret
                 let secret = Int::new_from_abs_sign(
-                    SecretKeyShareSizedNumber::from(&U2048::random(&mut OsRng)),
+                    SecretKeyShareSizedNumber::from(&U2048::random(&mut OsCsRng)),
                     ConstChoice::FALSE,
                 )
                 .unwrap();
@@ -1454,8 +1471,9 @@ mod tests {
                     n_factorial,
                     secret,
                     neutral,
+                    &scalar_public_parameters,
                     U2048::BITS,
-                    &mut OsRng,
+                    &mut OsCsRng,
                 )
                 .unwrap();
 
@@ -1493,7 +1511,7 @@ mod tests {
                         "{threshold}-out-of-{number_of_parties} interpolation of secret should equal the secret by n!^2"
                     );
 
-                (1..=number_of_parties).choose_multiple(&mut OsRng, 4).into_iter().for_each(|party_id| {
+                (1..=number_of_parties).choose_multiple(&mut OsCsRng, 4).into_iter().for_each(|party_id| {
                         let interpolated_share = interpolate_secret_shares(
                             shares_for_interpolation.clone(),
                             adjusted_lagrange_coefficients.clone(),
@@ -1524,8 +1542,9 @@ mod tests {
                     n_factorial,
                     secret,
                     neutral,
+                    &scalar_public_parameters,
                     U2048::BITS,
-                    &mut OsRng,
+                    &mut OsCsRng,
                 )
                 .unwrap();
 
@@ -1563,7 +1582,7 @@ mod tests {
                         "{threshold}-out-of-{number_of_parties} interpolation of a negative secret should equal the secret by n!^2"
                     );
 
-                (1..=number_of_parties).choose_multiple(&mut OsRng, 4).into_iter().for_each(|party_id| {
+                (1..=number_of_parties).choose_multiple(&mut OsCsRng, 4).into_iter().for_each(|party_id| {
                         let interpolated_share = interpolate_secret_shares(
                             shares_for_interpolation.clone(),
                             adjusted_lagrange_coefficients.clone(),
@@ -1592,7 +1611,7 @@ mod tests {
     fn factorial_bits_computed_correctly() {
         let mut n_factorial = SecretKeyShareSizedNumber::ONE;
         (1..=(MAX_PLAYERS + MAX_THRESHOLD)).for_each(|n| {
-            n_factorial = n_factorial * U64::from(u64::from(n));
+            n_factorial *= U64::from(u64::from(n));
 
             assert_eq!(
                 factorial_upper_bound(n),
@@ -1621,7 +1640,7 @@ mod tests {
 
 #[cfg(any(test, feature = "test_helpers"))]
 pub mod test_helpers {
-    use rand_core::OsRng;
+    use group::OsCsRng;
 
     use super::*;
 
@@ -1629,12 +1648,13 @@ pub mod test_helpers {
     /// DKG.
     pub fn deal_trusted_shares<
         const SECRET_KEY_SHARE_LIMBS: usize,
-        GroupElement: group::GroupElement + Send + Sync,
+        GroupElement: group::GroupElement + Send + Sync + Scale<Int<SECRET_KEY_SHARE_LIMBS>>,
     >(
         threshold: PartyID,
         number_of_parties: PartyID,
         secret_key: Int<SECRET_KEY_SHARE_LIMBS>,
         public_verification_key_base: GroupElement,
+        group_public_parameters: &GroupElement::PublicParameters,
         secret_key_bits: u32,
     ) -> (
         GroupElement,
@@ -1656,8 +1676,9 @@ pub mod test_helpers {
             n_factorial,
             secret_key,
             public_verification_key_base,
+            group_public_parameters,
             secret_key_bits,
-            &mut OsRng,
+            &mut OsCsRng,
         )
         .unwrap();
 

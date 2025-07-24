@@ -1,11 +1,11 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
-#[cfg(test)]
+#[cfg(all(test, feature = "os_rng"))]
 #[allow(dead_code)]
 mod tests {
     use crypto_bigint::{NonZero, U256};
-    use group::Samplable;
+    use group::{self_product, OsCsRng, Samplable};
     use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 
     use std::ops::{Add, Neg};
@@ -18,7 +18,6 @@ mod tests {
     };
 
     use crypto_bigint::Random;
-    use rand_core::OsRng;
 
     // Helper function to check if two elements are equal using constant-time comparison
     fn ct_eq<G: GroupElement>(a: &G, b: &G) -> bool {
@@ -288,13 +287,12 @@ mod tests {
 
     #[test]
     fn test_secp256k1_known_order_properties() {
+        let public_parameters = secp256k1::group_element::PublicParameters::default();
         // Get the order of the group
-        let generator = Secp256k1GroupElement::generator_from_public_parameters(
-            &secp256k1::group_element::PublicParameters::default(),
-        )
-        .unwrap();
+        let generator =
+            Secp256k1GroupElement::generator_from_public_parameters(&public_parameters).unwrap();
 
-        let order = generator.order();
+        let order = Secp256k1GroupElement::order_from_public_parameters(&public_parameters);
         let non_zero_order = NonZero::new(order).unwrap();
 
         // Verify that order * G = identity
@@ -321,13 +319,13 @@ mod tests {
 
     #[test]
     fn test_ristretto_known_order_properties() {
-        // Get the order of the group
-        let generator = RistrettoGroupElement::generator_from_public_parameters(
-            &ristretto::group_element::PublicParameters::default(),
-        )
-        .unwrap();
+        let public_parameters = ristretto::group_element::PublicParameters::default();
 
-        let order = generator.order();
+        // Get the order of the group
+        let generator =
+            RistrettoGroupElement::generator_from_public_parameters(&public_parameters).unwrap();
+
+        let order = RistrettoGroupElement::order_from_public_parameters(&public_parameters);
         let non_zero_order = NonZero::new(order).unwrap();
 
         // Verify that order * G = identity
@@ -619,11 +617,10 @@ mod tests {
 
     #[test]
     fn test_extreme_scalar_values() {
+        let public_parameters = secp256k1::group_element::PublicParameters::default();
         // Test with scalar = 0
-        let generator = Secp256k1GroupElement::generator_from_public_parameters(
-            &secp256k1::group_element::PublicParameters::default(),
-        )
-        .unwrap();
+        let generator =
+            Secp256k1GroupElement::generator_from_public_parameters(&public_parameters).unwrap();
         let identity = generator.neutral();
         let scalar_zero = U256::ZERO;
 
@@ -634,8 +631,8 @@ mod tests {
         );
 
         // Test with scalar = MAX (this should be reduced modulo order)
+        let order = Secp256k1GroupElement::order_from_public_parameters(&public_parameters);
         let scalar_max = U256::MAX;
-        let order = generator.order();
         let non_zero_order = NonZero::new(order).unwrap();
         let large_scalar_mod_order = scalar_max.reduce(&non_zero_order);
         let expected_result = generator.scale(&large_scalar_mod_order);
@@ -670,11 +667,10 @@ mod tests {
 
     #[test]
     fn test_neutral_element_detection() {
+        let public_parameters = secp256k1::group_element::PublicParameters::default();
         // Test for secp256k1
-        let generator = Secp256k1GroupElement::generator_from_public_parameters(
-            &secp256k1::group_element::PublicParameters::default(),
-        )
-        .unwrap();
+        let generator =
+            Secp256k1GroupElement::generator_from_public_parameters(&public_parameters).unwrap();
         let identity = generator.neutral();
 
         // Test is_neutral() for identity element
@@ -690,7 +686,7 @@ mod tests {
         );
 
         // Test with order * generator (should be identity)
-        let order = generator.order();
+        let order = Secp256k1GroupElement::order_from_public_parameters(&public_parameters);
         let order_times_g = generator.scale(&order);
         assert!(
             bool::from(order_times_g.is_neutral()),
@@ -934,20 +930,21 @@ mod tests {
         }
 
         // Helper function to test group element serialization with CT comparison
-        fn test_group_element_serialize_deserialize<G: GroupElement>(element: G)
-        where
+        fn test_group_element_serialize_deserialize<G: GroupElement>(
+            element: G,
+            params: &G::PublicParameters,
+        ) where
             G::Value: Serialize + for<'a> Deserialize<'a> + std::fmt::Debug + PartialEq,
             G::PublicParameters: Serialize + for<'a> Deserialize<'a> + Clone,
         {
             // Get the value and public parameters
             let value = element.value();
-            let params = element.public_parameters();
 
             // Test serialization roundtrip for value
             test_serialize_deserialize(&value);
 
             // Test serialization roundtrip for public parameters
-            test_serialize_deserialize(&params);
+            test_serialize_deserialize(params);
 
             // Test full roundtrip: serialize value, deserialize, and reconstruct group element
             let serialized_value =
@@ -956,7 +953,7 @@ mod tests {
                 serde_json::from_str(&serialized_value).expect("Failed to deserialize value");
 
             let reconstructed =
-                G::new(deserialized_value, &params).expect("Failed to reconstruct group element");
+                G::new(deserialized_value, params).expect("Failed to reconstruct group element");
 
             // Compare using constant-time comparison
             assert!(
@@ -972,7 +969,10 @@ mod tests {
         .unwrap();
 
         let secp_point = Secp256k1Scalar::from(U256::from_u64(123456)) * secp_generator;
-        test_group_element_serialize_deserialize(secp_point);
+        test_group_element_serialize_deserialize(
+            secp_point,
+            &secp256k1::group_element::PublicParameters::default(),
+        );
 
         // Test Ristretto group element serialization
         let ristretto_generator = RistrettoGroupElement::generator_from_public_parameters(
@@ -981,7 +981,10 @@ mod tests {
         .unwrap();
 
         let ristretto_point = RistrettoScalar::from(U256::from_u64(123456)) * ristretto_generator;
-        test_group_element_serialize_deserialize(ristretto_point);
+        test_group_element_serialize_deserialize(
+            ristretto_point,
+            &ristretto::group_element::PublicParameters::default(),
+        );
 
         // Test Secp256k1 scalar serialization
         let secp_scalar = Secp256k1Scalar::from(U256::from_u64(0xDEADBEEF12345678));
@@ -995,10 +998,16 @@ mod tests {
 
         // Identity element
         let secp_identity = secp_generator.neutral();
-        test_group_element_serialize_deserialize(secp_identity);
+        test_group_element_serialize_deserialize(
+            secp_identity,
+            &secp256k1::group_element::PublicParameters::default(),
+        );
 
         // Generator
-        test_group_element_serialize_deserialize(secp_generator);
+        test_group_element_serialize_deserialize(
+            secp_generator,
+            &secp256k1::group_element::PublicParameters::default(),
+        );
 
         // Scalar zero and one
         let scalar_zero = Secp256k1Scalar::from(U256::ZERO);
@@ -1007,7 +1016,9 @@ mod tests {
         test_serialize_deserialize(&scalar_one);
 
         // Near-maximum scalar (order - 1)
-        let order = secp_generator.order();
+        let order = Secp256k1Scalar::order_from_public_parameters(
+            &secp256k1::scalar::PublicParameters::default(),
+        );
         let near_max_scalar = Secp256k1Scalar::from(order - U256::ONE);
         test_serialize_deserialize(&near_max_scalar);
         println!("Secp256k1 group element serialization verified successfully");
@@ -1026,14 +1037,15 @@ mod tests {
         use serde::{Deserialize, Serialize};
 
         // Helper function for testing composite elements
-        fn test_composite_serialize_deserialize<G: GroupElement>(element: G)
-        where
+        fn test_composite_serialize_deserialize<G: GroupElement>(
+            element: G,
+            params: &G::PublicParameters,
+        ) where
             G::Value: Serialize + for<'a> Deserialize<'a> + std::fmt::Debug + PartialEq,
-            G::PublicParameters: Serialize + for<'a> Deserialize<'a> + Clone,
+            G::PublicParameters: Serialize + Clone,
         {
             // Get the value and public parameters
             let value = element.value();
-            let params = element.public_parameters();
 
             // Serialize to JSON
             let serialized = serde_json::to_string(&value).expect("Failed to serialize value");
@@ -1044,7 +1056,7 @@ mod tests {
 
             // Reconstruct the group element
             let reconstructed =
-                G::new(deserialized_value, &params).expect("Failed to reconstruct group element");
+                G::new(deserialized_value, params).expect("Failed to reconstruct group element");
 
             // Compare using constant-time comparison
             assert!(
@@ -1068,7 +1080,12 @@ mod tests {
         // Since DirectProductElement has private fields, use From trait to construct it
         let direct_product: DirectProductElement<Secp256k1GroupElement, RistrettoGroupElement> =
             (secp_generator, ristretto_generator).into();
-        test_composite_serialize_deserialize(direct_product);
+        let direct_product_public_parameters = (
+            secp256k1::group_element::PublicParameters::default(),
+            ristretto::group_element::PublicParameters::default(),
+        )
+            .into();
+        test_composite_serialize_deserialize(direct_product, &direct_product_public_parameters);
 
         // Test self product (vector of same type) serialization for Secp256k1
         const N: usize = 3;
@@ -1079,7 +1096,13 @@ mod tests {
             secp_generator.double().double(),
         ];
         let self_product: SelfProductElement<N, Secp256k1GroupElement> = self_product_array.into();
-        test_composite_serialize_deserialize(self_product);
+
+        test_composite_serialize_deserialize(
+            self_product,
+            &self_product::PublicParameters::new(
+                secp256k1::group_element::PublicParameters::default(),
+            ),
+        );
 
         // Test nested product (vector + direct product combo)
         type NestedProductElement = SelfProductElement<
@@ -1096,7 +1119,11 @@ mod tests {
         // Use From trait to construct nested product
         let nested_product_array = [direct_product1, direct_product2];
         let nested_product: NestedProductElement = nested_product_array.into();
-        test_composite_serialize_deserialize(nested_product);
+
+        test_composite_serialize_deserialize(
+            nested_product,
+            &self_product::PublicParameters::new(direct_product_public_parameters.clone()),
+        );
 
         // Test three-way direct product
         type ThreeWayProductElement = DirectProductElement<
@@ -1109,7 +1136,12 @@ mod tests {
             (secp_generator, ristretto_generator).into();
         let three_way_product: ThreeWayProductElement =
             (inner_product, ristretto_generator.double()).into();
-        test_composite_serialize_deserialize(three_way_product);
+        let nested_pp = (
+            direct_product_public_parameters,
+            ristretto::group_element::PublicParameters::default(),
+        )
+            .into();
+        test_composite_serialize_deserialize(three_way_product, &nested_pp);
         println!("Direct product serialization verified successfully");
         println!("Self product serialization verified successfully");
         println!("Nested product serialization verified successfully");
@@ -1124,7 +1156,9 @@ mod tests {
         )
         .unwrap();
 
-        let order = generator_secp.order();
+        let order = Secp256k1Scalar::order_from_public_parameters(
+            &secp256k1::scalar::PublicParameters::default(),
+        );
         let large_scalar = U256::MAX; // something beyond the order
         let boundary_scalar = order - U256::ONE;
         let zero_scalar = U256::ZERO;
@@ -1167,8 +1201,8 @@ mod tests {
         .unwrap();
 
         // Just pick random scalars:
-        let random_scalar1 = U256::random(&mut OsRng);
-        let random_scalar2 = U256::random(&mut OsRng);
+        let random_scalar1 = U256::random(&mut OsCsRng);
+        let random_scalar2 = U256::random(&mut OsCsRng);
 
         let g2 = generator.double();
         let bases_and_scalars = vec![(generator, random_scalar1), (g2, random_scalar2)];
@@ -1211,14 +1245,11 @@ mod tests {
         let mut values_in_top_quarter = 0;
         let quarter_threshold = limit - (limit >> 2); // 75% of the limit
 
-        println!(
-            "Running {} sampling iterations with {}-bit limit...",
-            iterations, sample_bits
-        );
+        println!("Running {iterations} sampling iterations with {sample_bits}-bit limit...");
 
         for i in 0..iterations {
             // Sample random element
-            let rand_elem = BoundedGroupElement::<4>::sample(&pp, &mut OsRng)
+            let rand_elem = BoundedGroupElement::<4>::sample(&pp, &mut OsCsRng)
                 .expect("bounded group sample failed");
 
             // Convert to U256 for comparison
@@ -1240,10 +1271,7 @@ mod tests {
             // Verify the bound
             assert!(
                 value_as_u256 < limit,
-                "Iteration {}: Sampled element exceeded bound: {} >= {}",
-                i,
-                value_as_u256,
-                limit
+                "Iteration {i}: Sampled element exceeded bound: {value_as_u256} >= {limit}"
             );
 
             // Print progress occasionally
@@ -1259,7 +1287,7 @@ mod tests {
         }
 
         // Print statistics
-        println!("All {} iterations passed!", iterations);
+        println!("All {iterations} iterations passed!");
         let non_zero_limit = NonZero::new(limit).unwrap();
         println!(
             "Maximum value seen: {} ({}% of limit)",
@@ -1326,8 +1354,8 @@ mod tests {
         .unwrap();
 
         // Create several random points
-        let random_scalar1 = Secp256k1Scalar::from(U256::random(&mut OsRng));
-        let random_scalar2 = Secp256k1Scalar::from(U256::random(&mut OsRng));
+        let random_scalar1 = Secp256k1Scalar::from(U256::random(&mut OsCsRng));
+        let random_scalar2 = Secp256k1Scalar::from(U256::random(&mut OsCsRng));
 
         let point1 = random_scalar1 * generator;
         let point2 = random_scalar2 * generator;
@@ -1347,8 +1375,8 @@ mod tests {
         )
         .unwrap();
 
-        let ristretto_random_scalar1 = RistrettoScalar::from(U256::random(&mut OsRng));
-        let ristretto_random_scalar2 = RistrettoScalar::from(U256::random(&mut OsRng));
+        let ristretto_random_scalar1 = RistrettoScalar::from(U256::random(&mut OsCsRng));
+        let ristretto_random_scalar2 = RistrettoScalar::from(U256::random(&mut OsCsRng));
 
         let ristretto_point1 = ristretto_random_scalar1 * ristretto_generator;
         let ristretto_point2 = ristretto_random_scalar2 * ristretto_generator;
@@ -1374,9 +1402,9 @@ mod tests {
         .unwrap();
 
         // Create three random points
-        let scalar1 = Secp256k1Scalar::from(U256::random(&mut OsRng));
-        let scalar2 = Secp256k1Scalar::from(U256::random(&mut OsRng));
-        let scalar3 = Secp256k1Scalar::from(U256::random(&mut OsRng));
+        let scalar1 = Secp256k1Scalar::from(U256::random(&mut OsCsRng));
+        let scalar2 = Secp256k1Scalar::from(U256::random(&mut OsCsRng));
+        let scalar3 = Secp256k1Scalar::from(U256::random(&mut OsCsRng));
         let point1 = scalar1 * secp_generator;
         let point2 = scalar2 * secp_generator;
         let point3 = scalar3 * secp_generator;
@@ -1395,9 +1423,9 @@ mod tests {
         )
         .unwrap();
 
-        let r_scalar1 = RistrettoScalar::from(U256::random(&mut OsRng));
-        let r_scalar2 = RistrettoScalar::from(U256::random(&mut OsRng));
-        let r_scalar3 = RistrettoScalar::from(U256::random(&mut OsRng));
+        let r_scalar1 = RistrettoScalar::from(U256::random(&mut OsCsRng));
+        let r_scalar2 = RistrettoScalar::from(U256::random(&mut OsCsRng));
+        let r_scalar3 = RistrettoScalar::from(U256::random(&mut OsCsRng));
         let r_point1 = r_scalar1 * ristretto_generator;
         let r_point2 = r_scalar2 * ristretto_generator;
         let r_point3 = r_scalar3 * ristretto_generator;
@@ -1424,7 +1452,7 @@ mod tests {
         let mut secp_y_coords = Vec::with_capacity(SAMPLE_SIZE);
 
         for i in 0..SAMPLE_SIZE {
-            let data = format!("test data {}", i).into_bytes();
+            let data = format!("test data {i}").into_bytes();
             let point = Secp256k1GroupElement::hash_to_group(&data).unwrap();
 
             // Extract coordinates for statistical analysis
@@ -1442,16 +1470,14 @@ mod tests {
         let unique_points = secp_x_coords.len();
         assert!(
             unique_points > SAMPLE_SIZE * 9 / 10,
-            "Expected close to {} unique points, but got {}",
-            SAMPLE_SIZE,
-            unique_points
+            "Expected close to {SAMPLE_SIZE} unique points, but got {unique_points}"
         );
 
         // Similar test for Ristretto
         let mut ristretto_unique_values = std::collections::HashSet::new();
 
         for i in 0..SAMPLE_SIZE {
-            let data = format!("test data {}", i).into_bytes();
+            let data = format!("test data {i}").into_bytes();
             let point = RistrettoGroupElement::hash_to_group(&data).unwrap();
 
             // For Ristretto points, we'll just use the serialized representation
@@ -1476,7 +1502,7 @@ mod tests {
 
         // Test for secp256k1
         for i in 0..100 {
-            let data = format!("test data {}", i).into_bytes();
+            let data = format!("test data {i}").into_bytes();
             let point = Secp256k1GroupElement::hash_to_group(&data).unwrap();
 
             // Verify the point is on the curve by checking if it satisfies group laws
@@ -1503,7 +1529,7 @@ mod tests {
 
         // Similar test for Ristretto
         for i in 0..100 {
-            let data = format!("ristretto data {}", i).into_bytes();
+            let data = format!("ristretto data {i}").into_bytes();
             let point = RistrettoGroupElement::hash_to_group(&data).unwrap();
 
             let identity = point.neutral();
@@ -1537,7 +1563,9 @@ mod tests {
         )
         .unwrap();
 
-        let order = generator.order();
+        let order = Secp256k1Scalar::order_from_public_parameters(
+            &secp256k1::scalar::PublicParameters::default(),
+        );
         let identity = generator.neutral();
         let small_scalar = U256::from_u8(2);
         let test_point = generator.scale(&small_scalar); // 2G
@@ -1564,7 +1592,9 @@ mod tests {
         )
         .unwrap();
 
-        let ristretto_order = ristretto_generator.order();
+        let ristretto_order = RistrettoGroupElement::order_from_public_parameters(
+            &ristretto::group_element::PublicParameters::default(),
+        );
         let ristretto_identity = ristretto_generator.neutral();
 
         let ristretto_test_point = ristretto_generator.scale(&small_scalar);
@@ -1607,14 +1637,14 @@ mod tests {
             match result {
                 Ok(_) => {
                     // Expected for valid bit counts
-                    println!("  Successfully computed with {} bits", bits);
+                    println!("  Successfully computed with {bits} bits");
                 }
                 Err(e) => {
                     // Only acceptable for invalid bit counts
                     if bits <= 256 {
-                        panic!("Failed with valid bit count {}: {:?}", bits, e);
+                        panic!("Failed with valid bit count {bits}: {e:?}");
                     } else {
-                        println!("  Appropriately rejected {} bits: {:?}", bits, e);
+                        println!("  Appropriately rejected {bits} bits: {e:?}");
                     }
                 }
             }
@@ -1692,7 +1722,7 @@ mod tests {
         let mut msb_counts: HashMap<u8, usize> = HashMap::new();
 
         for _ in 0..SAMPLE_SIZE {
-            let scalar = Secp256k1Scalar::sample(&secp_pp, &mut OsRng).unwrap();
+            let scalar = Secp256k1Scalar::sample(&secp_pp, &mut OsCsRng).unwrap();
             let scalar_u256 = U256::from(scalar);
 
             // Get the most significant byte for a simple distribution check
@@ -1704,8 +1734,7 @@ mod tests {
         // in the most significant byte for a uniform distribution
         let unique_msbs = msb_counts.len();
         println!(
-            "  Unique most significant bytes in {} Secp256k1 scalars: {}",
-            SAMPLE_SIZE, unique_msbs
+            "  Unique most significant bytes in {SAMPLE_SIZE} Secp256k1 scalars: {unique_msbs}"
         );
 
         assert!(
@@ -1718,7 +1747,7 @@ mod tests {
         let mut ristretto_msb_counts: HashMap<u8, usize> = HashMap::new();
 
         for _ in 0..SAMPLE_SIZE {
-            let scalar = RistrettoScalar::sample(&ristretto_pp, &mut OsRng).unwrap();
+            let scalar = RistrettoScalar::sample(&ristretto_pp, &mut OsCsRng).unwrap();
             let scalar_u256 = U256::from(scalar);
 
             let msb = scalar_u256.as_words()[3] >> 24;
@@ -1727,8 +1756,7 @@ mod tests {
 
         let ristretto_unique_msbs = ristretto_msb_counts.len();
         println!(
-            "  Unique most significant bytes in {} Ristretto scalars: {}",
-            SAMPLE_SIZE, ristretto_unique_msbs
+            "  Unique most significant bytes in {SAMPLE_SIZE} Ristretto scalars: {ristretto_unique_msbs}"
         );
 
         assert!(
@@ -1841,7 +1869,7 @@ mod tests {
         let mut scalars = Vec::with_capacity(NUM_POINTS);
 
         for i in 0..NUM_POINTS {
-            let scalar = U256::random(&mut OsRng);
+            let scalar = U256::random(&mut OsCsRng);
             // Create diverse points by scaling the generator
             let point = generator.scale(&U256::from_u64(i as u64 + 1));
 
@@ -1879,8 +1907,7 @@ mod tests {
 
             assert!(
                 ct_eq(&result, &expected),
-                "linearly_combine_bounded with {} bits doesn't match manual calculation",
-                bits
+                "linearly_combine_bounded with {bits} bits doesn't match manual calculation"
             );
 
             // Also test the vartime version
@@ -1963,13 +1990,13 @@ mod tests {
         // Test similar inputs: "test-X" where X is a number
         let mut results = Vec::with_capacity(SIMILAR_INPUTS_COUNT);
         for i in 0..SIMILAR_INPUTS_COUNT {
-            let input = format!("test-{}", i).into_bytes();
+            let input = format!("test-{i}").into_bytes();
             let point = Secp256k1GroupElement::hash_to_group(&input).unwrap();
 
             for (j, res) in results.iter().enumerate() {
                 if ct_eq(&point, res) {
                     collision_found = true;
-                    println!("  Collision detected between 'test-{}' and 'test-{}'", i, j);
+                    println!("  Collision detected between 'test-{i}' and 'test-{j}'");
                     break;
                 }
             }
@@ -2025,7 +2052,7 @@ mod tests {
             // Sample a random scalar
             let scalar = secp256k1::Scalar::sample(
                 &secp256k1::scalar::PublicParameters::default(),
-                &mut OsRng,
+                &mut OsCsRng,
             )
             .unwrap();
 
@@ -2060,7 +2087,7 @@ mod tests {
             // Sample a random scalar
             let scalar = RistrettoScalar::sample(
                 &ristretto::scalar::PublicParameters::default(),
-                &mut OsRng,
+                &mut OsCsRng,
             )
             .unwrap();
 
@@ -2146,8 +2173,7 @@ mod tests {
         );
 
         println!(
-            "  is_neutral (true): {:?}, is_neutral (false): {:?}",
-            time_neutral_true, time_neutral_false
+            "  is_neutral (true): {time_neutral_true:?}, is_neutral (false): {time_neutral_false:?}"
         );
 
         // Time ct_eq comparisons
@@ -2165,10 +2191,7 @@ mod tests {
             TIMING_ITERATIONS,
         );
 
-        println!(
-            "  ct_eq (true): {:?}, ct_eq (false): {:?}",
-            time_eq_true, time_eq_false
-        );
+        println!("  ct_eq (true): {time_eq_true:?}, ct_eq (false): {time_eq_false:?}");
 
         // Time scalar multiplication with different scalar sizes
         let time_small_scalar = time_operation(
@@ -2186,8 +2209,7 @@ mod tests {
         );
 
         println!(
-            "  small scalar multiplication: {:?}, large scalar multiplication: {:?}",
-            time_small_scalar, time_large_scalar
+            "  small scalar multiplication: {time_small_scalar:?}, large scalar multiplication: {time_large_scalar:?}"
         );
 
         // No hard assertions here - timing can vary, but we show the results
@@ -2221,7 +2243,7 @@ mod tests {
         );
 
         // 3. Scalar multiplication of identity should always be identity
-        let random_scalar = Secp256k1Scalar::from(U256::random(&mut OsRng));
+        let random_scalar = Secp256k1Scalar::from(U256::random(&mut OsCsRng));
         assert!(
             ct_eq(&(random_scalar * identity), &identity),
             "Scalar multiplication of identity should be identity"
@@ -2251,7 +2273,9 @@ mod tests {
             "Different ways to create identity should match"
         );
 
-        let order = generator.order();
+        let order = Secp256k1Scalar::order_from_public_parameters(
+            &secp256k1::scalar::PublicParameters::default(),
+        );
         let order_times_generator = generator.scale(&order);
         assert!(
             ct_eq(&identity, &order_times_generator),
@@ -2320,7 +2344,9 @@ mod tests {
         );
 
         // Case 3: Scalar overflow tests
-        let scalar_order = generator.order();
+        let scalar_order = Secp256k1Scalar::order_from_public_parameters(
+            &secp256k1::scalar::PublicParameters::default(),
+        );
         let scalar_order_plus_one = scalar_order + U256::ONE;
 
         let bases_overflow = vec![
@@ -2400,7 +2426,7 @@ mod tests {
                     "X",
                 ),
                 // Add extra data
-                format!("{},\"extra\":123", serialized),
+                format!("{serialized},\"extra\":123"),
             ];
 
             for (j, corrupted) in corruptions.iter().enumerate() {
@@ -2425,7 +2451,7 @@ mod tests {
                         assert!(ct_eq(
                             &reconstructed_point.add(&identity),
                             &reconstructed_point
-                        ), "Reconstructed point from corruption {}.{} should satisfy G + 0 = G if valid", i, j);
+                        ), "Reconstructed point from corruption {i}.{j} should satisfy G + 0 = G if valid");
                     }
                 }
                 // If deserialization fails, that's fine - the goal is not to crash
@@ -2593,8 +2619,8 @@ mod tests {
         .unwrap();
 
         // Create random points and scalars
-        let scalar_a = Secp256k1Scalar::from(U256::random(&mut OsRng));
-        let scalar_b = Secp256k1Scalar::from(U256::random(&mut OsRng));
+        let scalar_a = Secp256k1Scalar::from(U256::random(&mut OsCsRng));
+        let scalar_b = Secp256k1Scalar::from(U256::random(&mut OsCsRng));
         let point1 = scalar_a * generator;
         let point2 = scalar_b * generator;
 
@@ -2609,7 +2635,7 @@ mod tests {
         );
 
         // Test point distributivity: a(G1 + G2) = aG1 + aG2
-        let scalar_c = Secp256k1Scalar::from(U256::random(&mut OsRng));
+        let scalar_c = Secp256k1Scalar::from(U256::random(&mut OsCsRng));
         let sum_points = point1.add(&point2);
         let scaled_sum = scalar_c * sum_points;
 
@@ -2704,10 +2730,12 @@ mod tests {
         )
         .unwrap();
 
-        let order = generator.order();
+        let order = Secp256k1Scalar::order_from_public_parameters(
+            &secp256k1::scalar::PublicParameters::default(),
+        );
         let identity = generator.neutral();
 
-        let random_scalar = Secp256k1Scalar::from(U256::random(&mut OsRng));
+        let random_scalar = Secp256k1Scalar::from(U256::random(&mut OsCsRng));
         let random_point = random_scalar * generator;
 
         let order_mul = Secp256k1Scalar::from(order);
@@ -2724,10 +2752,12 @@ mod tests {
         )
         .unwrap();
 
-        let ristretto_order = ristretto_generator.order();
+        let ristretto_order = RistrettoScalar::order_from_public_parameters(
+            &ristretto::scalar::PublicParameters::default(),
+        );
         let ristretto_identity = ristretto_generator.neutral();
 
-        let ristretto_random_scalar = RistrettoScalar::from(U256::random(&mut OsRng));
+        let ristretto_random_scalar = RistrettoScalar::from(U256::random(&mut OsCsRng));
         let ristretto_random_point = ristretto_random_scalar * ristretto_generator;
 
         let ristretto_order_mul = RistrettoScalar::from(ristretto_order);

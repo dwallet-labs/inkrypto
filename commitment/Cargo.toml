@@ -8,17 +8,16 @@ license = "CC-BY-NC-ND-4.0"
 group = { path = "../group" }
 crypto-bigint = { workspace = true }
 serde = { workspace = true }
-merlin = { workspace = true }
+merlin = { workspace = true, default-features = false  }
 thiserror = { workspace = true }
 
-rand_core = { workspace = true, features = ["std"], optional = true }
-
 [dev-dependencies]
-rand_core = { workspace = true, features = ["std"] }
 bulletproofs = { workspace = true }
 subtle = { workspace = true, features = ["const-generics"] }
+group = { path = "../group", features = ["os_rng", "test_helpers"] }
+serde_json = { workspace = true, default-features = false, features = ["alloc"] }
 
 [features]
-test_helpers = ["dep:rand_core"]
+test_helpers = ["group/os_rng"]
 
 

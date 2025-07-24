@@ -45,9 +45,9 @@ pub(crate) mod tests {
     };
 
     use crypto_bigint::U256;
-    use group::{PartyID, Samplable};
+
+    use group::{OsCsRng, PartyID, Samplable};
     use proof::range::{bulletproofs, bulletproofs::COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS};
-    use rand_core::OsRng;
 
     use crate::{
         aggregation::commitment_round, language::tests::enhanced_language_public_parameters,
@@ -101,7 +101,9 @@ pub(crate) mod tests {
                     UnboundedWitnessSpaceGroupElement,
                     Lang,
                 >::generate_witnesses(
-                    witnesses, &enhanced_language_public_parameters, &mut OsRng
+                    witnesses,
+                    &enhanced_language_public_parameters,
+                    &mut OsCsRng,
                 )
                 .unwrap()
             })
@@ -129,7 +131,7 @@ pub(crate) mod tests {
                         enhanced_language_public_parameters.clone(),
                         PhantomData,
                         witnesses,
-                        &mut OsRng,
+                        &mut OsCsRng,
                     )
                     .unwrap(),
                 )
@@ -182,7 +184,7 @@ pub(crate) mod tests {
                     &PhantomData,
                     &enhanced_language_public_parameters,
                     statements,
-                    &mut OsRng,
+                    &mut OsCsRng,
                 )
                 .is_ok(),
             "valid aggregated enhanced proofs should verify"

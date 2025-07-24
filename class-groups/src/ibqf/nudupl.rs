@@ -2,40 +2,33 @@
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 use crypto_bigint::subtle::CtOption;
-use crypto_bigint::{
-    CheckedMul, CheckedSub, Concat, ConstChoice, Encoding, Gcd, Int, IntBinxgcdOutput, InvMod,
-    NonZero, Split, Uint,
-};
+use crypto_bigint::{CheckedMul, CheckedSub, Concat, ConstChoice, Encoding, Int, Split, Uint};
 
+use crate::helpers::binxgcd::{BinXgcd, IntBinxgcdOutput};
+use crate::helpers::partial_xgcd::PartialXGCD;
+use crate::helpers::vartime_mul::{CheckedMulVartime, ConcatenatingMulVartime};
+use crate::ibqf::unreduced::UnreducedIbqf;
 use crate::ibqf::{math, Ibqf, PARTIAL_XGCD_VARTIME_OUTPUT_BITSIZE_SPREAD};
 use crate::Error;
 
-impl<const HALF: usize, const LIMBS: usize, const DOUBLE_LIMBS: usize> Ibqf<LIMBS>
+impl<const HALF: usize, const LIMBS: usize, const DOUBLE: usize> Ibqf<LIMBS>
 where
-    Int<HALF>: InvMod<Modulus = NonZero<Uint<HALF>>, Output = Uint<HALF>>,
-    Uint<HALF>: Concat<Output = Uint<LIMBS>>
-        + Gcd<Output = Uint<HALF>>
-        + InvMod<Modulus = Uint<HALF>, Output = Uint<HALF>>,
-
     Int<LIMBS>: Encoding,
-    Uint<LIMBS>: Concat<Output = Uint<DOUBLE_LIMBS>> + Split<Output = Uint<HALF>>,
-
-    Int<DOUBLE_LIMBS>: Encoding,
-    Uint<DOUBLE_LIMBS>: Split<Output = Uint<LIMBS>>,
+    Uint<HALF>: Concat<Output = Uint<LIMBS>>,
+    Uint<LIMBS>: Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
+    Uint<DOUBLE>: Split<Output = Uint<LIMBS>>,
 {
-    /// Duplicate `self`, i.e., compose `self` with `self`.
+    /// Double `self`, i.e., compose `self` with `self`.
     ///
     /// Assumes `self` to be reduced.
     ///
-    /// Modified from [Binary Quadratic Forms, Section 6.3](https://github.com/Chia-Network/vdf-competition/blob/main/classgroups.pdf)
-    /// to also work with forms that do NOT have a prime discriminant.
-    ///
     /// The composite of primitive forms is still primitive.
     /// Ref: Pg. 242 in "A Course in Computational Algebraic Number Theory" (978-3-662-02945-9).
-    pub fn nudupl(&self) -> Result<Self, Error> {
-        self.nudupl_unreduced()
+    pub fn nudupl(&self) -> Self {
+        self.nudupl_unreduced::<false>()
             .into_option()
-            .ok_or(Error::InternalError)?
+            .ok_or(Error::InvalidParameters)
+            .unwrap()
             .reduce()
     }
 
@@ -47,17 +40,26 @@ where
     /// This assumption implies that
     /// - a faster `partial_xgcd` algorithm can be leveraged, and
     /// - the faster [Ibqf::reduce_randomized] operation can be used to reduce the output.
-    pub fn nudupl_randomized(&self) -> Result<Self, Error> {
-        // TODO: utilize a `partial_xgcd` algorithm that leverages the random input assumption
-        self.nudupl_unreduced()
+    ///
+    /// ### Panics
+    /// This function may panic if `self` is not a randomized form.
+    pub fn nudupl_randomized(&self) -> Self {
+        self.nudupl_unreduced::<true>()
             .into_option()
-            .ok_or(Error::InternalError)?
+            .ok_or(Error::InvalidParameters)
+            .unwrap()
             .reduce_randomized()
+            .into_option()
+            .ok_or(Error::FormNotRandomized)
+            .unwrap()
     }
 
     /// Variable time equivalent of [Ibqf::nudupl].
-    pub fn nudupl_vartime(&self) -> Result<Self, Error> {
-        self.nudupl_unreduced_vartime()?.reduce_vartime()
+    pub fn nudupl_vartime(&self) -> Self {
+        self.nudupl_unreduced_vartime()
+            .expect("can double form")
+            .reduce_vartime()
+            .expect("can reduce a doubled form")
     }
 
     /// Unreduced core of [Ibqf::nudupl].
@@ -67,9 +69,7 @@ where
     ///
     /// This is an adaptation of [`BICYCL`'s `nudupl` implementation](https://gite.lirmm.fr/crypto/bicycl/-/blob/68f62cc/src/bicycl/arith/qfi.inl#L867).
     #[allow(non_snake_case)]
-    pub fn nudupl_unreduced(&self) -> CtOption<Self> {
-        debug_assert!(self.is_reduced_vartime());
-
+    pub fn nudupl_unreduced<const RANDOMIZED: bool>(&self) -> CtOption<UnreducedIbqf<LIMBS>> {
         let a = self.a.resize::<HALF>();
         let b = self.b.resize::<HALF>();
         let c = *self.c.as_uint();
@@ -86,17 +86,15 @@ where
         let Ax = gcd_a_b;
 
         // [ Bx; By ] = [ vc, a/gcd(a,b) ]
-        let Bx = v
-            .checked_mul_uint_right(&c)
-            .expect("no overflow; vc < ac < Δ");
+        let Bx = c.checked_mul_int(&v).expect("no overflow; vc < ac < Δ");
         let By = a_div_gcd
             .as_uint()
             .to_nz()
             .expect("a is non-zero; a divided by gcd is non-zero");
 
         // [ Dx; Dy ] = [ -uc, b/gcd(a,b) ]
-        let Dx = u
-            .checked_mul_uint_right(&c)
+        let Dx = c
+            .checked_mul_int(&u)
             .expect("no overflow; uc < bc/gcd < ac < Δ")
             .checked_neg()
             .expect("no overflow; ||-uc|| < ||uc|| + 1 < ||ac|| + 1 < ||Δ||");
@@ -111,8 +109,15 @@ where
 
         // Partially reduce [ Bx; By ], until both elements can be represented using ||Δ||/4 bits.
         let bits_upper_bound = self.discriminant_bits.div_ceil(2);
-        let threshold = self.partial_reduction_bound();
-        let (Bx, By, matrix) = Bx.bounded_partial_xgcd(&By, threshold, bits_upper_bound);
+        let threshold = self.partial_reduction_lower_bound();
+
+        let (Bx, By, matrix) = if RANDOMIZED {
+            let (Bx, By, matrix, _) =
+                Bx.partial_xgcd_bounded_randomized(&By, bits_upper_bound, threshold);
+            (Bx, By, matrix)
+        } else {
+            Bx.bounded_partial_xgcd(&By, bits_upper_bound, threshold)
+        };
 
         let (adjugate, negative_values) = matrix.adjugate();
         assert_eq!(negative_values, ConstChoice::FALSE);
@@ -124,12 +129,12 @@ where
 
         // Multiply matrix with [ Ax; Ay ]
         let (Ax, Ay) = (
-            m00.widening_mul(&Ax)
-                .to_int()
+            m00.concatenating_mul(&Ax)
+                .try_into_int()
                 .expect("no overflow; ||m00|| < ||a||"),
             neg_m10
-                .widening_mul(&Ax)
-                .to_int()
+                .concatenating_mul(&Ax)
+                .try_into_int()
                 .expect("no overflow; ||m10|| < ||a||")
                 .checked_neg()
                 .expect("no overflow; ||m10|| < ||a||"),
@@ -138,12 +143,12 @@ where
         // Multiply the matrix with [ Dx; Dy ]
         let (Dx, Dy) = (
             Dx.and_then(|Dx| {
-                Dx.checked_mul_uint(&m00)
-                    .and_then(|m00Dx| m00Dx.checked_sub(&Dy.widening_mul_uint(&neg_m01)))
+                Dx.checked_mul(&m00)
+                    .and_then(|m00Dx| m00Dx.checked_sub(&Dy.concatenating_mul_uint(&neg_m01)))
             }),
             Dx.and_then(|Dx| {
-                Dx.checked_mul_uint(&neg_m10)
-                    .and_then(|neg_m10Dx| Dy.widening_mul_uint(&m11).checked_sub(&neg_m10Dx))
+                Dx.checked_mul(&neg_m10)
+                    .and_then(|neg_m10Dx| Dy.concatenating_mul_uint(&m11).checked_sub(&neg_m10Dx))
             }),
         );
 
@@ -151,24 +156,30 @@ where
         let (AxDx, AxDy_AyDx, AyDy) = math::three_way_mul(Ax, Ay, Dx, Dy);
 
         // A = By² - AyDy
-        let By_squared: CtOption<Int<LIMBS>> = By.widening_square().to_int().into();
-        let a =
-            By_squared.and_then(|By_squared| AyDy.and_then(|AyDy| By_squared.checked_sub(&AyDy)));
+        let By_squared: CtOption<Int<LIMBS>> = By.widening_square().try_into_int().into();
+        let a = By_squared
+            .and_then(|By_squared| AyDy.and_then(|AyDy| By_squared.checked_sub(&AyDy)))
+            .and_then(|a| a.to_nz().into());
 
         // B = AxDy + AyDx - 2*BxBy
-        let two_BxBy: CtOption<Int<LIMBS>> = Bx.widening_mul(&By).shl_vartime(1).to_int().into();
+        let two_BxBy: CtOption<Int<LIMBS>> = Bx
+            .concatenating_mul(&By)
+            .shl_vartime(1)
+            .try_into_int()
+            .into();
         let b = AxDy_AyDx.and_then(|AxDy_plus_AyDx| {
             two_BxBy.and_then(|two_BxBy| AxDy_plus_AyDx.checked_sub(&two_BxBy))
         });
 
         // C = Bx² - AxDx
-        let Bx_squared: CtOption<Int<LIMBS>> = Bx.widening_square().to_int().into();
-        let c =
-            Bx_squared.and_then(|Bx_squared| AxDx.and_then(|AxDx| Bx_squared.checked_sub(&AxDx)));
+        let Bx_squared: CtOption<Int<LIMBS>> = Bx.widening_square().try_into_int().into();
+        let c = Bx_squared
+            .and_then(|Bx_squared| AxDx.and_then(|AxDx| Bx_squared.checked_sub(&AxDx)))
+            .and_then(|c| c.to_nz().into());
 
-        a.and_then(|a| a.to_nz().into()).and_then(|a| {
+        a.and_then(|a| {
             b.and_then(|b| {
-                c.and_then(|c| c.to_nz().into()).map(|c| Ibqf {
+                c.map(|c| UnreducedIbqf {
                     a,
                     b,
                     c,
@@ -182,7 +193,7 @@ where
     ///
     /// This is an adaptation of [`BICYCL`'s `nudupl` implementation](https://gite.lirmm.fr/crypto/bicycl/-/blob/68f62cc/src/bicycl/arith/qfi.inl#L867).
     #[allow(non_snake_case)]
-    pub fn nudupl_unreduced_vartime(&self) -> Result<Self, Error> {
+    pub fn nudupl_unreduced_vartime(&self) -> Result<UnreducedIbqf<LIMBS>, Error> {
         // safe to cast; a and c are expected to be greater than zero.
         // safe to resize; a and b are expected to be HALF size.
         let a = self.a.as_uint().resize::<HALF>().to_nz().unwrap();
@@ -195,15 +206,15 @@ where
         let Ax = gcd_a_b;
 
         // [ Bx; By ] = [ Vc, a/gcd(a,b) ]
-        let Bx = V
-            .checked_mul_uint_right_vartime(&c)
+        let Bx = c
+            .checked_mul_vartime(&V)
             .into_option()
             .ok_or(Error::InternalError)?;
         let By = a_div_gcd;
 
         // [ Dx; Dy ] = [ -Uc, b/gcd(a,b) ]
-        let mut Dx = U
-            .checked_mul_uint_right_vartime(&c)
+        let mut Dx = c
+            .checked_mul_vartime(&U)
             .and_then(|Uc| Uc.checked_neg().into())
             .into_option()
             .ok_or(Error::InternalError)?;
@@ -226,51 +237,53 @@ where
 
         // Multiply the adj(matrix) with [ Ax; Ay ] and [ Dx; Dy ]
         let (Ax, Ay) = (
-            m11.widening_mul_vartime(&Ax),
-            CtOption::from(m10.widening_mul_vartime(&Ax).as_int().checked_neg())
+            m11.concatenating_mul_vartime(&Ax),
+            CtOption::from(m10.concatenating_mul_vartime(&Ax).as_int().checked_neg())
                 .into_option()
                 .ok_or(Error::InternalError)?,
         );
         let (Dx, Dy) = (
-            Dx.checked_mul_uint_vartime(&m11)
-                .and_then(|m11Dx| m11Dx.checked_sub(&Dy.widening_mul_uint_vartime(&m01)))
+            Dx.checked_mul_vartime(&m11)
+                .and_then(|m11Dx| m11Dx.checked_sub(&Dy.concatenating_mul_vartime(&m01)))
                 .into_option()
                 .ok_or(Error::InternalError)?,
-            Dx.checked_mul_uint_vartime(&m10)
-                .and_then(|m10Dx| Dy.widening_mul_uint_vartime(&m00).checked_sub(&m10Dx))
+            Dx.checked_mul_vartime(&m10)
+                .and_then(|m10Dx| Dy.concatenating_mul_vartime(&m00).checked_sub(&m10Dx))
                 .into_option()
                 .ok_or(Error::InternalError)?,
         );
 
         // Compute AxDx, AyDy and AxDy + AyDx using only three multiplications.
-        let (AxDx, AxDy_AyDx, AyDy) = math::three_way_mul_vartime(Ax.as_int(), Ay, Dx, Dy)?;
+        let (AxDx, AxDy_AyDx, AyDy) = math::three_way_mul_vartime(*Ax.as_int(), Ay, Dx, Dy)?;
 
         // A = By² - AyDy
-        let a = CtOption::from(By.widening_square().to_int())
+        let a = CtOption::from(By.widening_square().try_into_int())
             .and_then(|By_squared| By_squared.checked_sub(&AyDy))
+            .and_then(|a| a.to_nz().into())
             .into_option()
             .ok_or(Error::InternalError)?;
 
         // B = AxDy + AyDx - 2*BxBy
-        let b = CtOption::from(Bx.widening_mul_vartime(&By).shl_vartime(1).to_int())
-            .and_then(|BxBy| AxDy_AyDx.checked_sub(&BxBy))
-            .into_option()
-            .ok_or(Error::InternalError)?;
+        let b = CtOption::from(
+            Bx.concatenating_mul_vartime(&By)
+                .shl_vartime(1)
+                .try_into_int(),
+        )
+        .and_then(|BxBy| AxDy_AyDx.checked_sub(&BxBy))
+        .into_option()
+        .ok_or(Error::InternalError)?;
 
         // C = Bx² - AxDx
-        let c = CtOption::from(Bx.widening_square().to_int())
+        let c = CtOption::from(Bx.widening_square().try_into_int())
             .and_then(|Bx_squared| Bx_squared.checked_sub(&AxDx))
+            .and_then(|c| c.to_nz().into())
             .into_option()
             .ok_or(Error::InternalError)?;
 
-        Ok(Ibqf {
-            a: CtOption::from(a.to_nz())
-                .into_option()
-                .ok_or(Error::InternalError)?,
+        Ok(UnreducedIbqf {
+            a,
             b,
-            c: CtOption::from(c.to_nz())
-                .into_option()
-                .ok_or(Error::InternalError)?,
+            c,
             discriminant_bits: self.discriminant_bits,
         })
     }
@@ -280,50 +293,62 @@ where
 mod tests {
     use crypto_bigint::{I1024, I128, I2048};
 
+    use crate::ibqf::test_helpers::{
+        get_deterministic_secp256k1_form, get_deterministic_secp256k1_forms,
+    };
     use crate::ibqf::Ibqf;
-    use crate::test_helpers::get_setup_parameters_secp256k1_112_bits_deterministic;
+
+    #[test]
+    fn test_nudupl() {
+        let (single, double, _) = get_deterministic_secp256k1_forms();
+        assert_eq!(single.nudupl(), double);
+    }
+
+    #[test]
+    fn test_nudupl_randomized() {
+        let (single, double, _) = get_deterministic_secp256k1_forms();
+        assert_eq!(single.nudupl_randomized(), double);
+    }
+
+    #[test]
+    fn test_nudupl_vartime() {
+        let (single, double, _) = get_deterministic_secp256k1_forms();
+        assert_eq!(single.nudupl_vartime(), double);
+    }
 
     #[test]
     fn test_nudupl_maintains_discriminant() {
-        let discriminant = I128::from_i32(-2868).to_nz().unwrap().try_into().unwrap();
-        let f = Ibqf::new_reduced(
-            I128::from_i32(11).to_nz().unwrap(),
-            I128::from_i32(16),
-            &discriminant,
-        )
-        .unwrap();
-        assert_eq!(f.discriminant().unwrap(), **discriminant);
+        let discriminant = -2868;
+        let f = Ibqf::new_reduced_64(11, 16, discriminant).unwrap();
 
-        let f2 = f.nudupl().unwrap();
-        assert_eq!(f2.discriminant().unwrap(), **discriminant);
+        let discriminant = I128::from(discriminant);
+        assert_eq!(f.discriminant().unwrap(), discriminant);
+
+        let f2 = f.nudupl();
+        assert_eq!(f2.discriminant().unwrap(), discriminant);
     }
 
     #[test]
     fn test_nudupl_equals_nucomp_with_self() {
-        let discriminant = I128::from_i32(-2868).to_nz().unwrap().try_into().unwrap();
-        let f = Ibqf::new_reduced(
-            I128::from_i32(11).to_nz().unwrap(),
-            I128::from_i32(16),
-            &discriminant,
-        )
-        .unwrap();
-        assert_eq!(f.discriminant().unwrap(), **discriminant);
+        let discriminant = -2868;
+        let f = Ibqf::new_reduced_64(11, 16, discriminant).unwrap();
 
-        let f2 = f.nucomp(&f).unwrap();
-        let f2p = f.nudupl().unwrap();
+        assert_eq!(f.discriminant().unwrap(), I128::from(discriminant));
+
+        let f2 = f.nucomp(f);
+        let f2p = f.nudupl();
         assert_eq!(f2, f2p);
     }
 
     #[test]
     fn test_ct_vs_vartime() {
         const COUNT: usize = 50;
-        let setup_parameters = get_setup_parameters_secp256k1_112_bits_deterministic();
-        let form = *setup_parameters.h.representative();
+        let form = get_deterministic_secp256k1_form();
 
         let (mut ct_res, mut vt_res) = (form, form);
         for _ in 0..COUNT {
-            ct_res = ct_res.nudupl().unwrap();
-            vt_res = vt_res.nudupl_vartime().unwrap();
+            ct_res = ct_res.nudupl();
+            vt_res = vt_res.nudupl_vartime();
             assert_eq!(vt_res, ct_res);
         }
     }
@@ -360,7 +385,7 @@ mod tests {
             .unwrap(),
             discriminant_bits: 1860,
         };
-        assert_eq!(x.nudupl().unwrap(), x.nudupl_vartime().unwrap());
+        assert_eq!(x.nudupl(), x.nudupl_vartime());
 
         let x = Ibqf {
             a: I1024::from_be_hex(concat![
@@ -390,7 +415,7 @@ mod tests {
             .unwrap(),
             discriminant_bits: 1860,
         };
-        assert_eq!(x.nudupl().unwrap(), x.nudupl_vartime().unwrap());
+        assert_eq!(x.nudupl(), x.nudupl_vartime());
     }
 }
 
@@ -400,36 +425,29 @@ pub(crate) mod benches {
 
     use criterion::measurement::WallTime;
     use criterion::BenchmarkGroup;
-    use crypto_bigint::{Concat, Encoding, Gcd, Int, InvMod, NonZero, Split, Uint};
+    use crypto_bigint::{Concat, Encoding, Int, Split, Uint};
 
     use crate::EquivalenceClass;
 
-    pub(crate) fn benchmark_nudupl<
-        const HALF: usize,
-        const LIMBS: usize,
-        const DOUBLE_LIMBS: usize,
-    >(
+    pub(crate) fn benchmark_nudupl<const HALF: usize, const LIMBS: usize, const DOUBLE: usize>(
         g: &mut BenchmarkGroup<WallTime>,
         form: EquivalenceClass<LIMBS>,
     ) where
-        Int<HALF>: InvMod<Modulus = NonZero<Uint<HALF>>, Output = Uint<HALF>>,
-        Uint<HALF>: Concat<Output = Uint<LIMBS>>
-            + Gcd<Output = Uint<HALF>>
-            + InvMod<Modulus = Uint<HALF>, Output = Uint<HALF>>,
-
-        Int<LIMBS>: Encoding + InvMod<Modulus = NonZero<Uint<LIMBS>>, Output = Uint<LIMBS>>,
-        Uint<LIMBS>: Concat<Output = Uint<DOUBLE_LIMBS>>
-            + Gcd<Output = Uint<LIMBS>>
-            + Split<Output = Uint<HALF>>,
-
-        Int<DOUBLE_LIMBS>: Encoding,
-        Uint<DOUBLE_LIMBS>: Split<Output = Uint<LIMBS>>,
+        Int<LIMBS>: Encoding,
+        Uint<HALF>: Concat<Output = Uint<LIMBS>>,
+        Uint<LIMBS>: Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
+        Uint<DOUBLE>: Split<Output = Uint<LIMBS>>,
     {
         let form = *form.representative();
 
         g.bench_function("nudupl (unreduced, ct)", |b| {
             b.iter(|| {
-                black_box(form.nudupl_unreduced().unwrap());
+                black_box(form.nudupl_unreduced::<false>().unwrap());
+            })
+        });
+        g.bench_function("nudupl (unreduced, rt)", |b| {
+            b.iter(|| {
+                black_box(form.nudupl_unreduced::<true>().unwrap());
             })
         });
         g.bench_function("nudupl (unreduced, vt)", |b| {
@@ -440,12 +458,17 @@ pub(crate) mod benches {
         let mut form = form;
         g.bench_function("nudupl (reduced, ct)", |b| {
             b.iter(|| {
-                form = form.nudupl().unwrap();
+                form = form.nudupl();
+            })
+        });
+        g.bench_function("nudupl (reduced, rt)", |b| {
+            b.iter(|| {
+                black_box(form.nudupl_randomized());
             })
         });
         g.bench_function("nudupl (reduced, vt)", |b| {
             b.iter(|| {
-                form = form.nudupl_vartime().unwrap();
+                form = form.nudupl_vartime();
             })
         });
     }

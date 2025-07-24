@@ -1,18 +1,21 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 
-use crypto_bigint::rand_core::CryptoRngCore;
 use crypto_bigint::{Encoding, Int, Uint};
 use serde::{Deserialize, Serialize};
 
 use commitment::CommitmentSizedNumber;
-use group::{ristretto, secp256k1, PartyID, PrimeGroupElement, StatisticalSecuritySizedNumber};
+use group::{
+    ristretto, secp256k1, CsRng, PartyID, PrimeGroupElement, StatisticalSecuritySizedNumber,
+};
 use mpc::secret_sharing::shamir::over_the_integers::secret_key_share_size_upper_bound;
 use mpc::{AsynchronousRoundResult, AsynchronouslyAdvanceable, WeightedThresholdAccessStructure};
 
+use crate::accelerator::MultiFoldNupowAccelerator;
+use crate::equivalence_class::EquivalenceClassOps;
 use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::NUM_SECRET_SHARE_PRIMES;
 use crate::publicly_verifiable_secret_sharing::BaseProtocolContext;
 use crate::reconfiguration::{Message, PublicInput, PublicOutput};
@@ -92,8 +95,26 @@ where
     Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-        Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        PublicParameters = equivalence_class::PublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
+    SetupParameters<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<GroupElement::Scalar>,
+    >: DeriveFromPlaintextPublicParameters<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<GroupElement::Scalar>,
     >,
 {
     type Error = Error;
@@ -139,9 +160,16 @@ where
     Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-        Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        PublicParameters = equivalence_class::PublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    >,
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
     Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>: Encoding,
     SetupParameters<
         PLAINTEXT_SPACE_SCALAR_LIMBS,
@@ -165,7 +193,8 @@ where
         messages: Vec<HashMap<PartyID, Self::Message>>,
         private_input: Option<Self::PrivateInput>,
         public_input: &Self::PublicInput,
-        rng: &mut impl CryptoRngCore,
+        malicious_parties_by_round: HashMap<u64, HashSet<PartyID>>,
+        rng: &mut impl CsRng,
     ) -> Result<AsynchronousRoundResult<Self::Message, Self::PrivateOutput, Self::PublicOutput>>
     {
         let decryption_key_shares = private_input.ok_or(Error::InvalidParameters)?;
@@ -183,7 +212,7 @@ where
             )?;
 
         let decryption_key_bits = setup_parameters.decryption_key_bits();
-        let decryption_key_share_bits = secret_key_share_size_upper_bound(
+        let current_decryption_key_share_bits = secret_key_share_size_upper_bound(
             u32::from(current_access_structure.number_of_virtual_parties()),
             u32::from(current_access_structure.threshold),
             decryption_key_bits,
@@ -191,11 +220,21 @@ where
 
         // Mask the decryption key statistically.
         let randomizer_contribution_bits =
-            setup_parameters.decryption_key_bits() + StatisticalSecuritySizedNumber::BITS;
+            decryption_key_bits + StatisticalSecuritySizedNumber::BITS;
+
         // The secret share generated in DKG is actually smaller then the secret key share after the first re-configuration and thereafter.
         // We take decryption_key_share_bits to already include the size after the first re-configuration to avoid introducing new sizes.
         // That being said when actually sampling the key it is in fact sampled form the correct range therefore the randomizer_share_bits is large enough.
-        let randomizer_share_bits = decryption_key_share_bits;
+        // Note: `secret_key_share_size_upper_bound()` accounts for an extra statistical security.
+        let randomizer_share_bits = secret_key_share_size_upper_bound(
+            u32::from(
+                public_input
+                    .upcoming_access_structure
+                    .number_of_virtual_parties(),
+            ),
+            u32::from(public_input.upcoming_access_structure.threshold),
+            decryption_key_bits,
+        );
 
         let protocol_name = format!(
             "Class Groups Reconfiguration: {}-out-of-{} to {}-out-of-{}",
@@ -269,6 +308,7 @@ where
                 rng,
             ),
             [deal_randomizer_messages] => Self::advance_second_round(
+                tangible_party_id,
                 public_input,
                 deal_randomizer_messages.clone(),
                 &randomizer_contribution_to_upcoming_pvss_party,
@@ -286,12 +326,18 @@ where
                 &randomizer_contribution_to_upcoming_pvss_party,
                 verified_dealers_messages.clone(),
                 decryption_key_shares,
-                decryption_key_share_bits,
+                current_decryption_key_share_bits,
                 randomizer_contribution_bits,
                 rng,
             ),
             [deal_randomizer_messages, _, deal_masked_decryption_key_share_messages] => {
+                let malicious_third_round_parties = malicious_parties_by_round
+                    .get(&3)
+                    .ok_or(Error::InvalidParameters)?
+                    .clone();
+
                 Self::advance_fourth_round(
+                    tangible_party_id,
                     current_access_structure,
                     &public_input.upcoming_access_structure,
                     session_id,
@@ -301,7 +347,8 @@ where
                     deal_randomizer_messages.clone(),
                     &randomizer_contribution_to_upcoming_pvss_party,
                     deal_masked_decryption_key_share_messages.clone(),
-                    decryption_key_share_bits,
+                    malicious_third_round_parties,
+                    current_decryption_key_share_bits,
                     rng,
                 )
             }
@@ -309,7 +356,7 @@ where
         }
     }
 
-    fn round_causing_threshold_not_reached(failed_round: usize) -> Option<usize> {
+    fn round_causing_threshold_not_reached(failed_round: u64) -> Option<u64> {
         match failed_round {
             3 => Some(1),
             4 => Some(3),

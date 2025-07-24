@@ -5,18 +5,16 @@ use std::marker::PhantomData;
 use std::ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign};
 
 use crypto_bigint::modular::{ConstMontyForm, ConstMontyParams, SafeGcdInverter};
-use crypto_bigint::{
-    rand_core::CryptoRngCore, Encoding, NonZero, Odd, PrecomputeInverter, Random, Uint,
-};
+use crypto_bigint::{Encoding, NonZero, Odd, PrecomputeInverter, Random, Uint};
 use serde::{Deserialize, Serialize};
 use subtle::ConditionallySelectable;
 use subtle::{Choice, ConstantTimeEq, CtOption};
 
 use crate::linear_combination::linearly_combine_bounded_or_scale;
 use crate::{
-    BoundedGroupElement, CyclicGroupElement, GroupElement as _, Invert, KnownOrderGroupElement,
-    KnownOrderScalar, LinearlyCombinable, MulByGenerator, PrimeGroupElement, Reduce, Samplable,
-    Scale,
+    BoundedGroupElement, CsRng, CyclicGroupElement, GroupElement as _, Invert,
+    KnownOrderGroupElement, KnownOrderScalar, LinearlyCombinable, MulByGenerator,
+    PrimeGroupElement, Reduce, Samplable, Scale, Transcribeable,
 };
 
 /// An element of the additive group of integers for an odd modulo `n = modulus`
@@ -35,9 +33,16 @@ where
 {
     fn sample(
         _public_parameters: &Self::PublicParameters,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> crate::Result<Self> {
         Ok(Self(ConstMontyForm::<MOD, LIMBS>::random(rng)))
+    }
+
+    fn sample_randomizer(
+        public_parameters: &Self::PublicParameters,
+        rng: &mut impl CsRng,
+    ) -> crate::Result<Self> {
+        Self::sample(public_parameters, rng)
     }
 }
 
@@ -70,6 +75,14 @@ where
 {
     pub modulus: Odd<Uint<LIMBS>>,
     _mod_choice: PhantomData<MOD>,
+}
+
+impl<MOD: ConstMontyParams<LIMBS>, const LIMBS: usize> Transcribeable
+    for PublicParameters<MOD, LIMBS>
+where
+    Uint<LIMBS>: Encoding,
+{
+    type CanonicalRepresentation = Self;
 }
 
 impl<MOD: ConstMontyParams<LIMBS>, const LIMBS: usize> Default for PublicParameters<MOD, LIMBS>
@@ -137,8 +150,28 @@ where
         crate::scale_bounded(self, scalar, scalar_bits)
     }
 
+    fn scale_bounded_vartime<const RHS_LIMBS: usize>(
+        &self,
+        scalar: &Uint<RHS_LIMBS>,
+        scalar_bits: u32,
+    ) -> Self {
+        self.scale_bounded(scalar, scalar_bits)
+    }
+
+    fn add_randomized(self, other: &Self) -> Self {
+        self + other
+    }
+
+    fn add_vartime(self, other: &Self) -> Self {
+        self + other
+    }
+
     fn double(&self) -> Self {
         Self(self.0 + self.0)
+    }
+
+    fn double_vartime(&self) -> Self {
+        self.double()
     }
 }
 
@@ -339,9 +372,7 @@ impl<'r, MOD: ConstMontyParams<LIMBS>, const LIMBS: usize> Mul<&'r Self>
     }
 }
 
-impl<'r, MOD: ConstMontyParams<LIMBS>, const LIMBS: usize> Mul<Self>
-    for &'r GroupElement<MOD, LIMBS>
-{
+impl<MOD: ConstMontyParams<LIMBS>, const LIMBS: usize> Mul<Self> for &GroupElement<MOD, LIMBS> {
     type Output = GroupElement<MOD, LIMBS>;
 
     fn mul(self, rhs: Self) -> Self::Output {
@@ -382,8 +413,8 @@ where
     }
 }
 
-impl<'r, MOD: ConstMontyParams<LIMBS>, const LIMBS: usize> Mul<Uint<LIMBS>>
-    for &'r GroupElement<MOD, LIMBS>
+impl<MOD: ConstMontyParams<LIMBS>, const LIMBS: usize> Mul<Uint<LIMBS>>
+    for &GroupElement<MOD, LIMBS>
 where
     Uint<LIMBS>: Encoding,
 {
@@ -437,6 +468,48 @@ where
     }
 }
 
+impl<MOD: ConstMontyParams<LIMBS>, const LIMBS: usize, const UNSAT_LIMBS: usize> Scale<Uint<LIMBS>>
+    for GroupElement<MOD, LIMBS>
+where
+    Uint<LIMBS>: Encoding,
+    Odd<Uint<LIMBS>>:
+        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
+{
+    fn scale_randomized_accelerated(
+        &self,
+        scalar: &Uint<LIMBS>,
+        _public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale(scalar)
+    }
+
+    fn scale_vartime_accelerated(
+        &self,
+        scalar: &Uint<LIMBS>,
+        _public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_vartime(scalar)
+    }
+
+    fn scale_randomized_bounded_accelerated(
+        &self,
+        scalar: &Uint<LIMBS>,
+        _public_parameters: &Self::PublicParameters,
+        scalar_bits: u32,
+    ) -> Self {
+        self.scale_bounded(scalar, scalar_bits)
+    }
+
+    fn scale_bounded_vartime_accelerated(
+        &self,
+        scalar: &Uint<LIMBS>,
+        _public_parameters: &Self::PublicParameters,
+        scalar_bits: u32,
+    ) -> Self {
+        self.scale_bounded_vartime(scalar, scalar_bits)
+    }
+}
+
 impl<MOD: ConstMontyParams<LIMBS>, const LIMBS: usize, const UNSAT_LIMBS: usize>
     KnownOrderScalar<LIMBS> for GroupElement<MOD, LIMBS>
 where
@@ -453,15 +526,37 @@ where
     Odd<Uint<LIMBS>>:
         PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
 {
-    fn scale_generic(&self, scalar: &Self) -> Self {
+    fn scale_randomized_accelerated(
+        &self,
+        scalar: &Self,
+        _public_parameters: &Self::PublicParameters,
+    ) -> Self {
         scalar * self
     }
 
-    fn scale_bounded_generic(&self, scalar: &Self, scalar_bits: u32) -> Self {
+    fn scale_vartime_accelerated(
+        &self,
+        scalar: &Self,
+        _public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_vartime(&scalar.value())
+    }
+
+    fn scale_randomized_bounded_accelerated(
+        &self,
+        scalar: &Self,
+        _public_parameters: &Self::PublicParameters,
+        scalar_bits: u32,
+    ) -> Self {
         self.scale_bounded(&scalar.value(), scalar_bits)
     }
 
-    fn scale_bounded_vartime_generic(&self, scalar: &Self, scalar_bits: u32) -> Self {
+    fn scale_bounded_vartime_accelerated(
+        &self,
+        scalar: &Self,
+        _public_parameters: &Self::PublicParameters,
+        scalar_bits: u32,
+    ) -> Self {
         self.scale_bounded_vartime(&scalar.value(), scalar_bits)
     }
 }

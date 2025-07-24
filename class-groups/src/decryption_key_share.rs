@@ -3,9 +3,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crypto_bigint::rand_core::CryptoRngCore;
 use crypto_bigint::subtle::{Choice, CtOption};
-use crypto_bigint::{Encoding, Int, Uint};
+use crypto_bigint::{Concat, Encoding, Int, InvertMod, NonZero, Split, Uint};
 #[cfg(feature = "parallel")]
 use rayon::iter::IntoParallelIterator;
 #[cfg(feature = "parallel")]
@@ -13,7 +12,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use group::helpers::{DeduplicateAndSort, TryCollectHashMap};
-use group::{self_product, GroupElement as _, PartyID, PrimeGroupElement};
+use group::{self_product, CsRng, GroupElement as _, PartyID, PrimeGroupElement};
 use homomorphic_encryption::{
     AdditivelyHomomorphicDecryptionKeyShare, AdditivelyHomomorphicEncryptionKey,
     GroupsPublicParametersAccessors,
@@ -27,8 +26,9 @@ use mpc::secret_sharing::shamir::over_the_integers::{
 };
 use mpc::HandleInvalidMessages;
 
+use crate::accelerator::MultiFoldNupowAccelerator;
 use crate::decryption_key::{DecryptionKey, DiscreteLogInF};
-use crate::equivalence_class::EquivalenceClass;
+use crate::equivalence_class::{EquivalenceClass, EquivalenceClassOps};
 use crate::ibqf::compact::CompactIbqf;
 use crate::{encryption_key, Error, SecretKeyShareSizedInteger, SECRET_KEY_SHARE_WITNESS_LIMBS};
 use crate::{equivalence_class, Result};
@@ -104,7 +104,9 @@ where
 impl<
         const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
         const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+        const HALF_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+        const DOUBLE_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         GroupElement: PrimeGroupElement<PLAINTEXT_SPACE_SCALAR_LIMBS>,
     >
     AdditivelyHomomorphicDecryptionKeyShare<
@@ -123,6 +125,15 @@ impl<
         GroupElement,
     >
 where
+    Int<HALF_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: InvertMod<
+        NonZero<Uint<HALF_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+        Output = Uint<HALF_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+    >,
+    Uint<HALF_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Concat<Output = Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>
+        + InvertMod<Output = Uint<HALF_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+    Uint<DOUBLE_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>:
+        Split<Output = Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+
     Int<PLAINTEXT_SPACE_SCALAR_LIMBS>: Encoding,
     Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>: Encoding,
 
@@ -130,11 +141,21 @@ where
     Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
 
     Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
-    Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding
+        + Concat<Output = Uint<DOUBLE_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>
+        + Split<Output = Uint<HALF_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+
     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-        Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        PublicParameters = equivalence_class::PublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    >,
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
     EncryptionKey<
         PLAINTEXT_SPACE_SCALAR_LIMBS,
         FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -183,6 +204,7 @@ where
         party_id: PartyID,
         decryption_key_share: Self::SecretKeyShare,
         public_parameters: &Self::PublicParameters,
+        _rng: &mut impl CsRng,
     ) -> Result<Self> {
         let encryption_key =
             EncryptionKey::new(&public_parameters.encryption_scheme_public_parameters)?;
@@ -213,7 +235,8 @@ where
         public_parameters: &Self::PublicParameters,
     ) -> CtOption<Self::DecryptionShare> {
         let [decryption_share_base, _]: &[_; 2] = ciphertext.into();
-        shamir::over_the_integers::generate_decryption_share_semi_honest(
+
+        let decryption_share = shamir::over_the_integers::generate_decryption_share_semi_honest(
             self.decryption_key_share,
             decryption_share_base,
             expected_decrypters,
@@ -225,17 +248,23 @@ where
             public_parameters
                 .encryption_scheme_public_parameters
                 .setup_parameters
+                .equivalence_class_public_parameters(),
+            public_parameters
+                .encryption_scheme_public_parameters
+                .setup_parameters
                 .decryption_key_bits(),
-        )
+        );
+
+        decryption_share
     }
 
     fn generate_decryption_shares(
         &self,
         ciphertexts: Vec<CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
         public_parameters: &Self::PublicParameters,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> CtOption<(Vec<Self::DecryptionShare>, Self::PartialDecryptionProof)> {
-        let secret_key_share_upper_bound_bits = secret_key_share_size_upper_bound(
+        let decryption_key_share_upper_bound_bits = secret_key_share_size_upper_bound(
             u32::from(public_parameters.number_of_parties),
             u32::from(public_parameters.threshold),
             public_parameters
@@ -247,7 +276,7 @@ where
         let witness_group_public_parameters = group::bounded_integers_group::PublicParameters::<
             SECRET_KEY_SHARE_WITNESS_LIMBS,
         >::new_with_randomizer_upper_bound(
-            secret_key_share_upper_bound_bits
+            decryption_key_share_upper_bound_bits
         );
 
         if witness_group_public_parameters.is_err()
@@ -300,6 +329,8 @@ where
             decryption_share_bases
                 .into_iter()
                 .map(|decryption_share_base| {
+                    let discrete_log_sample_bits =
+                        Some(witness_group_public_parameters.sample_bits);
                     let language_public_parameters =
                         maurer::equality_of_discrete_logs::PublicParameters::new::<
                             group::bounded_integers_group::GroupElement<
@@ -314,6 +345,7 @@ where
                                 .equivalence_class_public_parameters()
                                 .clone(),
                             [public_parameters.base, decryption_share_base.value()],
+                            discrete_log_sample_bits,
                         );
 
                     maurer::equality_of_discrete_logs::Proof::prove(
@@ -433,7 +465,9 @@ where
                     &public_parameters
                         .encryption_scheme_public_parameters
                         .setup_parameters,
-                ); // $ CLSolve(PP_{cl}, \bar{M}) $
+                )
+                .into_option()
+                .ok_or(Error::InternalError); // $ CLSolve(PP_{cl}, \bar{M}) $
 
                 solved_message.and_then(|m| {
                     let message_by_delta_cubed = GroupElement::Scalar::new(
@@ -457,7 +491,7 @@ where
             (Vec<Self::DecryptionShare>, Self::PartialDecryptionProof),
         >,
         public_parameters: &Self::PublicParameters,
-        _rng: &mut impl CryptoRngCore,
+        _rng: &mut impl CsRng,
     ) -> std::result::Result<Vec<PartyID>, Self::Error> {
         let batch_size = ciphertexts.len();
 
@@ -492,7 +526,7 @@ where
             })
             .collect();
 
-        let secret_key_share_upper_bound_bits = secret_key_share_size_upper_bound(
+        let decryption_key_share_upper_bound_bits = secret_key_share_size_upper_bound(
             u32::from(public_parameters.number_of_parties),
             u32::from(public_parameters.threshold),
             public_parameters
@@ -504,7 +538,7 @@ where
         let witness_group_public_parameters = group::bounded_integers_group::PublicParameters::<
             SECRET_KEY_SHARE_WITNESS_LIMBS,
         >::new_with_randomizer_upper_bound(
-            secret_key_share_upper_bound_bits
+            decryption_key_share_upper_bound_bits
         )?;
 
         let (parties_sending_invalid_statements, proofs_and_statements) = decrypters
@@ -534,6 +568,8 @@ where
                                 })
                                 .zip(decryption_shares.into_iter().zip(proofs))
                                 .map(|(decryption_share_base, (decryption_share, proof))| {
+                                    let discrete_log_sample_bits =
+                                        Some(witness_group_public_parameters.sample_bits);
                                     let language_public_parameters =
                                         maurer::equality_of_discrete_logs::PublicParameters::new::<
                                             group::bounded_integers_group::GroupElement<
@@ -548,6 +584,7 @@ where
                                                 .equivalence_class_public_parameters()
                                                 .clone(),
                                             [public_parameters.base, decryption_share_base.value()],
+                                            discrete_log_sample_bits,
                                         );
 
                                     let statement = self_product::GroupElement::<
@@ -838,11 +875,14 @@ where
 
 #[cfg(any(test, feature = "test_helpers"))]
 pub mod test_helpers {
-    use super::*;
-    use crate::{equivalence_class, SecretKeyShareSizedNumber};
     use crypto_bigint::ConstChoice;
+
     use group::helpers::NormalizeValues;
     use group::GroupElement;
+
+    use crate::{equivalence_class, SecretKeyShareSizedNumber};
+
+    use super::*;
 
     pub fn deal_trusted_shares<
         const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
@@ -880,11 +920,16 @@ pub mod test_helpers {
         Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
         Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
         EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-            PublicParameters = equivalence_class::PublicParameters<
+                Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+                PublicParameters = equivalence_class::PublicParameters<
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                >,
+            > + EquivalenceClassOps<
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                >,
             >,
-        >,
     {
         let (base, public_verification_keys, decryption_key_shares) =
             mpc::test_helpers::deal_trusted_shares(
@@ -896,6 +941,9 @@ pub mod test_helpers {
                 )
                 .unwrap(),
                 base,
+                encryption_scheme_public_parameters
+                    .setup_parameters
+                    .equivalence_class_public_parameters(),
                 secret_key_bits,
             );
 
@@ -924,10 +972,10 @@ pub mod test_helpers {
 
 #[cfg(test)]
 mod tests {
-    use rand_core::OsRng;
+    use rayon::prelude::*;
     use rstest::rstest;
 
-    use group::{ristretto, secp256k1};
+    use group::{ristretto, secp256k1, OsCsRng};
     use test_helpers::deal_trusted_shares;
 
     use crate::test_helpers::{
@@ -956,7 +1004,7 @@ mod tests {
         let base = setup_parameters.h;
         let secret_key_bits = setup_parameters.decryption_key_bits();
         let (encryption_scheme_public_parameters, decryption_key) =
-            RistrettoDecryptionKey::generate(setup_parameters, &mut OsRng).unwrap();
+            RistrettoDecryptionKey::generate(setup_parameters, &mut OsCsRng).unwrap();
 
         let (public_parameters, decryption_key_shares) = deal_trusted_shares::<
             RISTRETTO_SCALAR_LIMBS,
@@ -973,11 +1021,17 @@ mod tests {
         );
 
         let decryption_key_shares: HashMap<_, _> = decryption_key_shares
-            .into_iter()
+            .into_par_iter()
             .map(|(party_id, share)| {
                 (
                     party_id,
-                    RistrettoDecryptionKeyShare::new(party_id, share, &public_parameters).unwrap(),
+                    RistrettoDecryptionKeyShare::new(
+                        party_id,
+                        share,
+                        &public_parameters,
+                        &mut OsCsRng,
+                    )
+                    .unwrap(),
                 )
             })
             .collect();
@@ -987,7 +1041,7 @@ mod tests {
             batch_size,
             decryption_key_shares,
             &public_parameters,
-            &mut OsRng,
+            &mut OsCsRng,
         );
     }
 
@@ -1003,7 +1057,7 @@ mod tests {
         let base = setup_parameters.h;
         let secret_key_bits = setup_parameters.decryption_key_bits();
         let (encryption_scheme_public_parameters, decryption_key) =
-            Secp256k1DecryptionKey::generate(setup_parameters, &mut OsRng).unwrap();
+            Secp256k1DecryptionKey::generate(setup_parameters, &mut OsCsRng).unwrap();
 
         let (public_parameters, decryption_key_shares) = deal_trusted_shares::<
             SECP256K1_SCALAR_LIMBS,
@@ -1020,11 +1074,17 @@ mod tests {
         );
 
         let decryption_key_shares: HashMap<_, _> = decryption_key_shares
-            .into_iter()
+            .into_par_iter()
             .map(|(party_id, share)| {
                 (
                     party_id,
-                    Secp256k1DecryptionKeyShare::new(party_id, share, &public_parameters).unwrap(),
+                    Secp256k1DecryptionKeyShare::new(
+                        party_id,
+                        share,
+                        &public_parameters,
+                        &mut OsCsRng,
+                    )
+                    .unwrap(),
                 )
             })
             .collect();
@@ -1034,14 +1094,18 @@ mod tests {
             batch_size,
             decryption_key_shares,
             &public_parameters,
-            &mut OsRng,
+            &mut OsCsRng,
         );
     }
 }
 
 #[cfg(feature = "benchmarking")]
 pub(crate) mod benches {
-    use super::*;
+    use criterion::Criterion;
+    use rayon::prelude::*;
+
+    use group::{ristretto, secp256k1, OsCsRng};
+
     use crate::test_helpers::{
         get_setup_parameters_ristretto_112_bits_deterministic,
         get_setup_parameters_secp256k1_112_bits_deterministic,
@@ -1053,9 +1117,8 @@ pub(crate) mod benches {
         RISTRETTO_SCALAR_LIMBS, SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
         SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, SECP256K1_SCALAR_LIMBS,
     };
-    use criterion::Criterion;
-    use group::{ristretto, secp256k1};
-    use rand_core::OsRng;
+
+    use super::*;
 
     pub(crate) fn benchmark_decryption_key_share_secp256k1(c: &mut Criterion) {
         let setup_parameters = get_setup_parameters_secp256k1_112_bits_deterministic();
@@ -1064,7 +1127,7 @@ pub(crate) mod benches {
 
         for (threshold, number_of_parties) in [(10, 15), (20, 30), (67, 100), (77, 115)] {
             let (encryption_scheme_public_parameters, decryption_key) =
-                Secp256k1DecryptionKey::generate(setup_parameters.clone(), &mut OsRng).unwrap();
+                Secp256k1DecryptionKey::generate(setup_parameters.clone(), &mut OsCsRng).unwrap();
 
             let (public_parameters, decryption_key_shares) = deal_trusted_shares::<
                 SECP256K1_SCALAR_LIMBS,
@@ -1081,12 +1144,17 @@ pub(crate) mod benches {
             );
 
             let decryption_key_shares: HashMap<_, _> = decryption_key_shares
-                .into_iter()
+                .into_par_iter()
                 .map(|(party_id, share)| {
                     (
                         party_id,
-                        Secp256k1DecryptionKeyShare::new(party_id, share, &public_parameters)
-                            .unwrap(),
+                        Secp256k1DecryptionKeyShare::new(
+                            party_id,
+                            share,
+                            &public_parameters,
+                            &mut OsCsRng,
+                        )
+                        .unwrap(),
                     )
                 })
                 .collect();
@@ -1099,7 +1167,7 @@ pub(crate) mod benches {
                 &public_parameters,
                 "class groups secp256k1",
                 c,
-                &mut OsRng,
+                &mut OsCsRng,
             );
         }
     }
@@ -1109,20 +1177,15 @@ pub(crate) mod benches {
         let base = setup_parameters.h;
         let secret_key_bits = setup_parameters.decryption_key_bits();
 
-        for (threshold, number_of_parties, deltas) in [
-            (10, 15, vec![1, 3]),
-            (20, 30, vec![2, 5]),
-            (67, 100, vec![1, 5, 10, 20]),
-            (77, 115, vec![1, 5, 10, 20]),
-        ] {
-            let secret_key_share_upper_bound_bits = secret_key_share_size_upper_bound(
+        for (threshold, number_of_parties, deltas) in [(67, 100, vec![1, 5, 10, 20])] {
+            let decryption_key_share_upper_bound_bits = secret_key_share_size_upper_bound(
                 u32::from(number_of_parties),
                 u32::from(threshold),
                 secret_key_bits,
             );
 
             let (encryption_scheme_public_parameters, decryption_key) =
-                Secp256k1DecryptionKey::generate(setup_parameters.clone(), &mut OsRng).unwrap();
+                Secp256k1DecryptionKey::generate(setup_parameters.clone(), &mut OsCsRng).unwrap();
 
             let (public_parameters, decryption_key_shares) = deal_trusted_shares::<
                 SECP256K1_SCALAR_LIMBS,
@@ -1138,15 +1201,20 @@ pub(crate) mod benches {
                 secret_key_bits,
             );
 
-            println!("{threshold}-out-of-{number_of_parties}: secp256k1 secret key bits {secret_key_bits} secret key share bits {secret_key_share_upper_bound_bits}");
+            println!("{threshold}-out-of-{number_of_parties}: secp256k1 secret key bits {secret_key_bits} secret key share bits {decryption_key_share_upper_bound_bits}");
 
             let decryption_key_shares: HashMap<_, _> = decryption_key_shares
-                .into_iter()
+                .into_par_iter()
                 .map(|(party_id, share)| {
                     (
                         party_id,
-                        Secp256k1DecryptionKeyShare::new(party_id, share, &public_parameters)
-                            .unwrap(),
+                        Secp256k1DecryptionKeyShare::new(
+                            party_id,
+                            share,
+                            &public_parameters,
+                            &mut OsCsRng,
+                        )
+                        .unwrap(),
                     )
                 })
                 .collect();
@@ -1162,7 +1230,7 @@ pub(crate) mod benches {
                     true,
                     "class groups secp256k1",
                     c,
-                    &mut OsRng,
+                    &mut OsCsRng,
                 );
 
                 if (number_of_parties - (delta + 1)) >= threshold {
@@ -1176,7 +1244,7 @@ pub(crate) mod benches {
                         false,
                         "class groups secp256k1",
                         c,
-                        &mut OsRng
+                        &mut OsCsRng
                     );
                 }
             }
@@ -1190,7 +1258,7 @@ pub(crate) mod benches {
 
         for (threshold, number_of_parties) in [(10, 15), (20, 30), (67, 100), (77, 115)] {
             let (encryption_scheme_public_parameters, decryption_key) =
-                RistrettoDecryptionKey::generate(setup_parameters.clone(), &mut OsRng).unwrap();
+                RistrettoDecryptionKey::generate(setup_parameters.clone(), &mut OsCsRng).unwrap();
 
             let (public_parameters, decryption_key_shares) = deal_trusted_shares::<
                 RISTRETTO_SCALAR_LIMBS,
@@ -1207,12 +1275,17 @@ pub(crate) mod benches {
             );
 
             let decryption_key_shares: HashMap<_, _> = decryption_key_shares
-                .into_iter()
+                .into_par_iter()
                 .map(|(party_id, share)| {
                     (
                         party_id,
-                        RistrettoDecryptionKeyShare::new(party_id, share, &public_parameters)
-                            .unwrap(),
+                        RistrettoDecryptionKeyShare::new(
+                            party_id,
+                            share,
+                            &public_parameters,
+                            &mut OsCsRng,
+                        )
+                        .unwrap(),
                     )
                 })
                 .collect();
@@ -1225,7 +1298,7 @@ pub(crate) mod benches {
                 &public_parameters,
                 "class groups ristretto",
                 c,
-                &mut OsRng,
+                &mut OsCsRng,
             );
         }
     }
@@ -1235,20 +1308,15 @@ pub(crate) mod benches {
         let base = setup_parameters.h;
         let secret_key_bits = setup_parameters.decryption_key_bits();
 
-        for (threshold, number_of_parties, deltas) in [
-            (10, 15, vec![1, 3]),
-            (20, 30, vec![2, 5]),
-            (67, 100, vec![1, 5, 10, 20]),
-            (77, 115, vec![1, 5, 10, 20]),
-        ] {
-            let secret_key_share_upper_bound_bits = secret_key_share_size_upper_bound(
+        for (threshold, number_of_parties, deltas) in [(67, 100, vec![1, 5, 10, 20])] {
+            let decryption_key_share_upper_bound_bits = secret_key_share_size_upper_bound(
                 u32::from(number_of_parties),
                 u32::from(threshold),
                 secret_key_bits,
             );
 
             let (encryption_scheme_public_parameters, decryption_key) =
-                RistrettoDecryptionKey::generate(setup_parameters.clone(), &mut OsRng).unwrap();
+                RistrettoDecryptionKey::generate(setup_parameters.clone(), &mut OsCsRng).unwrap();
 
             let (public_parameters, decryption_key_shares) = deal_trusted_shares::<
                 RISTRETTO_SCALAR_LIMBS,
@@ -1264,15 +1332,20 @@ pub(crate) mod benches {
                 secret_key_bits,
             );
 
-            println!("{threshold}-out-of-{number_of_parties}: ristretto secret key bits {secret_key_bits} secret key share bits {secret_key_share_upper_bound_bits}");
+            println!("{threshold}-out-of-{number_of_parties}: ristretto secret key bits {secret_key_bits} secret key share bits {decryption_key_share_upper_bound_bits}");
 
             let decryption_key_shares: HashMap<_, _> = decryption_key_shares
-                .into_iter()
+                .into_par_iter()
                 .map(|(party_id, share)| {
                     (
                         party_id,
-                        RistrettoDecryptionKeyShare::new(party_id, share, &public_parameters)
-                            .unwrap(),
+                        RistrettoDecryptionKeyShare::new(
+                            party_id,
+                            share,
+                            &public_parameters,
+                            &mut OsCsRng,
+                        )
+                        .unwrap(),
                     )
                 })
                 .collect();
@@ -1288,7 +1361,7 @@ pub(crate) mod benches {
                     true,
                     "class groups ristretto",
                     c,
-                    &mut OsRng,
+                    &mut OsCsRng,
                 );
 
                 if (number_of_parties - (delta + 1)) >= threshold {
@@ -1302,7 +1375,7 @@ pub(crate) mod benches {
                         false,
                         "class groups ristretto",
                         c,
-                        &mut OsRng
+                        &mut OsCsRng
                     );
                 }
             }

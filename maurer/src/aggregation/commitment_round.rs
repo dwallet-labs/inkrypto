@@ -4,12 +4,12 @@
 use std::collections::HashSet;
 use std::fmt::Debug;
 
-use crypto_bigint::rand_core::CryptoRngCore;
 use crypto_bigint::Random;
+
 use serde::Serialize;
 
 use commitment::Commitment;
-use group::{ComputationalSecuritySizedNumber, GroupElement, PartyID};
+use group::{ComputationalSecuritySizedNumber, CsRng, GroupElement, PartyID};
 use proof::aggregation;
 use proof::aggregation::CommitmentRoundParty;
 
@@ -53,7 +53,7 @@ impl<
 
     fn commit_statements_and_statement_mask(
         self,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<(Self::Commitment, Self::DecommitmentRoundParty)> {
         if !self.provers.contains(&self.party_id) {
             return Err(Error::Aggregation(
@@ -61,10 +61,19 @@ impl<
             ));
         }
 
+        let is_randomizer = false;
+        let is_verify = false;
         let statements: Result<Vec<Language::StatementSpaceGroupElement>> = self
             .witnesses
             .iter()
-            .map(|witness| Language::homomorphose(witness, &self.language_public_parameters))
+            .map(|witness| {
+                Language::homomorphose(
+                    witness,
+                    &self.language_public_parameters,
+                    is_randomizer,
+                    is_verify,
+                )
+            })
             .collect();
         let statements = statements?;
 
@@ -127,7 +136,7 @@ impl<
         language_public_parameters: Language::PublicParameters,
         protocol_context: ProtocolContext,
         witnesses: Vec<Language::WitnessSpaceGroupElement>,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<Self> {
         let (randomizers, statement_masks) = Proof::<
             REPETITIONS,

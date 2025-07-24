@@ -1,17 +1,16 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::marker::PhantomData;
 
-use crypto_bigint::rand_core::CryptoRngCore;
 use serde::{Deserialize, Serialize};
 
 use commitment::CommitmentSizedNumber;
 use group::helpers::DeduplicateAndSort;
-use group::GroupElement;
 use group::PartyID;
+use group::{CsRng, GroupElement};
 use mpc::{AsynchronousRoundResult, AsynchronouslyAdvanceable, WeightedThresholdAccessStructure};
 
 use crate::aggregation::OutputValue;
@@ -19,7 +18,7 @@ use crate::GroupsPublicParametersAccessors;
 use crate::Proof;
 
 /// Proof aggregation error.
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Debug, Clone)]
 pub enum Error {
     #[error("parties {:?} sent an invalid statement value", .0)]
     InvalidStatement(Vec<PartyID>),
@@ -81,7 +80,8 @@ where
         messages: Vec<HashMap<PartyID, Self::Message>>,
         private_input: Option<Self::PrivateInput>,
         public_input: &Self::PublicInput,
-        rng: &mut impl CryptoRngCore,
+        _malicious_parties_by_round: HashMap<u64, HashSet<PartyID>>,
+        rng: &mut impl CsRng,
     ) -> Result<
         AsynchronousRoundResult<Self::Message, Self::PrivateOutput, Self::PublicOutput>,
         Self::Error,
@@ -109,7 +109,7 @@ where
                     rng,
                 )
                 .map_err(|e| {
-                    mpc::Error::Consumer(format!("asynchronous proof aggregation {:?}", e))
+                    mpc::Error::Consumer(format!("asynchronous proof aggregation {e:?}"))
                 })?;
 
                 let statement_values =
@@ -231,7 +231,7 @@ where
                                 verified_statements[0][i]
                             })
                             .fold(neutral_statement, |aggregated_group_element, statement| {
-                                aggregated_group_element + statement
+                                aggregated_group_element.add_vartime(&statement)
                             })
                     })
                     .collect();
@@ -246,7 +246,7 @@ where
         }
     }
 
-    fn round_causing_threshold_not_reached(failed_round: usize) -> Option<usize> {
+    fn round_causing_threshold_not_reached(failed_round: u64) -> Option<u64> {
         match failed_round {
             2 => Some(1),
             _ => None,

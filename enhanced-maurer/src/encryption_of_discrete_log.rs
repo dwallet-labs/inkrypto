@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 use crypto_bigint::Uint;
 
-use group::KnownOrderGroupElement;
+use group::{KnownOrderGroupElement, Scale};
 use homomorphic_encryption::GroupsPublicParametersAccessors;
 use maurer::encryption_of_discrete_log::*;
 use maurer::SOUND_PROOFS_REPETITIONS;
+use tiresias::LargeBiPrimeSizedNumber;
 
 use crate::{language::DecomposableWitness, EnhanceableLanguage};
 
@@ -13,7 +14,7 @@ impl<
         const RANGE_CLAIMS_PER_SCALAR: usize,
         const COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS: usize,
         const SCALAR_LIMBS: usize,
-        GroupElement: KnownOrderGroupElement<SCALAR_LIMBS>,
+        GroupElement: KnownOrderGroupElement<SCALAR_LIMBS> + Scale<LargeBiPrimeSizedNumber>,
     >
     EnhanceableLanguage<
         SOUND_PROOFS_REPETITIONS,
@@ -120,18 +121,18 @@ pub type Proof<
 #[cfg(test)]
 pub(crate) mod tests {
     use core::iter;
-    use criterion::measurement::{Measurement, WallTime};
-    use crypto_bigint::U256;
-    use rand_core::OsRng;
-    use rstest::rstest;
     use std::collections::HashMap;
     use std::marker::PhantomData;
+
+    use criterion::measurement::{Measurement, WallTime};
+    use crypto_bigint::U256;
+    use rstest::rstest;
 
     use class_groups::test_helpers::get_setup_parameters_secp256k1_112_bits_deterministic;
     use class_groups::{
         Secp256k1DecryptionKey, Secp256k1EncryptionKey, SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
     };
-    use group::{secp256k1, PartyID, Samplable};
+    use group::{secp256k1, OsCsRng, PartyID, Samplable};
     use maurer::language;
     use mpc::Weight;
     use tiresias::test_helpers::N;
@@ -204,7 +205,7 @@ pub(crate) mod tests {
 
         let setup_parameters = get_setup_parameters_secp256k1_112_bits_deterministic();
         let (encryption_scheme_public_parameters, _) =
-            Secp256k1DecryptionKey::generate(setup_parameters, &mut OsRng).unwrap();
+            Secp256k1DecryptionKey::generate(setup_parameters, &mut OsCsRng).unwrap();
 
         PublicParameters::<
             { U256::LIMBS },
@@ -233,7 +234,7 @@ pub(crate) mod tests {
                 language_public_parameters
                     .encryption_scheme_public_parameters
                     .randomness_space_public_parameters(),
-                &mut OsRng,
+                &mut OsCsRng,
             )
             .unwrap();
 
@@ -253,7 +254,7 @@ pub(crate) mod tests {
         iter::repeat_with(|| {
             let discrete_log = secp256k1::Scalar::sample(
                 language_public_parameters.discrete_log_public_parameters(),
-                &mut OsRng,
+                &mut OsCsRng,
             )
             .unwrap();
 
@@ -263,7 +264,7 @@ pub(crate) mod tests {
                 language_public_parameters
                     .encryption_scheme_public_parameters
                     .randomness_space_public_parameters(),
-                &mut OsRng,
+                &mut OsCsRng,
             )
             .unwrap();
 
@@ -312,7 +313,7 @@ pub(crate) mod tests {
                 &PhantomData,
                 &language_public_parameters,
                 witnesses,
-                &mut OsRng,
+                &mut OsCsRng,
             )
             .unwrap();
 
@@ -321,6 +322,67 @@ pub(crate) mod tests {
                 .verify(&PhantomData, &language_public_parameters, statements)
                 .is_ok(),
             "valid proofs should verify"
+        );
+    }
+
+    #[rstest]
+    #[case(1)]
+    #[case(2)]
+    #[case(3)]
+    #[case(5)]
+    #[case(10)]
+    #[case(50)]
+    fn proof_with_out_of_range_randomness_response_fails_verification_class_groups(
+        #[case] batch_size: usize,
+    ) {
+        let language_public_parameters = class_groups_language_public_parameters();
+
+        let witnesses = generate_witnesses_class_groups(&language_public_parameters, 1);
+
+        let (proof, statements) =
+            maurer::Proof::<SOUND_PROOFS_REPETITIONS, ClassGroupsLang, PhantomData<()>>::prove(
+                &PhantomData,
+                &language_public_parameters,
+                witnesses,
+                &mut OsCsRng,
+            )
+            .unwrap();
+
+        let mut proofs: Vec<_> = std::iter::repeat_n(proof.clone(), batch_size).collect();
+        let mut malicious_proof = proof.clone();
+
+        let (discrete_log_response, _) = malicious_proof.responses[0].into();
+        malicious_proof.responses[0] = (discrete_log_response, Uint::MAX).into();
+        proofs[0] = malicious_proof.clone();
+
+        let res = malicious_proof.verify(
+            &PhantomData,
+            &language_public_parameters,
+            statements.clone(),
+        );
+
+        assert!(
+            matches!(
+                res.err().unwrap(),
+                maurer::Error::Group(group::Error::InvalidGroupElement),
+            ),
+            "proof with out-of-range randomness response should fail verification"
+        );
+
+        let res = maurer::Proof::verify_batch(
+            proofs,
+            vec![PhantomData; batch_size],
+            &language_public_parameters,
+            std::iter::repeat_n(statements, batch_size).collect(),
+            &mut OsCsRng,
+        );
+
+        assert!(
+            matches!(
+                res.err().unwrap(),
+                maurer::Error::Group(group::Error::InvalidGroupElement),
+            ),
+            "batch verify of proof with out-of-range randomness response should fail verification"
         );
     }
 
@@ -341,7 +403,7 @@ pub(crate) mod tests {
                 &PhantomData,
                 &language_public_parameters,
                 witnesses,
-                &mut OsRng,
+                &mut OsCsRng,
             )
             .unwrap();
 
@@ -358,11 +420,11 @@ pub(crate) mod tests {
 
         let now = measurement.start();
         let res = maurer::Proof::verify_batch(
-            iter::repeat(proof).take(batch_size).collect(),
+            std::iter::repeat_n(proof, batch_size).collect(),
             vec![PhantomData; batch_size],
             &language_public_parameters,
-            iter::repeat(statements).take(batch_size).collect(),
-            &mut OsRng,
+            std::iter::repeat_n(statements, batch_size).collect(),
+            &mut OsCsRng,
         );
         let time = measurement.end(now);
         println!(

@@ -45,7 +45,7 @@ impl From<Error> for mpc::Error {
                 mpc::Error::InvalidParameters
             }
             Error::MPC(e) => e,
-            e => mpc::Error::Consumer(format!("tiresias error {:?}", e)),
+            e => mpc::Error::Consumer(format!("tiresias error {e:?}")),
         }
     }
 }

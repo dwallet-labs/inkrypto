@@ -27,9 +27,8 @@ pub(super) mod test_helpers {
     };
 
     use criterion::measurement::{Measurement, WallTime};
-    use rand_core::OsRng;
 
-    use group::PartyID;
+    use group::{OsCsRng, PartyID};
 
     use crate::{test_helpers::sample_witnesses, Language};
 
@@ -48,7 +47,7 @@ pub(super) mod test_helpers {
             sample_witnesses::<REPETITIONS, Lang>(
                 language_public_parameters,
                 batch_size,
-                &mut OsRng,
+                &mut OsCsRng,
             )
         })
         .take(number_of_parties)
@@ -89,7 +88,7 @@ pub(super) mod test_helpers {
                     language_public_parameters.clone(),
                     PhantomData,
                     witnesses,
-                    &mut OsRng,
+                    &mut OsCsRng,
                 )
                 .unwrap();
                 instantiation_time = measurement.end(now);

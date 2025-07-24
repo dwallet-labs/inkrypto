@@ -4,9 +4,19 @@
 use std::array;
 use std::collections::{HashMap, HashSet};
 
+use crypto_bigint::{Encoding, Int, Uint};
+
+use commitment::CommitmentSizedNumber;
+use group::helpers::{DeduplicateAndSort, FlatMapResults, GroupIntoNestedMap};
+use group::{CsRng, PartyID, PrimeGroupElement};
+use mpc::{AsynchronousRoundResult, WeightedThresholdAccessStructure};
+
+use crate::accelerator::MultiFoldNupowAccelerator;
 use crate::dkg::party::RoundResult;
 pub use crate::dkg::public_output::PublicOutput;
 use crate::dkg::{verify_encryptions_of_secrets_per_crt_prime, Message, Party, PublicInput};
+use crate::encryption_key::public_parameters::Instantiate;
+use crate::equivalence_class::EquivalenceClassOps;
 use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
     NUM_ENCRYPTION_OF_DECRYPTION_KEY_PRIMES, NUM_SECRET_SHARE_PRIMES,
 };
@@ -19,13 +29,6 @@ use crate::{
     encryption_key, equivalence_class, publicly_verifiable_secret_sharing, CompactIbqf,
     EquivalenceClass, Result, SECRET_KEY_SHARE_LIMBS, SECRET_KEY_SHARE_WITNESS_LIMBS,
 };
-use crypto_bigint::rand_core::CryptoRngCore;
-
-use commitment::CommitmentSizedNumber;
-use crypto_bigint::{Encoding, Int, Uint};
-use group::helpers::{DeduplicateAndSort, FlatMapResults, GroupIntoNestedMap};
-use group::{PartyID, PrimeGroupElement};
-use mpc::{AsynchronousRoundResult, WeightedThresholdAccessStructure};
 
 impl<
         const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
@@ -49,9 +52,16 @@ where
     Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-        Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        PublicParameters = equivalence_class::PublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    >,
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
     SetupParameters<
         PLAINTEXT_SPACE_SCALAR_LIMBS,
         FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -75,12 +85,6 @@ where
         encryption_of_decryption_key_base_protocol_context: BaseProtocolContext,
         access_structure: &WeightedThresholdAccessStructure,
         public_input: &PublicInput<
-            PLAINTEXT_SPACE_SCALAR_LIMBS,
-            FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            group::PublicParameters<GroupElement::Scalar>,
-        >,
-        setup_parameters: &SetupParameters<
             PLAINTEXT_SPACE_SCALAR_LIMBS,
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -111,8 +115,9 @@ where
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             >,
         >,
+        malicious_third_round_parties: HashSet<PartyID>,
         decryption_key_share_bits: u32,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<
         RoundResult<
             PLAINTEXT_SPACE_SCALAR_LIMBS,
@@ -138,7 +143,6 @@ where
 
         let (
             third_round_malicious_parties,
-            malicious_decryption_key_contribution_dealers,
             threshold_encryptions_of_decryption_key_shares_and_proofs,
         ) = Self::handle_third_round_messages(
             access_structure,
@@ -152,7 +156,7 @@ where
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
         >::compute_public_verification_keys(
             access_structure,
-            malicious_decryption_key_contribution_dealers.clone(),
+            malicious_third_round_parties.clone(),
             reconstructed_commitments_to_sharing,
         );
 
@@ -162,7 +166,7 @@ where
                 FUNDAMENTAL_DISCRIMINANT_LIMBS,
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             >::compute_threshold_encryption_keys(
-                malicious_decryption_key_contribution_dealers.clone(),
+                malicious_third_round_parties.clone(),
                 threshold_encryption_key_shares_and_proofs,
             )?;
 
@@ -233,10 +237,11 @@ where
             threshold_encryption_scheme_public_parameters_per_crt_prime,
             commitments,
             threshold_encryptions_of_decryption_key_shares_and_proofs_for_verification,
-            setup_parameters
+            public_input
+                .setup_parameters
                 .equivalence_class_public_parameters()
                 .clone(),
-            setup_parameters.h,
+            public_input.setup_parameters.h,
             encryption_of_decryption_key_base_protocol_context,
             decryption_key_share_bits,
             rng,
@@ -264,7 +269,7 @@ where
         let public_output = PublicOutput::new::<GroupElement>(
             access_structure,
             public_input.setup_parameters_per_crt_prime.clone(),
-            malicious_decryption_key_contribution_dealers.clone(),
+            malicious_third_round_parties.clone(),
             interpolation_subset,
             adjusted_lagrange_coefficients,
             parties_that_were_dealt_shares,
@@ -279,7 +284,7 @@ where
         let malicious_parties: Vec<_> = first_round_malicious_parties
             .into_iter()
             .chain(third_round_malicious_parties)
-            .chain(malicious_decryption_key_contribution_dealers)
+            .chain(malicious_third_round_parties)
             .chain(parties_sending_invalid_proofs)
             .deduplicate_and_sort();
 

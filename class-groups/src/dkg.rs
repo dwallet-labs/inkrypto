@@ -1,24 +1,11 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
-use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
-    construct_setup_parameters_per_crt_prime, KnowledgeOfDiscreteLogUCProof,
-    SecretKeyShareCRTPrimeSetupParameters, CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-    CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, MAX_PRIMES, NUM_ENCRYPTION_OF_DECRYPTION_KEY_PRIMES,
-    NUM_SECRET_SHARE_PRIMES,
-};
-use crate::publicly_verifiable_secret_sharing::{DealSecretMessage, DealtSecretShareMessage};
-use crate::{
-    equivalence_class, CompactIbqf, EquivalenceClass, Error, Result,
-    DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
-};
-use crate::{
-    RISTRETTO_FUNDAMENTAL_DISCRIMINANT_LIMBS, RISTRETTO_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-    RISTRETTO_SCALAR_LIMBS, SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-    SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, SECP256K1_SCALAR_LIMBS,
-    SECRET_KEY_SHARE_WITNESS_LIMBS,
-};
+use std::collections::{HashMap, HashSet};
+
 use crypto_bigint::{Encoding, Int, Uint};
+use serde::{Deserialize, Serialize};
+
 use group::helpers::{const_generic_array_serialization, TryCollectHashMap};
 use group::{ristretto, secp256k1, PartyID, PrimeGroupElement};
 use mpc::secret_sharing::shamir::over_the_integers::{
@@ -29,8 +16,27 @@ use mpc::WeightedThresholdAccessStructure;
 pub use party::Party;
 pub use proofs::*;
 pub use public_output::PublicOutput;
-use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+
+use crate::accelerator::MultiFoldNupowAccelerator;
+use crate::equivalence_class::EquivalenceClassOps;
+use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
+    construct_setup_parameters_per_crt_prime, KnowledgeOfDiscreteLogUCProof,
+    SecretKeyShareCRTPrimeSetupParameters, CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, MAX_PRIMES, NUM_ENCRYPTION_OF_DECRYPTION_KEY_PRIMES,
+    NUM_SECRET_SHARE_PRIMES,
+};
+use crate::publicly_verifiable_secret_sharing::{DealSecretMessage, DealtSecretShareMessage};
+use crate::setup::{DeriveFromPlaintextPublicParameters, SetupParameters};
+use crate::{
+    equivalence_class, CompactIbqf, EquivalenceClass, Error, Result,
+    DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+};
+use crate::{
+    RISTRETTO_FUNDAMENTAL_DISCRIMINANT_LIMBS, RISTRETTO_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    RISTRETTO_SCALAR_LIMBS, SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, SECP256K1_SCALAR_LIMBS,
+    SECRET_KEY_SHARE_WITNESS_LIMBS,
+};
 
 mod first_round;
 mod fourth_round;
@@ -96,10 +102,19 @@ where
     Uint<DISCRETE_LOG_WITNESS_LIMBS>: Encoding,
     Int<DISCRETE_LOG_WITNESS_LIMBS>: Encoding,
     Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
-    EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>:
-        group::GroupElement<Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>;
+    Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >;
 
-// TODO: @offir new name, generalize doc
 /// The instantiated message sent by a dealer to share the threshold encryption key
 /// * The encryption key of the encryption of secret modulo each CRT prime.
 /// * A proof that the encryption key matches the encryption key share.
@@ -115,20 +130,53 @@ pub type ProveEqualityOfDiscreteLog<
 ); NUM_ENCRYPTION_OF_DECRYPTION_KEY_PRIMES];
 
 /// The Public Input of the Distributed Key Generation (DKG) party.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PublicInput<
     const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
     const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
     const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
     ScalarPublicParameters,
 > where
+    Int<PLAINTEXT_SPACE_SCALAR_LIMBS>: Encoding,
     Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>: Encoding,
+
+    Int<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+
+    Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
+    SetupParameters<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        ScalarPublicParameters,
+    >: DeriveFromPlaintextPublicParameters<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        ScalarPublicParameters,
+    >,
 {
     plaintext_space_public_parameters: ScalarPublicParameters,
     computational_security_parameter: u32,
     setup_parameters_per_crt_prime: [SecretKeyShareCRTPrimeSetupParameters; MAX_PRIMES],
+    setup_parameters: SetupParameters<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        ScalarPublicParameters,
+    >,
     encryption_key_values_and_proofs_per_crt_prime: HashMap<
         PartyID,
         [(
@@ -155,8 +203,17 @@ pub enum Message<
     Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
-    EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>:
-        group::GroupElement<Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+    EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
 {
     DealDecryptionKeyContribution(
         DealSecretMessage<
@@ -173,7 +230,6 @@ pub enum Message<
     ),
     VerifiedDealers(HashSet<PartyID>),
     EncryptDecryptionKeyShares {
-        malicious_decryption_key_contribution_dealers: HashSet<PartyID>,
         encryptions_of_decryption_key_shares_and_proofs: HashMap<
             PartyID,
             DealtSecretShareMessage<
@@ -199,9 +255,36 @@ impl<
         ScalarPublicParameters,
     >
 where
+    Int<PLAINTEXT_SPACE_SCALAR_LIMBS>: Encoding,
     Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>: Encoding,
+
+    Int<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+
+    Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
+    SetupParameters<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        ScalarPublicParameters,
+    >: DeriveFromPlaintextPublicParameters<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        ScalarPublicParameters,
+    >,
 {
     pub fn new<GroupElement: PrimeGroupElement<PLAINTEXT_SPACE_SCALAR_LIMBS>>(
         access_structure: &WeightedThresholdAccessStructure,
@@ -240,10 +323,17 @@ where
         let binomial_coefficients =
             compute_binomial_coefficients(access_structure.number_of_virtual_parties());
 
+        let setup_parameters =
+            SetupParameters::derive_from_plaintext_parameters::<GroupElement::Scalar>(
+                plaintext_space_public_parameters.clone(),
+                computational_security_parameter,
+            )?;
+
         Ok(Self {
             plaintext_space_public_parameters,
             computational_security_parameter,
             setup_parameters_per_crt_prime,
+            setup_parameters,
             encryption_key_values_and_proofs_per_crt_prime,
             n_factorial,
             binomial_coefficients,
@@ -270,9 +360,16 @@ where
     Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-        Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        PublicParameters = equivalence_class::PublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    >,
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
 {
     let party_to_virtual_parties = access_structure.party_to_virtual_parties();
     let virtual_subset = party_to_virtual_parties
@@ -310,17 +407,17 @@ where
 #[cfg(any(test, feature = "test_helpers"))]
 #[allow(dead_code)]
 pub(crate) mod test_helpers {
+    use std::array;
+
     use criterion::measurement::{Measurement, WallTime};
-    use crypto_bigint::rand_core::OsRng;
     use crypto_bigint::{NonZero, Random};
     #[cfg(feature = "parallel")]
     use rayon::iter::IntoParallelIterator;
     #[cfg(feature = "parallel")]
     use rayon::prelude::*;
-    use std::array;
 
     use commitment::CommitmentSizedNumber;
-    use group::{bounded_integers_group, secp256k1};
+    use group::{bounded_integers_group, secp256k1, OsCsRng};
     use group::{GroupElement, Reduce};
     use homomorphic_encryption::{
         AdditivelyHomomorphicDecryptionKey, AdditivelyHomomorphicDecryptionKeyShare,
@@ -332,8 +429,8 @@ pub(crate) mod test_helpers {
     };
     use mpc::test_helpers::asynchronous_session_terminates_successfully_internal;
 
-    use super::*;
     use crate::decryption_key::SecretKey;
+    use crate::encryption_key::public_parameters::Instantiate;
     use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
         construct_knowledge_of_decryption_key_public_parameters_per_crt_prime,
         construct_setup_parameters_per_crt_prime, generate_keypairs_per_crt_prime,
@@ -349,6 +446,8 @@ pub(crate) mod test_helpers {
         Secp256k1DecryptionKeyShare, SecretKeyShareSizedInteger, SecretKeyShareSizedNumber,
         DECRYPTION_KEY_BITS_112BIT_SECURITY, SECRET_KEY_SHARE_LIMBS,
     };
+
+    use super::*;
 
     pub(crate) fn mock_dkg_output<
         const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
@@ -410,7 +509,12 @@ pub(crate) mod test_helpers {
             .unwrap();
 
             let (_, ct) = encryption_key
-                .encrypt(&decryption_key_mod_crt_prime, public_parameters, &mut OsRng)
+                .encrypt(
+                    &decryption_key_mod_crt_prime,
+                    public_parameters,
+                    true,
+                    &mut OsCsRng,
+                )
                 .unwrap();
 
             ct.value()
@@ -420,7 +524,6 @@ pub(crate) mod test_helpers {
                 .map(|pp| pp.encryption_key.value());
 
         dkg::PublicOutput {
-            setup_parameters_per_crt_prime,
             encryption_key: decryption_key_share_public_parameters
                 .encryption_scheme_public_parameters
                 .encryption_key
@@ -436,20 +539,18 @@ pub(crate) mod test_helpers {
     }
 
     /// Setup parameters for secp256k1 including Class-Groups parameters
-    pub fn setups_dkg_secp256k1(
+    pub fn setup_dkg_secp256k1(
         access_structure: &WeightedThresholdAccessStructure,
+        setup_parameters_per_crt_prime: [SecretKeyShareCRTPrimeSetupParameters; MAX_PRIMES],
         use_same_keys: bool,
     ) -> (
         CommitmentSizedNumber,
         HashMap<PartyID, [Uint<CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS>; MAX_PRIMES]>,
         HashMap<PartyID, Secp256k1PublicInput>,
     ) {
-        let session_id = CommitmentSizedNumber::random(&mut OsRng);
+        let session_id = CommitmentSizedNumber::random(&mut OsCsRng);
         let plaintext_space_public_parameters = secp256k1::scalar::PublicParameters::default();
 
-        let setup_parameters_per_crt_prime =
-            construct_setup_parameters_per_crt_prime(DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER)
-                .unwrap();
         let language_public_parameters_per_crt_prime =
             construct_knowledge_of_decryption_key_public_parameters_per_crt_prime(
                 setup_parameters_per_crt_prime.each_ref(),
@@ -470,7 +571,7 @@ pub(crate) mod test_helpers {
             iter.map(|(party_id, _)| {
                 let decryption_key_per_crt_prime = generate_keypairs_per_crt_prime(
                     setup_parameters_per_crt_prime.clone(),
-                    &mut OsRng,
+                    &mut OsCsRng,
                 )
                 .unwrap();
 
@@ -478,7 +579,7 @@ pub(crate) mod test_helpers {
                     generate_knowledge_of_decryption_key_proofs_per_crt_prime(
                         language_public_parameters_per_crt_prime.clone(),
                         decryption_key_per_crt_prime,
-                        &mut OsRng,
+                        &mut OsCsRng,
                     )
                     .unwrap();
 
@@ -490,19 +591,16 @@ pub(crate) mod test_helpers {
             .unzip()
         };
 
+        let public_input = PublicInput::new::<secp256k1::GroupElement>(
+            access_structure,
+            plaintext_space_public_parameters.clone(),
+            DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+            encryption_keys_per_crt_prime_and_proofs.clone(),
+        )
+        .unwrap();
+
         let public_inputs: HashMap<_, _> = (1..=access_structure.number_of_tangible_parties())
-            .map(|party_id| {
-                (
-                    party_id,
-                    PublicInput::new::<secp256k1::GroupElement>(
-                        access_structure,
-                        plaintext_space_public_parameters.clone(),
-                        DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
-                        encryption_keys_per_crt_prime_and_proofs.clone(),
-                    )
-                    .unwrap(),
-                )
-            })
+            .map(|party_id| (party_id, public_input.clone()))
             .collect();
 
         (session_id, decryption_key_per_crt_prime, public_inputs)
@@ -520,8 +618,15 @@ pub(crate) mod test_helpers {
         >,
         HashMap<PartyID, Secp256k1DecryptionKeyShare>,
     ) {
-        let (session_id, decryption_keys, public_inputs) =
-            setups_dkg_secp256k1(access_structure, !bench);
+        let setup_parameters_per_crt_prime =
+            construct_setup_parameters_per_crt_prime(DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER)
+                .unwrap();
+
+        let (session_id, decryption_keys, public_inputs) = setup_dkg_secp256k1(
+            access_structure,
+            setup_parameters_per_crt_prime.clone(),
+            true,
+        );
 
         let (total_time, rounds_times, public_output) =
             asynchronous_session_terminates_successfully_internal::<Secp256k1Party>(
@@ -587,6 +692,7 @@ pub(crate) mod test_helpers {
                     virtual_party_id,
                     decryption_key_share,
                     &decryption_key_share_public_parameters,
+                    &mut OsCsRng,
                 )
                 .unwrap();
 
@@ -599,12 +705,25 @@ pub(crate) mod test_helpers {
             1,
             decryption_key_shares.clone(),
             &decryption_key_share_public_parameters,
-            &mut OsRng,
+            &mut OsCsRng,
         );
 
         let threshold_encryption_scheme_public_parameters_per_crt_prime = public_output
-            .threshold_encryption_scheme_public_parameters_per_crt_prime()
+            .threshold_encryption_scheme_public_parameters_per_crt_prime(
+                &setup_parameters_per_crt_prime,
+            )
             .unwrap();
+
+        // A ad-hoc trick to fix an issue with decryption, which assumes the decryption key size is fixed, but in DKG we sum over it, so the size is bigger by log(n).
+        let threshold_encryption_scheme_public_parameters_per_crt_prime = array::from_fn(|i| {
+            let mut pp = threshold_encryption_scheme_public_parameters_per_crt_prime[i].clone();
+            pp.setup_parameters.decryption_key_public_parameters =  group::bounded_natural_numbers_group::PublicParameters::new_with_randomizer_upper_bound(
+                decryption_key.bits()
+            ).unwrap();
+
+            pp
+        });
+
         for i in 0..NUM_ENCRYPTION_OF_DECRYPTION_KEY_PRIMES {
             let expected_encryption_key =
                 setup_parameters_per_crt_prime[i].power_of_h_vartime(&decryption_key);
@@ -659,7 +778,7 @@ pub(crate) mod test_helpers {
         );
 
         println!(
-            "Secp256k1 Class-Groups DKG, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}",
+            "Secp256k1 Class-Groups DKG, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}",
             access_structure.number_of_tangible_parties(),
             access_structure.number_of_virtual_parties(),
             access_structure.threshold,
@@ -668,6 +787,7 @@ pub(crate) mod test_helpers {
             rounds_times[0].as_millis(),
             rounds_times[1].as_millis(),
             rounds_times[2].as_millis(),
+            rounds_times[3].as_millis(),
             decryption_time.as_millis(),
         );
 
@@ -749,20 +869,19 @@ pub(crate) mod test_helpers {
     }
 
     /// Setup parameters for ristretto including Class-Groups parameters
-    pub fn setups_dkg_ristretto(
+    pub fn setup_dkg_ristretto(
         access_structure: &WeightedThresholdAccessStructure,
+        setup_parameters_per_crt_prime: [SecretKeyShareCRTPrimeSetupParameters; MAX_PRIMES],
+        use_same_keys: bool,
     ) -> (
         CommitmentSizedNumber,
         HashMap<PartyID, [Uint<CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS>; MAX_PRIMES]>,
         HashMap<PartyID, RistrettoPublicInput>,
     ) {
-        let session_id = CommitmentSizedNumber::random(&mut OsRng);
+        let session_id = CommitmentSizedNumber::random(&mut OsCsRng);
 
         let plaintext_space_public_parameters = ristretto::scalar::PublicParameters::default();
 
-        let setup_parameters_per_crt_prime =
-            construct_setup_parameters_per_crt_prime(DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER)
-                .unwrap();
         let language_public_parameters_per_crt_prime =
             construct_knowledge_of_decryption_key_public_parameters_per_crt_prime(
                 setup_parameters_per_crt_prime.each_ref(),
@@ -777,11 +896,13 @@ pub(crate) mod test_helpers {
         let (decryption_key_per_crt_prime, encryption_keys_per_crt_prime_and_proofs): (
             HashMap<_, _>,
             HashMap<_, _>,
-        ) = iter
-            .map(|(party_id, _)| {
+        ) = if use_same_keys {
+            construct_encryption_keys_and_proofs_per_crt_prime_secp256k1(access_structure)
+        } else {
+            iter.map(|(party_id, _)| {
                 let decryption_key_per_crt_prime = generate_keypairs_per_crt_prime(
                     setup_parameters_per_crt_prime.clone(),
-                    &mut OsRng,
+                    &mut OsCsRng,
                 )
                 .unwrap();
 
@@ -789,7 +910,7 @@ pub(crate) mod test_helpers {
                     generate_knowledge_of_decryption_key_proofs_per_crt_prime(
                         language_public_parameters_per_crt_prime.clone(),
                         decryption_key_per_crt_prime,
-                        &mut OsRng,
+                        &mut OsCsRng,
                     )
                     .unwrap();
 
@@ -798,21 +919,19 @@ pub(crate) mod test_helpers {
                     (party_id, encryption_keys_and_proofs),
                 )
             })
-            .unzip();
+            .unzip()
+        };
+
+        let public_input = PublicInput::new::<ristretto::GroupElement>(
+            access_structure,
+            plaintext_space_public_parameters.clone(),
+            DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+            encryption_keys_per_crt_prime_and_proofs.clone(),
+        )
+        .unwrap();
 
         let public_inputs: HashMap<_, _> = (1..=access_structure.number_of_tangible_parties())
-            .map(|party_id| {
-                (
-                    party_id,
-                    PublicInput::new::<ristretto::GroupElement>(
-                        access_structure,
-                        plaintext_space_public_parameters.clone(),
-                        DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
-                        encryption_keys_per_crt_prime_and_proofs.clone(),
-                    )
-                    .unwrap(),
-                )
-            })
+            .map(|party_id| (party_id, public_input.clone()))
             .collect();
 
         (session_id, decryption_key_per_crt_prime, public_inputs)
@@ -830,7 +949,15 @@ pub(crate) mod test_helpers {
         >,
         HashMap<PartyID, RistrettoDecryptionKeyShare>,
     ) {
-        let (session_id, decryption_keys, public_inputs) = setups_dkg_ristretto(access_structure);
+        let setup_parameters_per_crt_prime =
+            construct_setup_parameters_per_crt_prime(DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER)
+                .unwrap();
+
+        let (session_id, decryption_keys, public_inputs) = setup_dkg_ristretto(
+            access_structure,
+            setup_parameters_per_crt_prime.clone(),
+            true,
+        );
 
         let (total_time, rounds_times, public_output) =
             asynchronous_session_terminates_successfully_internal::<RistrettoParty>(
@@ -879,6 +1006,7 @@ pub(crate) mod test_helpers {
                     virtual_party_id,
                     decryption_key_share,
                     &decryption_key_share_public_parameters,
+                    &mut OsCsRng,
                 )
                 .unwrap();
 
@@ -891,11 +1019,11 @@ pub(crate) mod test_helpers {
             1,
             decryption_key_shares.clone(),
             &decryption_key_share_public_parameters,
-            &mut OsRng,
+            &mut OsCsRng,
         );
 
         println!(
-            "Ristretto Class-Groups DKG, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}",
+            "Ristretto Class-Groups DKG, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}",
             access_structure.number_of_tangible_parties(),
             access_structure.number_of_virtual_parties(),
             access_structure.threshold,
@@ -904,6 +1032,7 @@ pub(crate) mod test_helpers {
             rounds_times[0].as_millis(),
             rounds_times[1].as_millis(),
             rounds_times[2].as_millis(),
+            rounds_times[3].as_millis(),
             decryption_time.as_millis(),
         );
 
@@ -912,28 +1041,69 @@ pub(crate) mod test_helpers {
             decryption_key_shares,
         )
     }
+
+    #[test]
+    #[ignore]
+    fn generate_keys_for_test_consts() {
+        let setup_parameters_per_crt_prime =
+            construct_setup_parameters_per_crt_prime(DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER)
+                .unwrap();
+
+        let language_public_parameters_per_crt_prime =
+            construct_knowledge_of_decryption_key_public_parameters_per_crt_prime(
+                setup_parameters_per_crt_prime.each_ref(),
+            )
+            .unwrap();
+
+        let decryption_key_per_crt_prime =
+            generate_keypairs_per_crt_prime(setup_parameters_per_crt_prime.clone(), &mut OsCsRng)
+                .unwrap();
+
+        let encryption_keys_and_proofs = generate_knowledge_of_decryption_key_proofs_per_crt_prime(
+            language_public_parameters_per_crt_prime.clone(),
+            decryption_key_per_crt_prime,
+            &mut OsCsRng,
+        )
+        .unwrap();
+
+        println!("// Author: dWallet Labs, Ltd.");
+        println!("// SPDX-License-Identifier: CC-BY-NC-ND-4.0");
+        println!();
+        println!("#[cfg(any(test, feature = \"test_helpers\"))]");
+        println!("pub(crate) mod test_helpers {{");
+        println!(
+            "pub const DECRYPTION_KEY_PER_CRT_PRIME: &str = {:?};",
+            serde_json::to_string(&decryption_key_per_crt_prime).unwrap()
+        );
+        println!(
+            "pub const ENCRYPTION_KEY_AND_PROOF_PER_CRT_PRIME: &str = {:?};",
+            serde_json::to_string(&encryption_keys_and_proofs).unwrap()
+        );
+        println!("}}");
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::dkg::test_helpers::{
-        generates_distributed_key_ristretto_internal, generates_distributed_key_secp256k1_internal,
-        mock_dkg_output,
-    };
+    use std::array;
+    use std::collections::HashMap;
+
     use crypto_bigint::Uint;
-    use group::{secp256k1, GroupElement, PartyID};
+    use rstest::rstest;
+
+    use group::{secp256k1, GroupElement, OsCsRng, PartyID};
     use homomorphic_encryption::{
         AdditivelyHomomorphicDecryptionKey, GroupsPublicParametersAccessors,
     };
     use mpc::{Weight, WeightedThresholdAccessStructure};
-    use rand_core::OsRng;
-    use rstest::rstest;
-    use std::array;
-    use std::collections::HashMap;
 
+    use crate::dkg::test_helpers::{
+        generates_distributed_key_ristretto_internal, generates_distributed_key_secp256k1_internal,
+        mock_dkg_output,
+    };
     use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
-        SecretKeyShareCRTPrimeDecryptionKey, CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-        ENCRYPTION_OF_DECRYPTION_KEY_CRT_COEFFICIENTS,
+        construct_setup_parameters_per_crt_prime, SecretKeyShareCRTPrimeDecryptionKey,
+        CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, ENCRYPTION_OF_DECRYPTION_KEY_CRT_COEFFICIENTS,
         ENCRYPTION_OF_DECRYPTION_KEY_CRT_PRIMES_PRODUCT, NUM_ENCRYPTION_OF_DECRYPTION_KEY_PRIMES,
     };
     use crate::setup::{DeriveFromPlaintextPublicParameters, SetupParameters};
@@ -948,7 +1118,7 @@ mod tests {
     #[test]
     fn test_mock_dkg_output() {
         let access_structure =
-            WeightedThresholdAccessStructure::random(82, 50, 103, &mut OsRng).unwrap();
+            WeightedThresholdAccessStructure::random(82, 50, 103, &mut OsCsRng).unwrap();
         let plaintext_space_public_parameters =
             group::secp256k1::scalar::PublicParameters::default();
 
@@ -963,7 +1133,7 @@ mod tests {
         )
         .unwrap();
         let (encryption_scheme_public_parameters, decryption_key) =
-            Secp256k1DecryptionKey::generate(setup_parameters.clone(), &mut OsRng).unwrap();
+            Secp256k1DecryptionKey::generate(setup_parameters.clone(), &mut OsCsRng).unwrap();
 
         let (decryption_key_share_public_parameters, _) = deal_trusted_shares::<
             SECP256K1_SCALAR_LIMBS,
@@ -988,16 +1158,22 @@ mod tests {
             decryption_key_share_public_parameters.clone(),
         );
 
+        let setup_parameters_per_crt_prime =
+            construct_setup_parameters_per_crt_prime(DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER)
+                .unwrap();
+
         let encryption_of_decryption_key_per_crt_prime = array::from_fn(|i| {
             CiphertextSpaceGroupElement::<CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>::new(
                 dkg_output.threshold_encryption_of_decryption_key_per_crt_prime[i],
-                dkg_output.setup_parameters_per_crt_prime[i].ciphertext_space_public_parameters(),
+                setup_parameters_per_crt_prime[i].ciphertext_space_public_parameters(),
             )
             .unwrap()
         });
 
         let threshold_encryption_scheme_public_parameters_per_crt_prime = dkg_output
-            .threshold_encryption_scheme_public_parameters_per_crt_prime()
+            .threshold_encryption_scheme_public_parameters_per_crt_prime(
+                &setup_parameters_per_crt_prime,
+            )
             .unwrap();
 
         let decryption_key_per_crt_primes = array::from_fn(|i| {
@@ -1060,33 +1236,26 @@ mod tests {
 }
 
 #[cfg(all(test, feature = "benchmarking"))]
+#[allow(clippy::single_element_loop)]
 mod benches {
-    use rand_core::OsRng;
-
+    use group::OsCsRng;
     use mpc::WeightedThresholdAccessStructure;
 
     #[test]
     #[ignore]
     fn benchmark() {
-        println!("\nProtocol, Number of Tangible Parties, Number of Virtual Parties, Threshold, Total Time (ms), Total Time With Decryption (ms), First Round (ms), Second Round (ms), Third Round (ms), Decryption (ms)", );
+        println!("\nProtocol, Number of Tangible Parties, Number of Virtual Parties, Threshold, Total Time (ms), Total Time With Decryption (ms), First Round (ms), Second Round (ms), Third Round (ms), Fourth Round (ms), Decryption (ms)");
 
-        for (threshold, number_of_tangible_parties, total_weight) in
-            [(77, 50, 115), (67, 100, 100), (77, 100, 115)]
-        {
+        for (threshold, number_of_tangible_parties, total_weight) in [(67, 100, 100)] {
             let access_structure = WeightedThresholdAccessStructure::uniform(
                 threshold,
                 number_of_tangible_parties,
                 total_weight,
-                &mut OsRng,
+                &mut OsCsRng,
             )
             .unwrap();
 
             super::test_helpers::generates_distributed_key_secp256k1_internal(
-                &access_structure,
-                true,
-            );
-
-            super::test_helpers::generates_distributed_key_ristretto_internal(
                 &access_structure,
                 true,
             );

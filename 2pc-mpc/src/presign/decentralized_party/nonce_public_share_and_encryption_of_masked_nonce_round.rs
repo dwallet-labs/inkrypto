@@ -5,12 +5,13 @@
 
 use std::fmt::Debug;
 
-use crypto_bigint::{rand_core::CryptoRngCore, Encoding, Uint};
+use crypto_bigint::{Encoding, Uint};
 use serde::{Deserialize, Serialize};
 
 use commitment::CommitmentSizedNumber;
 use group::{
-    bounded_natural_numbers_group, direct_product, GroupElement as _, PrimeGroupElement, Samplable,
+    bounded_natural_numbers_group, direct_product, CsRng, GroupElement as _, PrimeGroupElement,
+    Samplable,
 };
 use homomorphic_encryption::{AdditivelyHomomorphicEncryptionKey, GroupsPublicParametersAccessors};
 use maurer::scaling_of_discrete_log;
@@ -42,7 +43,7 @@ impl Party {
             GroupElement::PublicParameters,
             EncryptionKey::PublicParameters,
         >,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<
         Vec<
             scaling_of_discrete_log::WitnessSpaceGroupElement<

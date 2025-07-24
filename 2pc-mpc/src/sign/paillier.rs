@@ -3,10 +3,13 @@
 
 //! This file implements the `Sign` protocol trait for Paillier
 
-use crypto_bigint::rand_core::CryptoRngCore;
 use crypto_bigint::{ConcatMixed, Encoding, Uint};
-use group::{AffineXCoordinate, HashToGroup, PrimeGroupElement, StatisticalSecuritySizedNumber};
 use serde::{Deserialize, Serialize};
+
+use group::{
+    AffineXCoordinate, CsRng, HashToGroup, PrimeGroupElement, Scale, StatisticalSecuritySizedNumber,
+};
+use tiresias::LargeBiPrimeSizedNumber;
 
 use crate::paillier;
 use crate::paillier::bulletproofs::SignMessage;
@@ -18,7 +21,10 @@ impl<
         const RANGE_CLAIMS_PER_MASK: usize,
         const NUM_RANGE_CLAIMS: usize,
         const SCALAR_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + AffineXCoordinate<SCALAR_LIMBS> + HashToGroup,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS>
+            + Scale<LargeBiPrimeSizedNumber>
+            + AffineXCoordinate<SCALAR_LIMBS>
+            + HashToGroup,
     > super::Protocol
     for Protocol<
         RANGE_CLAIMS_PER_SCALAR,
@@ -87,7 +93,7 @@ where
         presign: Self::Presign,
         sign_message: Self::SignMessage,
         hashed_message: Self::HashedMessage,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> crate::Result<()> {
         signature_partial_decryption_round::Party::verify_encryption_of_signature_parts_prehash_paillier(protocol_public_parameters, dkg_output, presign, sign_message, hashed_message, rng)
     }

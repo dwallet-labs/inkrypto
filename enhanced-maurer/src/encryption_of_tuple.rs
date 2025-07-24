@@ -136,17 +136,14 @@ pub type Proof<
 mod test_helpers {
     use std::iter;
 
-    use crypto_bigint::{Uint, U256, U64};
-    use rand_core::OsRng;
+    use crypto_bigint::{Uint, U256};
 
     use class_groups::test_helpers::get_setup_parameters_secp256k1_112_bits_deterministic;
     use class_groups::{
         Secp256k1DecryptionKey, Secp256k1EncryptionKey, SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        SECP256K1_MESSAGE_LIMBS,
     };
-    use group::{
-        bounded_natural_numbers_group, secp256k1, ComputationalSecuritySizedNumber, GroupElement,
-        Samplable, StatisticalSecuritySizedNumber,
-    };
+    use group::{bounded_natural_numbers_group, secp256k1, GroupElement, OsCsRng, Samplable};
     use homomorphic_encryption::{
         AdditivelyHomomorphicEncryptionKey, GroupsPublicParametersAccessors,
     };
@@ -155,19 +152,10 @@ mod test_helpers {
 
     use crate::encryption_of_tuple::{Language, PublicParameters};
 
-    pub(crate) const MESSAGE_LIMBS: usize = {
-        U256::LIMBS
-            + ComputationalSecuritySizedNumber::LIMBS
-            + StatisticalSecuritySizedNumber::LIMBS
-            + ComputationalSecuritySizedNumber::LIMBS
-            + U64::LIMBS
-            + U64::LIMBS
-    };
-
     pub(crate) type ClassGroupsLang = Language<
         { U256::LIMBS },
         { U256::LIMBS },
-        MESSAGE_LIMBS,
+        SECP256K1_MESSAGE_LIMBS,
         secp256k1::GroupElement,
         Secp256k1EncryptionKey,
     >;
@@ -182,12 +170,12 @@ mod test_helpers {
         iter::repeat_with(|| {
             let multiplicand = secp256k1::Scalar::sample(
                 &language_public_parameters.scalar_group_public_parameters,
-                &mut OsRng,
+                &mut OsCsRng,
             )
             .unwrap();
 
             let multiplicand = bounded_natural_numbers_group::GroupElement::new(
-                Uint::<MESSAGE_LIMBS>::from(&U256::from(&multiplicand.value())),
+                Uint::<SECP256K1_MESSAGE_LIMBS>::from(&U256::from(&multiplicand.value())),
                 language_public_parameters.message_group_public_parameters(),
             )
             .unwrap();
@@ -198,7 +186,7 @@ mod test_helpers {
                 language_public_parameters
                     .encryption_scheme_public_parameters
                     .randomness_space_public_parameters(),
-                &mut OsRng,
+                &mut OsCsRng,
             )
             .unwrap();
 
@@ -208,7 +196,7 @@ mod test_helpers {
                 language_public_parameters
                     .encryption_scheme_public_parameters
                     .randomness_space_public_parameters(),
-                &mut OsRng,
+                &mut OsCsRng,
             )
             .unwrap();
 
@@ -224,7 +212,7 @@ mod test_helpers {
 
         let setup_parameters = get_setup_parameters_secp256k1_112_bits_deterministic();
         let (encryption_scheme_public_parameters, _) =
-            Secp256k1DecryptionKey::generate(setup_parameters, &mut OsRng).unwrap();
+            Secp256k1DecryptionKey::generate(setup_parameters, &mut OsCsRng).unwrap();
 
         let encryption_key = <Secp256k1EncryptionKey as AdditivelyHomomorphicEncryptionKey<
             { secp256k1::SCALAR_LIMBS },
@@ -232,10 +220,11 @@ mod test_helpers {
         .unwrap();
         let (_, ciphertext) = encryption_key
             .encrypt(
-                &secp256k1::Scalar::sample(&secp256k1_scalar_public_parameters, &mut OsRng)
+                &secp256k1::Scalar::sample(&secp256k1_scalar_public_parameters, &mut OsCsRng)
                     .unwrap(),
                 &encryption_scheme_public_parameters,
-                &mut OsRng,
+                true,
+                &mut OsCsRng,
             )
             .unwrap();
         let upper_bound = secp256k1::ORDER;
@@ -243,7 +232,7 @@ mod test_helpers {
         PublicParameters::<
             { secp256k1::SCALAR_LIMBS },
             { secp256k1::SCALAR_LIMBS },
-            MESSAGE_LIMBS,
+            SECP256K1_MESSAGE_LIMBS,
             secp256k1::GroupElement,
             Secp256k1EncryptionKey,
         >::new::<{ secp256k1::SCALAR_LIMBS }, secp256k1::GroupElement, Secp256k1EncryptionKey>(
@@ -259,13 +248,13 @@ mod test_helpers {
 #[cfg(test)]
 pub(crate) mod tests {
     use core::iter;
-    use crypto_bigint::{Random, U256};
-    use rand_core::OsRng;
-    use rstest::rstest;
     use std::collections::HashMap;
     use std::marker::PhantomData;
 
-    use group::{secp256k1, PartyID, Samplable};
+    use crypto_bigint::{Random, U256};
+    use rstest::rstest;
+
+    use group::{secp256k1, OsCsRng, PartyID, Samplable};
     use homomorphic_encryption::AdditivelyHomomorphicEncryptionKey;
     use maurer::language;
     use mpc::Weight;
@@ -299,13 +288,13 @@ pub(crate) mod tests {
             tiresias::EncryptionKey::new(&paillier_public_parameters).unwrap();
 
         let plaintext = tiresias::PlaintextSpaceGroupElement::new(
-            (&U256::random(&mut OsRng)).into(),
+            (&U256::random(&mut OsCsRng)).into(),
             paillier_public_parameters.plaintext_space_public_parameters(),
         )
         .unwrap();
 
         let ciphertext = paillier_encryption_key
-            .encrypt(&plaintext, &paillier_public_parameters, &mut OsRng)
+            .encrypt(&plaintext, &paillier_public_parameters, true, &mut OsCsRng)
             .unwrap()
             .1
             .value();
@@ -345,7 +334,7 @@ pub(crate) mod tests {
                 language_public_parameters
                     .encryption_scheme_public_parameters
                     .randomness_space_public_parameters(),
-                &mut OsRng,
+                &mut OsCsRng,
             )
             .unwrap();
 
@@ -353,7 +342,7 @@ pub(crate) mod tests {
                 language_public_parameters
                     .encryption_scheme_public_parameters
                     .randomness_space_public_parameters(),
-                &mut OsRng,
+                &mut OsCsRng,
             )
             .unwrap();
 
@@ -376,7 +365,7 @@ pub(crate) mod tests {
                 &PhantomData,
                 &language_public_parameters,
                 witnesses,
-                &mut OsRng,
+                &mut OsCsRng,
             )
             .unwrap();
 
@@ -714,9 +703,8 @@ pub(crate) mod tests {
 pub(crate) mod benches {
     use criterion::Criterion;
     use crypto_bigint::{Random, U256};
-    use rand_core::OsRng;
 
-    use group::{GroupElement, LinearlyCombinable};
+    use group::{GroupElement, LinearlyCombinable, OsCsRng};
     use maurer::language::StatementSpaceGroupElement;
     use maurer::{Language, SOUND_PROOFS_REPETITIONS};
 
@@ -728,8 +716,9 @@ pub(crate) mod benches {
         let witness = generate_witnesses_class_groups(&language_public_parameters, 1)[0];
 
         let statement =
-            ClassGroupsLang::homomorphose(&witness, &language_public_parameters).unwrap();
-        let challenge = U256::random(&mut OsRng);
+            ClassGroupsLang::homomorphose(&witness, &language_public_parameters, false, false)
+                .unwrap();
+        let challenge = U256::random(&mut OsCsRng);
         let mut g = c.benchmark_group("Linear Combination in statement space of encdh");
 
         g.bench_function("single exponentiation", |bench| {

@@ -4,21 +4,23 @@
 use std::array;
 use std::collections::{HashMap, HashSet};
 
-use commitment::CommitmentSizedNumber;
-use crypto_bigint::rand_core::CryptoRngCore;
 use crypto_bigint::{ConstChoice, Encoding, Int, Uint};
+
+use commitment::CommitmentSizedNumber;
 use group::helpers::{DeduplicateAndSort, FlatMapResults};
 use group::{
-    bounded_integers_group, bounded_natural_numbers_group, GroupElement, PartyID,
+    bounded_integers_group, bounded_natural_numbers_group, CsRng, GroupElement, PartyID,
     PrimeGroupElement, Samplable,
 };
 use mpc::{AsynchronousRoundResult, HandleInvalidMessages, WeightedThresholdAccessStructure};
 
+use crate::accelerator::MultiFoldNupowAccelerator;
 use crate::dkg::party::RoundResult;
 use crate::dkg::{
     prove_equality_of_discrete_log, Message, Party, ProveEqualityOfDiscreteLog,
     ProveEqualityOfDiscreteLogMessage,
 };
+use crate::equivalence_class::EquivalenceClassOps;
 use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
     SecretKeyShareCRTPrimeSetupParameters, CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, MAX_PRIMES,
     NUM_SECRET_SHARE_PRIMES,
@@ -53,9 +55,16 @@ where
     Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
-        Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        PublicParameters = equivalence_class::PublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    >,
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
     SetupParameters<
         PLAINTEXT_SPACE_SCALAR_LIMBS,
         FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -89,7 +98,7 @@ where
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             GroupElement,
         >,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<
         RoundResult<
             PLAINTEXT_SPACE_SCALAR_LIMBS,
@@ -108,11 +117,12 @@ where
             Int::new_from_abs_sign(decryption_key_contribution.value(), ConstChoice::FALSE)
                 .unwrap();
 
+        let preverified_parties = HashSet::default();
         let (malicious_parties, deal_secret_message) = pvss_party
             .deal_and_encrypt_shares_to_valid_encryption_key_holders(
                 None,
                 decryption_key_contribution,
-                HashSet::default(),
+                preverified_parties,
                 true,
                 rng,
             )?;
@@ -130,6 +140,7 @@ where
             bounded_integers_group::PublicParameters::new_with_randomizer_upper_bound(
                 setup_parameters.decryption_key_bits(),
             )?;
+
         let decryption_key_contribution = bounded_integers_group::GroupElement::new(
             decryption_key_contribution,
             &discrete_log_public_parameters,

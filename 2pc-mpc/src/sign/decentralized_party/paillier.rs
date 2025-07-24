@@ -4,18 +4,6 @@
 //! This file implements the `Sign` decentralized party for Paillier
 
 pub mod asynchronous {
-    use commitment::CommitmentSizedNumber;
-    use crypto_bigint::rand_core::CryptoRngCore;
-    use group::helpers::DeduplicateAndSort;
-    use group::{AffineXCoordinate, PartyID, PrimeGroupElement};
-    use mpc::{
-        AsynchronousRoundResult, AsynchronouslyAdvanceable, HandleInvalidMessages,
-        WeightedThresholdAccessStructure,
-    };
-    use serde::{Deserialize, Serialize};
-    use std::collections::HashMap;
-    use std::marker::PhantomData;
-
     use crate::paillier::bulletproofs::{PaillierProtocolPublicParameters, SignMessage};
     use crate::paillier::{
         DKGDecentralizedPartyOutput, DecryptionKeyShare, DecryptionShare, PartialDecryptionProof,
@@ -25,6 +13,18 @@ pub mod asynchronous {
         signature_partial_decryption_round, signature_threshold_decryption_round, PublicInput,
     };
     use crate::Error;
+    use commitment::CommitmentSizedNumber;
+    use group::helpers::DeduplicateAndSort;
+    use group::{AffineXCoordinate, PartyID, PrimeGroupElement, Scale};
+    use mpc::{
+        AsynchronousRoundResult, AsynchronouslyAdvanceable, HandleInvalidMessages,
+        WeightedThresholdAccessStructure,
+    };
+
+    use serde::{Deserialize, Serialize};
+    use std::collections::HashMap;
+    use std::marker::PhantomData;
+    use tiresias::LargeBiPrimeSizedNumber;
 
     use super::super::super::*;
 
@@ -35,7 +35,10 @@ pub mod asynchronous {
         const RANGE_CLAIMS_PER_MASK: usize,
         const NUM_RANGE_CLAIMS: usize,
         const SCALAR_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + AffineXCoordinate<SCALAR_LIMBS> + group::HashToGroup,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS>
+            + Scale<LargeBiPrimeSizedNumber>
+            + AffineXCoordinate<SCALAR_LIMBS>
+            + group::HashToGroup,
     >(PhantomData<GroupElement>);
 
     #[derive(PartialEq, Eq, Clone, Debug, Serialize, Deserialize)]
@@ -51,7 +54,10 @@ pub mod asynchronous {
             const RANGE_CLAIMS_PER_MASK: usize,
             const NUM_RANGE_CLAIMS: usize,
             const SCALAR_LIMBS: usize,
-            GroupElement: PrimeGroupElement<SCALAR_LIMBS> + AffineXCoordinate<SCALAR_LIMBS> + group::HashToGroup,
+            GroupElement: PrimeGroupElement<SCALAR_LIMBS>
+                + Scale<LargeBiPrimeSizedNumber>
+                + AffineXCoordinate<SCALAR_LIMBS>
+                + group::HashToGroup,
         > mpc::Party
         for Party<
             RANGE_CLAIMS_PER_SCALAR,
@@ -95,7 +101,7 @@ pub mod asynchronous {
         const RANGE_CLAIMS_PER_MASK: usize,
         const NUM_RANGE_CLAIMS: usize,
         const SCALAR_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS>
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Scale<LargeBiPrimeSizedNumber>
         + AffineXCoordinate<SCALAR_LIMBS>
         + group::HashToGroup,
     > AsynchronouslyAdvanceable
@@ -119,11 +125,16 @@ pub mod asynchronous {
             messages: Vec<HashMap<PartyID, Self::Message>>,
             virtual_party_id_to_decryption_key_share: Option<Self::PrivateInput>,
             public_input: &Self::PublicInput,
-            rng: &mut impl CryptoRngCore,
+            _malicious_parties_by_round: HashMap<u64, HashSet<PartyID>>,
+            rng: &mut impl CsRng,
         ) -> Result<
             AsynchronousRoundResult<Self::Message, Self::PrivateOutput, Self::PublicOutput>,
             Self::Error,
         > {
+            if public_input.presign.public_key != public_input.dkg_output.public_key {
+                return Err(Error::InvalidParameters);
+            }
+
             let virtual_party_id_to_decryption_key_share =
                 virtual_party_id_to_decryption_key_share
                     .ok_or(Error::InvalidParameters)?;
@@ -267,7 +278,7 @@ pub mod asynchronous {
             }
         }
 
-        fn round_causing_threshold_not_reached(failed_round: usize) -> Option<usize> {
+        fn round_causing_threshold_not_reached(failed_round: u64) -> Option<u64> {
             match failed_round {
                 3 => Some(2),
                 _ => None

@@ -6,12 +6,14 @@
 use core::array;
 use std::fmt::Debug;
 
-use crypto_bigint::{rand_core::CryptoRngCore, NonZero, RandomMod, Uint};
+use crypto_bigint::{NonZero, RandomMod, Uint};
 use merlin::Transcript;
 use serde::{Deserialize, Serialize};
 
 use commitment::GroupsPublicParametersAccessors as _;
-use group::{helpers::FlatMapResults, GroupElement, Samplable, StatisticalSecuritySizedNumber};
+use group::{
+    helpers::FlatMapResults, CsRng, GroupElement, Samplable, StatisticalSecuritySizedNumber,
+};
 use maurer::Language;
 use proof::{
     range::{
@@ -120,7 +122,7 @@ impl<
                 Language,
             >,
         >,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<(
         Self,
         Vec<
@@ -211,7 +213,7 @@ impl<
                 Language,
             >,
         >,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<()> {
         self.verify_range_proof(
             protocol_context,
@@ -247,7 +249,7 @@ impl<
                 Language,
             >,
         >,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<()> {
         let transcript = Self::setup_range_proof(
             protocol_context,
@@ -312,9 +314,9 @@ impl<
             RangeProof::NAME.as_bytes(),
         );
 
-        transcript.serialize_to_transcript_as_json(
+        transcript.transcribe(
             b"range proof public parameters",
-            range_proof_public_parameters,
+            range_proof_public_parameters.clone(),
         )?;
 
         transcript.serialize_to_transcript_as_json(b"protocol context", protocol_context)?;
@@ -331,7 +333,7 @@ impl<
             UnboundedWitnessSpaceGroupElement,
             Language,
         >,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> Result<(
         [WitnessSpaceGroupElement<
             REPETITIONS,
@@ -350,12 +352,6 @@ impl<
             Language,
         >; REPETITIONS],
     )> {
-        // This is an upper bound on the number of bits, as `ilog2` rounds down.
-        let num_range_claims_bits = NUM_RANGE_CLAIMS
-            .ilog2()
-            .checked_add(1)
-            .ok_or(Error::InvalidPublicParameters)?;
-
         let challenge_bits = EnhancedLanguage::<
             REPETITIONS,
             NUM_RANGE_CLAIMS,
@@ -366,9 +362,15 @@ impl<
         >::challenge_bits()?;
 
         // $ [0,\Delta \cdot d(\ell+1+\omegalen) \cdot 2^{\kappa+s}) $
+        // Note: we do not add the log of the number of range claims
+        // (i.e. the number of bits that holds the `NUM_RANGE_CLAIMS` value),
+        // which means this reduces the statistical security by that amount.
+        // This is fine for our settings in which `NUM_RANGE_CLAIMS` is very small,
+        // and the decrease in statistical security is insignificant (no more than 4-7 bits.)
+        // The reason we don't account for this is the inconsistencies with the non-enhanced Maurer randomizer size it would cause.
+        // In effect it would have the (composed) enhanced Maurer randomizers the same as the Maurer ones, but statistical security will reduce by the log of the number of range claims. Equivalently, to reach the same statistical security, one should use a statistical security parameter that is larger by that amount.
         let sampling_bit_size: u32 = RangeProof::RANGE_CLAIM_BITS
-            .checked_add(num_range_claims_bits)
-            .and_then(|bits| bits.checked_add(challenge_bits))
+            .checked_add(challenge_bits)
             .and_then(|bits| bits.checked_add(StatisticalSecuritySizedNumber::BITS))
             .ok_or(Error::InvalidPublicParameters)?;
 
@@ -399,7 +401,7 @@ impl<
                         .range_proof_public_parameters
                         .commitment_scheme_public_parameters()
                         .message_space_public_parameters()
-                        .public_parameters,
+                        .0,
                 )
             })
             .flat_map_results()
@@ -443,6 +445,8 @@ impl<
             .try_into()
             .map_err(|_| Error::InternalError)?;
 
+        let is_randomizer = true;
+        let is_verify = false;
         let statement_masks = randomizers
             .map(|randomizer| {
                 EnhancedLanguage::<
@@ -452,7 +456,12 @@ impl<
                     RangeProof,
                     UnboundedWitnessSpaceGroupElement,
                     Language,
-                >::homomorphose(&randomizer, enhanced_language_public_parameters)
+                >::homomorphose(
+                    &randomizer,
+                    enhanced_language_public_parameters,
+                    is_randomizer,
+                    is_verify,
+                )
             })
             .flat_map_results()?;
 
@@ -526,7 +535,7 @@ impl<
         protocol_context: &Self::ProtocolContext,
         enhanced_language_public_parameters: &Self::PublicParameters,
         witnesses: Vec<Self::WitnessSpaceGroupElement>,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> std::result::Result<(Self, Vec<Self::StatementSpaceGroupElement>), Self::Error> {
         Proof::prove(
             protocol_context,
@@ -541,7 +550,7 @@ impl<
         protocol_context: &Self::ProtocolContext,
         enhanced_language_public_parameters: &Self::PublicParameters,
         statements: Vec<Self::StatementSpaceGroupElement>,
-        rng: &mut impl CryptoRngCore,
+        rng: &mut impl CsRng,
     ) -> std::result::Result<(), Self::Error> {
         self.verify(
             protocol_context,
@@ -573,10 +582,9 @@ pub(crate) mod tests {
 
     use ::bulletproofs::{BulletproofGens, PedersenGens};
     use crypto_bigint::{Random, U256, U64};
-    use rand_core::OsRng;
 
     use commitment::CommitmentSizedNumber;
-    use group::PartyID;
+    use group::{OsCsRng, PartyID};
     use mpc::{Weight, WeightedThresholdAccessStructure};
     use proof::range::{
         bulletproofs,
@@ -620,7 +628,9 @@ pub(crate) mod tests {
             UnboundedWitnessSpaceGroupElement,
             Lang,
         >::generate_witnesses(
-            witnesses, &enhanced_language_public_parameters, &mut OsRng
+            witnesses,
+            &enhanced_language_public_parameters,
+            &mut OsCsRng,
         )
         .unwrap();
 
@@ -636,7 +646,7 @@ pub(crate) mod tests {
             &PhantomData,
             &enhanced_language_public_parameters,
             witnesses,
-            &mut OsRng,
+            &mut OsCsRng,
         )
         .unwrap();
 
@@ -646,7 +656,7 @@ pub(crate) mod tests {
                     &PhantomData,
                     &enhanced_language_public_parameters,
                     statements,
-                    &mut OsRng,
+                    &mut OsCsRng,
                 )
                 .is_ok(),
             "valid enhanced proofs should verify",
@@ -672,7 +682,7 @@ pub(crate) mod tests {
         threshold: PartyID,
         party_to_weight: HashMap<PartyID, Weight>,
     ) {
-        let session_id = CommitmentSizedNumber::random(&mut OsRng);
+        let session_id = CommitmentSizedNumber::random(&mut OsCsRng);
 
         let access_structure =
             WeightedThresholdAccessStructure::new(threshold, party_to_weight).unwrap();
@@ -701,7 +711,9 @@ pub(crate) mod tests {
                     UnboundedWitnessSpaceGroupElement,
                     Lang,
                 >::generate_witnesses(
-                    witnesses, &enhanced_language_public_parameters, &mut OsRng
+                    witnesses,
+                    &enhanced_language_public_parameters,
+                    &mut OsCsRng,
                 )
                 .unwrap();
 
@@ -769,7 +781,9 @@ pub(crate) mod tests {
             UnboundedWitnessSpaceGroupElement,
             Lang,
         >::generate_witnesses(
-            witnesses, &enhanced_language_public_parameters, &mut OsRng
+            witnesses,
+            &enhanced_language_public_parameters,
+            &mut OsCsRng,
         )
         .unwrap();
 
@@ -800,7 +814,7 @@ pub(crate) mod tests {
             &PhantomData,
             &enhanced_language_public_parameters,
             witnesses.clone(),
-            &mut OsRng,
+            &mut OsCsRng,
         );
 
         assert!(
@@ -835,7 +849,8 @@ pub(crate) mod tests {
             Lang,
             PhantomData<()>,
         >::sample_randomizers_and_statement_masks(
-            &enhanced_language_public_parameters, &mut OsRng
+            &enhanced_language_public_parameters,
+            &mut OsCsRng,
         )
         .unwrap();
 
@@ -891,7 +906,7 @@ pub(crate) mod tests {
         let commitments_randomness: Vec<curve25519_dalek::scalar::Scalar> =
             iter::repeat_with(|| {
                 iter.next()
-                    .unwrap_or(curve25519_dalek::scalar::Scalar::zero())
+                    .unwrap_or(curve25519_dalek::scalar::Scalar::ZERO)
             })
             .take(padded_witnesses_length)
             .collect();
@@ -907,7 +922,7 @@ pub(crate) mod tests {
                 witnesses.as_slice(),
                 commitments_randomness.as_slice(),
                 64,
-                &mut OsRng,
+                &mut OsCsRng,
             )
             .unwrap()
             .0,
@@ -925,7 +940,7 @@ pub(crate) mod tests {
                         &PhantomData,
                         &enhanced_language_public_parameters,
                         statements,
-                        &mut OsRng,
+                        &mut OsCsRng,
                     )
                     .err()
                     .unwrap(),
@@ -968,7 +983,9 @@ pub(crate) mod tests {
             UnboundedWitnessSpaceGroupElement,
             Lang,
         >::generate_witnesses(
-            witnesses, &enhanced_language_public_parameters, &mut OsRng
+            witnesses,
+            &enhanced_language_public_parameters,
+            &mut OsCsRng,
         )
         .unwrap();
 
@@ -996,7 +1013,8 @@ pub(crate) mod tests {
             Lang,
             PhantomData<()>,
         >::sample_randomizers_and_statement_masks(
-            &enhanced_language_public_parameters, &mut OsRng
+            &enhanced_language_public_parameters,
+            &mut OsCsRng,
         )
         .unwrap();
 
@@ -1066,7 +1084,7 @@ pub(crate) mod tests {
         let commitments_randomness: Vec<curve25519_dalek::scalar::Scalar> =
             iter::repeat_with(|| {
                 iter.next()
-                    .unwrap_or(curve25519_dalek::scalar::Scalar::zero())
+                    .unwrap_or(curve25519_dalek::scalar::Scalar::ZERO)
             })
             .take(padded_witnesses_length)
             .collect();
@@ -1082,7 +1100,7 @@ pub(crate) mod tests {
                 witnesses.as_slice(),
                 commitments_randomness.as_slice(),
                 RANGE_CLAIM_BITS,
-                &mut OsRng,
+                &mut OsCsRng,
             )
             .unwrap()
             .0,
@@ -1100,7 +1118,7 @@ pub(crate) mod tests {
                         &PhantomData,
                         &enhanced_language_public_parameters,
                         statements,
-                        &mut OsRng,
+                        &mut OsCsRng,
                     )
                     .err()
                     .unwrap(),
