@@ -40,7 +40,7 @@ rstest = "0.25"
 rand = { version = "0.9", default-features = false }
 rand_chacha = { version = "0.9", default-features = false }
 curve25519-dalek = { version = "5.0.0-pre.0", features = ["rand_core"] }
-criterion = { version = "0.6", default-features = false }
+criterion = { version = "0.7", default-features = false }
 getrandom = { version = "0.3" }
 k256 = { version = "0.14.0-pre.9", default-features = false }
 hash2curve = { version = "0.14.0-rc.0" }
