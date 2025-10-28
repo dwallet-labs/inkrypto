@@ -5,7 +5,7 @@
 use std::ops::Deref;
 
 use crypto_bigint::subtle::CtOption;
-use crypto_bigint::{CheckedMul, Concat, Encoding, Int, NonZero, NonZeroUint, Split, Uint, Word};
+use crypto_bigint::{Concat, Encoding, Int, NonZero, NonZeroUint, Split, Uint, Word};
 use crypto_primes::{is_prime, Flavor};
 use serde::{Deserialize, Serialize};
 
@@ -85,47 +85,33 @@ where
         Self::validate_parameters(&q, k, &p, computational_security_parameter)?;
 
         let q_upsized = q.resize::<DELTA_QK_LIMBS>();
-        let q_ = CtOption::from(q_upsized.try_into_int())
-            .into_option()
-            .ok_or(Error::InternalError)?;
-        let p_ = CtOption::from((*p).try_into_int())
-            .into_option()
-            .ok_or(Error::InternalError)?;
-
-        // Compute ∆_k := -p * q
-        let delta_k = p_
-            .checked_mul(&q_)
-            .and_then(|pq| pq.checked_neg().into())
+        let q_exp_k = math::pow_vartime(&q_upsized, k as u32)?
+            .to_nz()
+            .expect("upscaling a non-zero value");
+        let q_exp_2k = CtOption::from(q_exp_k.checked_mul(&q_exp_k))
+            .map(|q_exp_2k| {
+                q_exp_2k
+                    .to_nz()
+                    .expect("product of non-zero values is non-zero")
+            })
             .into_option()
             .ok_or(Error::InvalidDiscriminantParameters)?;
 
-        // Compute ∆_{q^k} := ∆_k * q^2k = - p * q^{2k+1}
-        // safe to unwrap; q is non-zero
-        let q_exp_k = math::pow_vartime(&q_upsized, k as u32)?.to_nz().unwrap();
-        // safe to unwrap; q is non-zero
-        let q_exp_2k = q_exp_k
-            .checked_mul(&q_exp_k)
-            .and_then(|q_exp_2k| q_exp_2k.to_nz().into())
+        // Compute ∆_k := -p·q
+        let delta_k = Discriminant::new(q, 0, p)
             .into_option()
             .ok_or(Error::InvalidDiscriminantParameters)?;
-        // safe to resize; scaling up
+
+        // Compute ∆_{q^k} := -p·q^{2k+1} = ∆_k · q^2k
         let delta_qk = delta_k
-            .resize::<DELTA_QK_LIMBS>()
-            .checked_mul(q_exp_2k.deref())
+            .upscale::<DELTA_QK_LIMBS>()
+            .with_incremented_k()
             .into_option()
             .ok_or(Error::InvalidDiscriminantParameters)?;
-
-        // safe to unwrap; q is non-zero
-        let delta_k_nz = delta_k.to_nz().unwrap();
-        let delta_qk_nz = delta_qk.to_nz().unwrap();
 
         Ok(Self {
-            delta_k: Discriminant::new(delta_k_nz)
-                .into_option()
-                .ok_or(Error::InvalidDiscriminantParameters)?,
-            delta_qk: Discriminant::new(delta_qk_nz)
-                .into_option()
-                .ok_or(Error::InvalidDiscriminantParameters)?,
+            delta_k,
+            delta_qk,
             q,
             p,
             k,
@@ -235,7 +221,9 @@ where
         .expect("is non-zero; kronecker_prime is a prime");
 
         // Construct t, a prime form for CL(∆_{q^k})²
-        let t = EquivalenceClass::prime_form(&self.delta_qk, kronecker_prime)?.square_vartime();
+        // Safe to vartime; delta_qk is a public value.
+        let t = EquivalenceClass::prime_form_vartime_discriminant(self.delta_qk, kronecker_prime)?
+            .square_vartime();
 
         // Construct h as t^{q^k}
         // TODO(#17): use t.pow(q_exp_k) instead.

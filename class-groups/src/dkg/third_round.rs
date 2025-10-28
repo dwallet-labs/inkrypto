@@ -11,7 +11,9 @@ use group::helpers::{DeduplicateAndSort, FlatMapResults, TryCollectHashMap};
 use group::{bounded_integers_group, CsRng, GroupElement as _, PartyID, PrimeGroupElement};
 use homomorphic_encryption::GroupsPublicParametersAccessors;
 use mpc::secret_sharing::shamir::over_the_integers::secret_key_share_size_upper_bound;
-use mpc::{AsynchronousRoundResult, HandleInvalidMessages, WeightedThresholdAccessStructure};
+use mpc::{
+    AsynchronousRoundResult, HandleInvalidMessages, MajorityVote, WeightedThresholdAccessStructure,
+};
 
 use crate::accelerator::MultiFoldNupowAccelerator;
 use crate::dkg::party::RoundResult;
@@ -91,7 +93,7 @@ where
     pub(in crate::dkg) fn advance_third_round(
         tangible_party_id: PartyID,
         session_id: CommitmentSizedNumber,
-        knowledge_of_discrete_log_base_protocol_context: BaseProtocolContext,
+        equality_of_discrete_log_in_hidden_order_group_base_protocol_context: BaseProtocolContext,
         encryption_of_decryption_key_base_protocol_context: BaseProtocolContext,
         access_structure: &WeightedThresholdAccessStructure,
         public_input: &PublicInput<
@@ -135,6 +137,91 @@ where
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
         >,
     > {
+        let (
+            malicious_parties,
+            malicious_decryption_key_contribution_dealers,
+            encryptions_of_decryption_key_shares_and_proofs,
+        ) = Self::advance_third_round_internal(
+            tangible_party_id,
+            session_id,
+            equality_of_discrete_log_in_hidden_order_group_base_protocol_context,
+            encryption_of_decryption_key_base_protocol_context,
+            access_structure,
+            public_input,
+            pvss_party,
+            deal_decryption_key_contribution_messages,
+            verified_dealers_messages,
+            decryption_key_per_crt_prime,
+            decryption_key_share_bits,
+            HashSet::new(),
+            rng,
+        )?;
+
+        Ok(AsynchronousRoundResult::Advance {
+            malicious_parties,
+            message: Message::EncryptDecryptionKeyShares {
+                malicious_decryption_key_contribution_dealers,
+                encryptions_of_decryption_key_shares_and_proofs,
+            },
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::type_complexity)]
+    pub fn advance_third_round_internal(
+        tangible_party_id: PartyID,
+        session_id: CommitmentSizedNumber,
+        equality_of_discrete_log_in_hidden_order_group_base_protocol_context: BaseProtocolContext,
+        encryption_of_decryption_key_base_protocol_context: BaseProtocolContext,
+        access_structure: &WeightedThresholdAccessStructure,
+        public_input: &PublicInput<
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >,
+        pvss_party: &publicly_verifiable_secret_sharing::Party<
+            NUM_SECRET_SHARE_PRIMES,
+            SECRET_KEY_SHARE_LIMBS,
+            SECRET_KEY_SHARE_WITNESS_LIMBS,
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >,
+        deal_decryption_key_contribution_messages: HashMap<
+            PartyID,
+            Message<
+                PLAINTEXT_SPACE_SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
+        verified_dealers_messages: HashMap<
+            PartyID,
+            Message<
+                PLAINTEXT_SPACE_SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
+        decryption_key_per_crt_prime: [Uint<CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS>; MAX_PRIMES],
+        decryption_key_share_bits: u32,
+        external_malicious_parties: HashSet<PartyID>,
+        rng: &mut impl CsRng,
+    ) -> Result<(
+        Vec<PartyID>,
+        HashSet<PartyID>,
+        HashMap<
+            PartyID,
+            DealtSecretShareMessage<
+                NUM_ENCRYPTION_OF_DECRYPTION_KEY_PRIMES,
+                SECRET_KEY_SHARE_WITNESS_LIMBS,
+                PLAINTEXT_SPACE_SCALAR_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
+    )> {
         let (
             first_round_malicious_parties,
             parties_that_were_dealt_shares,
@@ -218,7 +305,7 @@ where
         >(
             session_id,
             access_structure,
-            knowledge_of_discrete_log_base_protocol_context,
+            equality_of_discrete_log_in_hidden_order_group_base_protocol_context,
             discrete_log_public_parameters,
             &public_input.setup_parameters_per_crt_prime,
             &public_input.setup_parameters,
@@ -228,10 +315,11 @@ where
             rng,
         )?;
 
-        let malicious_parties: HashSet<_> = parties_sending_invalid_proofs
+        let malicious_parties = parties_sending_invalid_proofs
             .into_iter()
             .chain(malicious_parties)
-            .collect();
+            .chain(external_malicious_parties)
+            .deduplicate_and_sort();
 
         let threshold_encryption_key_per_crt_prime: [_; NUM_ENCRYPTION_OF_DECRYPTION_KEY_PRIMES] =
             PublicOutput::<
@@ -333,14 +421,14 @@ where
             })
             .try_collect_hash_map()?;
 
-        let malicious_parties = malicious_parties.deduplicate_and_sort();
+        let malicious_decryption_key_contribution_dealers =
+            malicious_parties.iter().copied().collect();
 
-        Ok(AsynchronousRoundResult::Advance {
+        Ok((
             malicious_parties,
-            message: Message::EncryptDecryptionKeyShares {
-                encryptions_of_decryption_key_shares_and_proofs,
-            },
-        })
+            malicious_decryption_key_contribution_dealers,
+            encryptions_of_decryption_key_shares_and_proofs,
+        ))
     }
 
     #[allow(clippy::type_complexity)]
@@ -357,6 +445,7 @@ where
         >,
     ) -> Result<(
         Vec<PartyID>,
+        Vec<PartyID>,
         HashMap<
             PartyID,
             HashMap<
@@ -372,12 +461,13 @@ where
     )> {
         // Make sure everyone sent the third round message.
         // Each party sends $(\textsf{ct}_{\textsf{share},Q'_{m'}^{i},\pi_{\textsf{EncDL},Q'_{m'}}^{i})$ for $m'\in [1,M']$.
-        let (parties_sending_invalid_messages, encryptions_of_decryption_key_shares) =
+        let (parties_sending_invalid_messages, encrypt_decryption_key_shares_messages) =
             encrypt_decryption_key_shares_messages
                 .into_iter()
                 .map(|(dealer_party_id, message)| {
                     let res = match message {
                         Message::EncryptDecryptionKeyShares {
+                            malicious_decryption_key_contribution_dealers,
                             encryptions_of_decryption_key_shares_and_proofs:
                                 encryptions_of_decryption_key_shares,
                         } => {
@@ -390,7 +480,11 @@ where
                                     .collect::<HashSet<PartyID>>()
                                     == virtual_subset
                                 {
-                                    Ok(encryptions_of_decryption_key_shares)
+                                    Ok((
+                                        malicious_decryption_key_contribution_dealers
+                                            .deduplicate_and_sort(),
+                                        encryptions_of_decryption_key_shares,
+                                    ))
                                 } else {
                                     Err(Error::InvalidMessage)
                                 }
@@ -404,6 +498,36 @@ where
                     (dealer_party_id, res)
                 })
                 .handle_invalid_messages_async();
+        let (
+            malicious_decryption_key_contribution_dealers,
+            encryptions_of_decryption_key_shares,
+        ): (HashMap<_, _>, HashMap<_, _>) = encrypt_decryption_key_shares_messages
+            .into_iter()
+            .map(
+                |(
+                     dealer_tangible_party_id,
+                     (
+                         malicious_decryption_key_contribution_dealers,
+                         encryptions_of_decryption_key_shares,
+                     ),
+                 )| {
+                    (
+                        (
+                            dealer_tangible_party_id,
+                            malicious_decryption_key_contribution_dealers,
+                        ),
+                        (
+                            dealer_tangible_party_id,
+                            encryptions_of_decryption_key_shares,
+                        ),
+                    )
+                },
+            )
+            .unzip();
+
+        let (malicious_voters, malicious_decryption_key_contribution_dealers) =
+            malicious_decryption_key_contribution_dealers
+                .weighted_majority_vote(access_structure)?;
 
         let (parties_sending_invalid_encryptions, encryptions_of_decryption_key_shares_and_proofs) =
             encryptions_of_decryption_key_shares
@@ -451,11 +575,14 @@ where
 
         let third_round_malicious_parties: Vec<_> = parties_sending_invalid_messages
             .into_iter()
+            .chain(malicious_voters)
+            .chain(malicious_decryption_key_contribution_dealers.clone())
             .chain(parties_sending_invalid_encryptions)
             .deduplicate_and_sort();
 
         Ok((
             third_round_malicious_parties,
+            malicious_decryption_key_contribution_dealers,
             encryptions_of_decryption_key_shares_and_proofs,
         ))
     }

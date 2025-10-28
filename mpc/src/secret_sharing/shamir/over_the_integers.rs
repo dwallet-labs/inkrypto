@@ -939,9 +939,8 @@ fn interpolate_internal<GroupElement: group::GroupElement + Send + Sync + Linear
                     .map_err(Error::from)?;
 
                     let c_prime = if is_vartime {
-                        // TODO: sub vartime
                         c_prime_part_not_needing_inversion
-                            .add_vartime(&c_prime_part_needing_inversion.neg())
+                            .sub_vartime(&c_prime_part_needing_inversion)
                     } else {
                         c_prime_part_not_needing_inversion - c_prime_part_needing_inversion
                     };
@@ -1158,6 +1157,7 @@ pub fn compute_unexpected_adjusted_lagrange_coefficient(
     )
 }
 
+#[allow(clippy::type_complexity)]
 pub fn deal_shares<
     const SECRET_KEY_SHARE_LIMBS: usize,
     GroupElement: group::GroupElement + Send + Sync + Scale<Int<SECRET_KEY_SHARE_LIMBS>>,
@@ -1172,6 +1172,7 @@ pub fn deal_shares<
     rng: &mut impl CsRng,
 ) -> Result<(
     Vec<GroupElement>,
+    Vec<bounded_integers_group::GroupElement<SECRET_KEY_SHARE_LIMBS>>,
     HashMap<PartyID, Uint<SECRET_KEY_SHARE_LIMBS>>,
 )>
 where
@@ -1215,7 +1216,7 @@ where
         upper_bound,
     )?;
 
-    let mut coefficients: Vec<_> = coefficients_sample_bits
+    let coefficients_for_commitments: Vec<_> = coefficients_sample_bits
         .iter()
         .enumerate()
         .map(|(k, &sample_bits)| {
@@ -1246,9 +1247,9 @@ where
         .collect::<group::Result<_>>()?;
 
     #[cfg(feature = "parallel")]
-    let coefficients_iter = coefficients.clone().into_par_iter();
+    let coefficients_iter = coefficients_for_commitments.clone().into_par_iter();
     #[cfg(not(feature = "parallel"))]
-    let coefficients_iter = coefficients.clone().into_iter();
+    let coefficients_iter = coefficients_for_commitments.clone().into_iter();
 
     // $C_{\mainIndex}=\bar{g}_{q'}^{a_{\mainIndex}}$
     let coefficients_commitments: Vec<GroupElement> = coefficients_iter
@@ -1266,9 +1267,11 @@ where
         .collect::<Result<Vec<_>>>()?;
 
     // For dealing the shares, set the first coefficient as the secret multiplied by `delta`.
-    coefficients[0] = coefficients[0].scale_bounded(&n_factorial, n_factorial.bits_vartime());
+    let mut coefficients_for_evaluation = coefficients_for_commitments.clone();
+    coefficients_for_evaluation[0] =
+        coefficients_for_evaluation[0].scale_bounded(&n_factorial, n_factorial.bits_vartime());
 
-    let polynomial = Polynomial::try_from(coefficients)?;
+    let polynomial = Polynomial::try_from(coefficients_for_evaluation)?;
 
     #[cfg(feature = "parallel")]
     let parties_iter = (1..=number_of_parties).into_par_iter();
@@ -1291,7 +1294,11 @@ where
         })
         .collect::<group::Result<_>>()?;
 
-    Ok((coefficients_commitments, shares))
+    Ok((
+        coefficients_commitments,
+        coefficients_for_commitments,
+        shares,
+    ))
 }
 
 pub fn commit_shares<
@@ -1465,7 +1472,7 @@ mod tests {
                 )
                 .unwrap();
 
-                let (_, shares) = deal_shares::<{ SecretKeyShareSizedNumber::LIMBS }, _>(
+                let (_, _, shares) = deal_shares::<{ SecretKeyShareSizedNumber::LIMBS }, _>(
                     threshold,
                     number_of_parties,
                     n_factorial,
@@ -1536,7 +1543,7 @@ mod tests {
                 // Now try a negative one
                 let secret = secret.checked_neg().unwrap();
 
-                let (_, shares) = deal_shares::<{ SecretKeyShareSizedNumber::LIMBS }, _>(
+                let (_, _, shares) = deal_shares::<{ SecretKeyShareSizedNumber::LIMBS }, _>(
                     threshold,
                     number_of_parties,
                     n_factorial,
@@ -1670,7 +1677,7 @@ pub mod test_helpers {
             .reduce(|a, b| a.wrapping_mul(&b))
             .unwrap();
 
-        let (_, decryption_key_shares) = deal_shares(
+        let (_, _, decryption_key_shares) = deal_shares(
             threshold,
             number_of_parties,
             n_factorial,

@@ -96,6 +96,45 @@ where
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
         >,
     > {
+        let (first_round_malicious_parties, verified_dealers) =
+            Self::advance_second_round_internal(
+                tangible_party_id,
+                access_structure,
+                setup_parameters_per_crt_prime,
+                pvss_party,
+                deal_decryption_key_contribution_messages,
+                rng,
+            )?;
+
+        Ok(AsynchronousRoundResult::Advance {
+            malicious_parties: first_round_malicious_parties,
+            message: Message::VerifiedDealers(verified_dealers),
+        })
+    }
+
+    pub fn advance_second_round_internal(
+        tangible_party_id: PartyID,
+        access_structure: &WeightedThresholdAccessStructure,
+        setup_parameters_per_crt_prime: &[SecretKeyShareCRTPrimeSetupParameters; MAX_PRIMES],
+        pvss_party: &publicly_verifiable_secret_sharing::Party<
+            NUM_SECRET_SHARE_PRIMES,
+            SECRET_KEY_SHARE_LIMBS,
+            SECRET_KEY_SHARE_WITNESS_LIMBS,
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >,
+        deal_decryption_key_contribution_messages: HashMap<
+            PartyID,
+            Message<
+                PLAINTEXT_SPACE_SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
+        rng: &mut impl CsRng,
+    ) -> Result<(Vec<PartyID>, HashSet<PartyID>)> {
         let (
             first_round_malicious_parties,
             _,
@@ -121,10 +160,7 @@ where
             .ok_or(Error::InternalError)?;
 
         // We don't report those that sent invalid shares, because for consistency they will be validated in the next round regardless.
-        Ok(AsynchronousRoundResult::Advance {
-            malicious_parties: first_round_malicious_parties,
-            message: Message::VerifiedDealers(verified_dealers),
-        })
+        Ok((first_round_malicious_parties, verified_dealers))
     }
 
     #[allow(clippy::type_complexity)]

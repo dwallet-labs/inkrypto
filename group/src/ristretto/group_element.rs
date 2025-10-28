@@ -135,6 +135,14 @@ impl crate::GroupElement for GroupElement {
         self + other
     }
 
+    fn sub_randomized(self, other: &Self) -> Self {
+        self - other
+    }
+
+    fn sub_vartime(self, other: &Self) -> Self {
+        self - other
+    }
+
     fn double(&self) -> Self {
         Self(self.0 + self.0)
     }

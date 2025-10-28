@@ -43,6 +43,7 @@ pub struct DecryptionKeyShare<
     GroupElement: PrimeGroupElement<PLAINTEXT_SPACE_SCALAR_LIMBS>,
 > where
     Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
 {
     // The party's index in the protocol $P_j$
     pub party_id: PartyID,
@@ -88,6 +89,7 @@ impl<
     >
 where
     Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
 {
     fn as_ref(
         &self,
@@ -1004,7 +1006,8 @@ mod tests {
         let base = setup_parameters.h;
         let secret_key_bits = setup_parameters.decryption_key_bits();
         let (encryption_scheme_public_parameters, decryption_key) =
-            RistrettoDecryptionKey::generate(setup_parameters, &mut OsCsRng).unwrap();
+            RistrettoDecryptionKey::generate_with_setup_parameters(setup_parameters, &mut OsCsRng)
+                .unwrap();
 
         let (public_parameters, decryption_key_shares) = deal_trusted_shares::<
             RISTRETTO_SCALAR_LIMBS,
@@ -1057,7 +1060,8 @@ mod tests {
         let base = setup_parameters.h;
         let secret_key_bits = setup_parameters.decryption_key_bits();
         let (encryption_scheme_public_parameters, decryption_key) =
-            Secp256k1DecryptionKey::generate(setup_parameters, &mut OsCsRng).unwrap();
+            Secp256k1DecryptionKey::generate_with_setup_parameters(setup_parameters, &mut OsCsRng)
+                .unwrap();
 
         let (public_parameters, decryption_key_shares) = deal_trusted_shares::<
             SECP256K1_SCALAR_LIMBS,
@@ -1127,7 +1131,11 @@ pub(crate) mod benches {
 
         for (threshold, number_of_parties) in [(10, 15), (20, 30), (67, 100), (77, 115)] {
             let (encryption_scheme_public_parameters, decryption_key) =
-                Secp256k1DecryptionKey::generate(setup_parameters.clone(), &mut OsCsRng).unwrap();
+                Secp256k1DecryptionKey::generate_with_setup_parameters(
+                    setup_parameters.clone(),
+                    &mut OsCsRng,
+                )
+                .unwrap();
 
             let (public_parameters, decryption_key_shares) = deal_trusted_shares::<
                 SECP256K1_SCALAR_LIMBS,
@@ -1185,7 +1193,11 @@ pub(crate) mod benches {
             );
 
             let (encryption_scheme_public_parameters, decryption_key) =
-                Secp256k1DecryptionKey::generate(setup_parameters.clone(), &mut OsCsRng).unwrap();
+                Secp256k1DecryptionKey::generate_with_setup_parameters(
+                    setup_parameters.clone(),
+                    &mut OsCsRng,
+                )
+                .unwrap();
 
             let (public_parameters, decryption_key_shares) = deal_trusted_shares::<
                 SECP256K1_SCALAR_LIMBS,
@@ -1258,7 +1270,11 @@ pub(crate) mod benches {
 
         for (threshold, number_of_parties) in [(10, 15), (20, 30), (67, 100), (77, 115)] {
             let (encryption_scheme_public_parameters, decryption_key) =
-                RistrettoDecryptionKey::generate(setup_parameters.clone(), &mut OsCsRng).unwrap();
+                RistrettoDecryptionKey::generate_with_setup_parameters(
+                    setup_parameters.clone(),
+                    &mut OsCsRng,
+                )
+                .unwrap();
 
             let (public_parameters, decryption_key_shares) = deal_trusted_shares::<
                 RISTRETTO_SCALAR_LIMBS,
@@ -1316,7 +1332,11 @@ pub(crate) mod benches {
             );
 
             let (encryption_scheme_public_parameters, decryption_key) =
-                RistrettoDecryptionKey::generate(setup_parameters.clone(), &mut OsCsRng).unwrap();
+                RistrettoDecryptionKey::generate_with_setup_parameters(
+                    setup_parameters.clone(),
+                    &mut OsCsRng,
+                )
+                .unwrap();
 
             let (public_parameters, decryption_key_shares) = deal_trusted_shares::<
                 RISTRETTO_SCALAR_LIMBS,

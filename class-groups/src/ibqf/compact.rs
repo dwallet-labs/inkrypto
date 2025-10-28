@@ -124,7 +124,7 @@ where
 
         let (a, b) = form.decompose();
         CtOption::from(a.to_nz())
-            .and_then(|a| Ibqf::new_is_reduced(a, b, &discriminant))
+            .and_then(|a| Ibqf::new_is_reduced_vartime_discriminant(a, b, &discriminant))
             .into_option()
             .ok_or(Error::CompactFormDiscriminantMismatch)
     }
@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn test_try_from_ibqf() {
-        let d = Discriminant::try_from(I128::from(-46579631i32).to_nz().unwrap()).unwrap();
+        let d = Discriminant::new_u64(9829, 0, 4739).unwrap();
         let form = Ibqf::new(U128::from_u64(1877).to_nz().unwrap(), I128::ONE, &d).unwrap();
         let compact = CompactIbqf::<{ I128::LIMBS }>::try_from(form).unwrap();
 
@@ -188,11 +188,7 @@ mod tests {
 
     #[test]
     fn test_try_from_compact_discriminant() {
-        let discriminant = I128::from_i64(-101111111111i64)
-            .to_nz()
-            .unwrap()
-            .try_into()
-            .unwrap();
+        let discriminant = Discriminant::<{ U128::LIMBS }>::new_u64(101111111111, 0, 1).unwrap();
         let compact = CompactIbqf(U128::from_be_hex("0000000000000005000000000000244D"));
 
         let reconstructed = Ibqf::try_from((compact, discriminant)).unwrap();
@@ -203,11 +199,10 @@ mod tests {
 
     #[test]
     fn test_compact_reconstruct() {
-        let d = -46579631;
-        let form = Ibqf::<{ U128::LIMBS }>::new_reduced_64(2677, -13, d).unwrap();
+        let form = Ibqf::<{ U128::LIMBS }>::new_reduced_64(2677, -13, (46579631, 0, 1)).unwrap();
         let compact = CompactIbqf::try_from(form).unwrap();
 
-        let d = I128::from(d).to_nz().unwrap().try_into().unwrap();
+        let d = Discriminant::new_u64(9829, 0, 4739).unwrap();
         let reconstructed = Ibqf::try_from((compact, d)).unwrap();
         assert_eq!(reconstructed, form);
     }

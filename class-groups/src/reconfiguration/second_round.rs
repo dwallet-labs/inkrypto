@@ -99,6 +99,48 @@ where
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
         >,
     > {
+        let (malicious_parties, verified_dealers_to_upcoming) =
+            Self::advance_second_round_internal(
+                tangible_party_id,
+                public_input,
+                deal_randomizer_messages,
+                randomizer_contribution_to_upcoming_pvss_party,
+                rng,
+            )?;
+
+        Ok(AsynchronousRoundResult::Advance {
+            malicious_parties,
+            message: Message::VerifiedRandomizerDealers(verified_dealers_to_upcoming),
+        })
+    }
+
+    pub fn advance_second_round_internal(
+        tangible_party_id: PartyID,
+        public_input: &PublicInput<
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >,
+        deal_randomizer_messages: HashMap<
+            PartyID,
+            Message<
+                PLAINTEXT_SPACE_SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
+        randomizer_contribution_to_upcoming_pvss_party: &publicly_verifiable_secret_sharing::Party<
+            NUM_SECRET_SHARE_PRIMES,
+            SECRET_KEY_SHARE_LIMBS,
+            SECRET_KEY_SHARE_WITNESS_LIMBS,
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >,
+        rng: &mut impl CsRng,
+    ) -> Result<(Vec<PartyID>, Option<HashSet<PartyID>>)> {
         let (
             first_round_malicious_parties,
             _,
@@ -122,10 +164,7 @@ where
             )?;
 
         // We don't report those that sent invalid shares, because for consistency they will be validated in the next round.
-        Ok(AsynchronousRoundResult::Advance {
-            malicious_parties: first_round_malicious_parties,
-            message: Message::VerifiedRandomizerDealers(verified_dealers_to_upcoming),
-        })
+        Ok((first_round_malicious_parties, verified_dealers_to_upcoming))
     }
 
     #[allow(clippy::type_complexity)]
@@ -145,7 +184,7 @@ where
             >,
         >,
     ) -> Result<(Vec<PartyID>, HashMap<PartyID, HashSet<PartyID>>)> {
-        // First make sure everyone sent the second round message.
+        // Make sure everyone sent the second round message.
         // This yields a mapping `PartyID -> HashSet<PartyID>` of parties that self-reportedly verified their shares from the set of parties.
         let (second_round_malicious_parties, verified_dealers_to_upcoming) =
             verified_dealers_messages

@@ -10,8 +10,10 @@ serde = { workspace = true, features = ["derive"] }
 subtle = { workspace = true, features = ["const-generics"] }
 thiserror = { workspace = true }
 k256 = { workspace = true, features = ["arithmetic", "critical-section", "precomputed-tables", "serde", "hash2curve", "alloc"], default-features = false }
-curve25519-dalek = { workspace = true, features = ["serde", "digest"] }
+p256 = { workspace = true, features = ["arithmetic", "serde", "hash2curve", "alloc"], default-features = false }
+curve25519-dalek = { workspace = true, features = ["serde", "digest", "group"], default-features = false }
 hash2curve = { workspace = true }
+sha2 = { workspace = true }
 sha3 = { workspace = true }
 itertools = { workspace = true }
 rayon = { workspace = true, optional = true }
@@ -20,11 +22,11 @@ rand_core = { workspace = true }
 getrandom = { workspace = true, optional = true }
 serde_json = { workspace = true, default-features = false, features = ["alloc"] }
 
-
 # For Benchmarking.
 criterion = { workspace = true, default-features = false, features = ["html_reports", "cargo_bench_support", "rayon"], optional = true }
 
 [dev-dependencies]
+k256 = { workspace = true, features = ["arithmetic", "critical-section", "precomputed-tables", "serde", "hash2curve", "alloc", "ecdsa"], default-features = false }
 rand = { workspace = true }
 getrandom = { workspace = true }
 rand_core = { workspace = true, features = ["os_rng"] }

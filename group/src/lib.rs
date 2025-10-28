@@ -8,7 +8,6 @@ use core::{
 };
 
 use crypto_bigint::{Int, Uint, U128, U64};
-
 use serde::{Deserialize, Serialize};
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq, CtOption};
 
@@ -22,15 +21,19 @@ pub mod bounded_integers_group;
 pub mod bounded_natural_numbers_group;
 pub mod const_additive;
 mod csrng;
+pub mod curve25519;
 pub mod direct_product;
+mod hash_to_scalar;
 pub mod linear_combination;
 mod reduce;
 pub mod ristretto;
 pub mod scalar;
 pub mod secp256k1;
+pub mod secp256r1;
 pub mod self_product;
 mod transcription;
 
+pub use hash_to_scalar::{hash_to_scalar, HashScheme};
 pub use transcription::Transcribeable;
 #[cfg(any(test, feature = "test_helpers"))]
 #[allow(unused_imports)]
@@ -68,6 +71,9 @@ pub enum Error {
     #[error("invalid group element: the value does not belong to the group identified by the public parameters."
     )]
     InvalidGroupElement,
+
+    #[error("unsupported hash type")]
+    UnsupportedHashType,
 
     #[error("hash to group: failed to encode bytes to a group element.")]
     HashToGroup,
@@ -298,6 +304,12 @@ pub trait GroupElement:
 
     /// Variable-time Addition.
     fn add_vartime(self, other: &Self) -> Self;
+
+    /// Sub two randomized group elements in constant-time.
+    fn sub_randomized(self, other: &Self) -> Self;
+
+    /// Variable-time Subtraction.
+    fn sub_vartime(self, other: &Self) -> Self;
 
     /// Double this point in constant-time.
     #[must_use]
@@ -542,12 +554,6 @@ pub trait HashToGroup: GroupElement {
     /// choosing commitment generators, as in `Pedersen`, where discrete log relations between
     /// the generators must be kept hidden.
     fn hash_to_group(bytes: &[u8]) -> Result<Self>;
-}
-
-/// Access to the x affine coordinate of an elliptic curve point, for ECDSA.
-pub trait AffineXCoordinate<const SCALAR_LIMBS: usize>: PrimeGroupElement<SCALAR_LIMBS> {
-    /// Get the affine x-coordinate as a scalar.
-    fn x(&self) -> Self::Scalar;
 }
 
 #[cfg(feature = "benchmarking")]

@@ -4,8 +4,8 @@
 use std::marker::PhantomData;
 use std::ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign};
 
-use crypto_bigint::modular::{ConstMontyForm, ConstMontyParams, SafeGcdInverter};
-use crypto_bigint::{Encoding, NonZero, Odd, PrecomputeInverter, Random, Uint};
+use crypto_bigint::modular::{ConstMontyForm, ConstMontyParams};
+use crypto_bigint::{Encoding, NonZero, Odd, Random, Uint};
 use serde::{Deserialize, Serialize};
 use subtle::ConditionallySelectable;
 use subtle::{Choice, ConstantTimeEq, CtOption};
@@ -91,7 +91,7 @@ where
 {
     fn default() -> Self {
         Self {
-            modulus: MOD::MODULUS,
+            modulus: ConstMontyForm::<MOD, LIMBS>::MODULUS,
             _mod_choice: PhantomData,
         }
     }
@@ -135,8 +135,8 @@ where
 
     fn scale<const RHS_LIMBS: usize>(&self, scalar: &Uint<RHS_LIMBS>) -> Self {
         let scalar = ConstMontyForm::<MOD, LIMBS>::new(
-            // Safe to `unwrap` here as `MOD::MODULUS` is guaranteed to be odd and therefore non-zero.
-            &scalar.reduce(&NonZero::new(MOD::MODULUS.get()).unwrap()),
+            // Safe to `unwrap` here as `ConstMontyForm::<MOD, LIMBS>::MODULUS` is guaranteed to be odd and therefore non-zero.
+            &scalar.reduce(&NonZero::new(ConstMontyForm::<MOD, LIMBS>::MODULUS.get()).unwrap()),
         );
 
         Self(self.0 * scalar)
@@ -164,6 +164,14 @@ where
 
     fn add_vartime(self, other: &Self) -> Self {
         self + other
+    }
+
+    fn sub_randomized(self, other: &Self) -> Self {
+        self - other
+    }
+
+    fn sub_vartime(self, other: &Self) -> Self {
+        self - other
     }
 
     fn double(&self) -> Self {
@@ -453,12 +461,9 @@ impl<'r, MOD: ConstMontyParams<LIMBS>, const LIMBS: usize> From<&'r GroupElement
     }
 }
 
-impl<MOD: ConstMontyParams<LIMBS>, const LIMBS: usize, const UNSAT_LIMBS: usize> Invert
-    for GroupElement<MOD, LIMBS>
+impl<MOD: ConstMontyParams<LIMBS>, const LIMBS: usize> Invert for GroupElement<MOD, LIMBS>
 where
     Uint<LIMBS>: Encoding,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
 {
     fn invert(&self) -> CtOption<Self> {
         let inv = <ConstMontyForm<MOD, LIMBS> as crypto_bigint::Invert>::invert(&self.0);
@@ -468,12 +473,10 @@ where
     }
 }
 
-impl<MOD: ConstMontyParams<LIMBS>, const LIMBS: usize, const UNSAT_LIMBS: usize> Scale<Uint<LIMBS>>
+impl<MOD: ConstMontyParams<LIMBS>, const LIMBS: usize> Scale<Uint<LIMBS>>
     for GroupElement<MOD, LIMBS>
 where
     Uint<LIMBS>: Encoding,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
 {
     fn scale_randomized_accelerated(
         &self,
@@ -510,21 +513,16 @@ where
     }
 }
 
-impl<MOD: ConstMontyParams<LIMBS>, const LIMBS: usize, const UNSAT_LIMBS: usize>
-    KnownOrderScalar<LIMBS> for GroupElement<MOD, LIMBS>
-where
-    Uint<LIMBS>: Encoding,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
-{
-}
-
-impl<MOD: ConstMontyParams<LIMBS>, const LIMBS: usize, const UNSAT_LIMBS: usize> Scale<Self>
+impl<MOD: ConstMontyParams<LIMBS>, const LIMBS: usize> KnownOrderScalar<LIMBS>
     for GroupElement<MOD, LIMBS>
 where
     Uint<LIMBS>: Encoding,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
+{
+}
+
+impl<MOD: ConstMontyParams<LIMBS>, const LIMBS: usize> Scale<Self> for GroupElement<MOD, LIMBS>
+where
+    Uint<LIMBS>: Encoding,
 {
     fn scale_randomized_accelerated(
         &self,
@@ -561,12 +559,10 @@ where
     }
 }
 
-impl<MOD: ConstMontyParams<LIMBS>, const LIMBS: usize, const UNSAT_LIMBS: usize>
-    KnownOrderGroupElement<LIMBS> for GroupElement<MOD, LIMBS>
+impl<MOD: ConstMontyParams<LIMBS>, const LIMBS: usize> KnownOrderGroupElement<LIMBS>
+    for GroupElement<MOD, LIMBS>
 where
     Uint<LIMBS>: Encoding,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
 {
     type Scalar = Self;
 
@@ -575,12 +571,10 @@ where
     }
 }
 
-impl<MOD: PrimeConstMontyParams<LIMBS>, const LIMBS: usize, const UNSAT_LIMBS: usize>
-    PrimeGroupElement<LIMBS> for GroupElement<MOD, LIMBS>
+impl<MOD: PrimeConstMontyParams<LIMBS>, const LIMBS: usize> PrimeGroupElement<LIMBS>
+    for GroupElement<MOD, LIMBS>
 where
     Uint<LIMBS>: Encoding,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
 {
 }
 
@@ -590,7 +584,7 @@ where
     Uint<LIMBS>: Encoding,
 {
     fn from(value: Uint<RHS_LIMBS>) -> Self {
-        let value = value.reduce(&NonZero::new(*MOD::MODULUS).unwrap());
+        let value = value.reduce(&NonZero::new(*ConstMontyForm::<MOD, LIMBS>::MODULUS).unwrap());
         Self(ConstMontyForm::<MOD, LIMBS>::new(&value))
     }
 }

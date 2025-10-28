@@ -578,10 +578,9 @@ mod tests {
     use crate::discriminant::Discriminant;
     use crate::encryption_key::public_parameters::test_helpers::get_public_parameters_secp256k1_112_bits_deterministic;
     use crate::encryption_key::public_parameters::{Instantiate, PublicParameters};
-    use crate::ibqf::Ibqf;
     use crate::setup::test_helpers::get_setup_parameters_secp256k1_112_bits_deterministic;
-    use crate::Error;
-    use crypto_bigint::{I1024, I2048, U1024, U1536, U2048, U320, U64};
+    use crate::{EquivalenceClass, Error};
+    use crypto_bigint::{I1024, U1024, U1536, U2048, U320, U64};
     use group::bounded_natural_numbers_group::MAURER_RANDOMIZER_DIFF_BITS;
     use homomorphic_encryption::GroupsPublicParametersAccessors;
 
@@ -589,7 +588,7 @@ mod tests {
     fn test_new() {
         const DISCRIMINANT_LIMBS: usize = U2048::LIMBS;
         let setup_parameters = get_setup_parameters_secp256k1_112_bits_deterministic();
-        let pk = Ibqf::new_is_reduced(
+        let pk = EquivalenceClass::new_from_coefficients_reduced_vartime_discriminant(
             U1024::from_be_hex(concat![
                 "000000000000000000000000DFBC37295A79EF845CB2D079041FD47EBFB24581",
                 "11372E1AF9C5D134E0B0F11C0F0FB81110140DE2BD19F1C852083240CA025A32",
@@ -606,10 +605,9 @@ mod tests {
             ])
             .checked_neg()
             .unwrap(),
-            &setup_parameters.class_group_parameters.delta_qk,
+            setup_parameters.class_group_parameters.delta_qk,
         )
-        .unwrap()
-        .into();
+        .unwrap();
 
         let _ = PublicParameters::new(setup_parameters, pk).unwrap();
     }
@@ -638,13 +636,12 @@ mod tests {
     fn test_new_rejects_pk_with_incorrect_discriminant() {
         let setup_parameters = get_setup_parameters_secp256k1_112_bits_deterministic();
 
-        let pk = Ibqf::new_is_reduced(
+        let pk = EquivalenceClass::new_from_coefficients_reduced_vartime_discriminant(
             U1024::from_u64(5).to_nz().unwrap(),
             I1024::ONE,
-            &Discriminant::try_from(I2048::from(-139i32).to_nz().unwrap()).unwrap(),
+            Discriminant::new_u64(139, 0, 1).unwrap(),
         )
-        .unwrap()
-        .into();
+        .unwrap();
 
         let pp = PublicParameters::new(setup_parameters, pk);
 

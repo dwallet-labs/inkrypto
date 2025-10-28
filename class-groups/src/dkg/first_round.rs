@@ -25,7 +25,9 @@ use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
     SecretKeyShareCRTPrimeSetupParameters, CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, MAX_PRIMES,
     NUM_SECRET_SHARE_PRIMES,
 };
-use crate::publicly_verifiable_secret_sharing::{BaseProtocolContext, DealtSecretShare};
+use crate::publicly_verifiable_secret_sharing::{
+    BaseProtocolContext, DealSecretMessage, DealtSecretShare,
+};
 use crate::setup::DeriveFromPlaintextPublicParameters;
 use crate::setup::SetupParameters;
 use crate::{
@@ -81,7 +83,7 @@ where
     pub(in crate::dkg) fn advance_first_round(
         tangible_party_id: PartyID,
         session_id: CommitmentSizedNumber,
-        knowledge_of_discrete_log_base_protocol_context: BaseProtocolContext,
+        equality_of_discrete_log_in_hidden_order_group_base_protocol_context: BaseProtocolContext,
         setup_parameters_per_crt_prime: &[SecretKeyShareCRTPrimeSetupParameters; MAX_PRIMES],
         setup_parameters: &SetupParameters<
             PLAINTEXT_SPACE_SCALAR_LIMBS,
@@ -106,6 +108,62 @@ where
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
         >,
     > {
+        let (malicious_parties, _, deal_secret_message, share_threshold_encryption_key_message) =
+            Self::advance_first_round_internal(
+                tangible_party_id,
+                session_id,
+                equality_of_discrete_log_in_hidden_order_group_base_protocol_context,
+                setup_parameters_per_crt_prime,
+                setup_parameters,
+                pvss_party,
+                rng,
+            )?;
+
+        Ok(AsynchronousRoundResult::Advance {
+            malicious_parties,
+            message: Message::DealDecryptionKeyContribution(
+                deal_secret_message,
+                share_threshold_encryption_key_message,
+            ),
+        })
+    }
+
+    pub fn advance_first_round_internal(
+        tangible_party_id: PartyID,
+        session_id: CommitmentSizedNumber,
+        equality_of_discrete_log_in_hidden_order_group_base_protocol_context: BaseProtocolContext,
+        setup_parameters_per_crt_prime: &[SecretKeyShareCRTPrimeSetupParameters; MAX_PRIMES],
+        setup_parameters: &SetupParameters<
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >,
+        pvss_party: &publicly_verifiable_secret_sharing::Party<
+            NUM_SECRET_SHARE_PRIMES,
+            SECRET_KEY_SHARE_LIMBS,
+            SECRET_KEY_SHARE_WITNESS_LIMBS,
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >,
+        rng: &mut impl CsRng,
+    ) -> Result<(
+        Vec<PartyID>,
+        Vec<bounded_integers_group::GroupElement<SECRET_KEY_SHARE_LIMBS>>,
+        DealSecretMessage<
+            NUM_SECRET_SHARE_PRIMES,
+            SECRET_KEY_SHARE_WITNESS_LIMBS,
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        >,
+        ProveEqualityOfDiscreteLogMessage<
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        >,
+    )> {
         // Safe to sample positive as long as $g^{s}$ is statistically indistinguishable from a random element.
         // This is indeed the case for any uniform distribution from $\mathbb{Z}\cap (a, b)$ where $\log_{2}(|b-a|)$ is large enough.
         let decryption_key_contribution = bounded_natural_numbers_group::GroupElement::sample(
@@ -117,13 +175,10 @@ where
             Int::new_from_abs_sign(decryption_key_contribution.value(), ConstChoice::FALSE)
                 .unwrap();
 
-        let preverified_parties = HashSet::default();
-        let (malicious_parties, deal_secret_message) = pvss_party
+        let (malicious_parties, coefficients_for_commitments, deal_secret_message) = pvss_party
             .deal_and_encrypt_shares_to_valid_encryption_key_holders(
                 None,
                 decryption_key_contribution,
-                preverified_parties,
-                true,
                 rng,
             )?;
 
@@ -156,7 +211,7 @@ where
             tangible_party_id,
             None,
             session_id,
-            knowledge_of_discrete_log_base_protocol_context,
+            equality_of_discrete_log_in_hidden_order_group_base_protocol_context,
             discrete_log_public_parameters,
             decryption_key_contribution,
             setup_parameters_per_crt_prime,
@@ -165,13 +220,12 @@ where
             rng,
         )?;
 
-        Ok(AsynchronousRoundResult::Advance {
+        Ok((
             malicious_parties,
-            message: Message::DealDecryptionKeyContribution(
-                deal_secret_message,
-                ProveEqualityOfDiscreteLogMessage(share_threshold_encryption_key_message),
-            ),
-        })
+            coefficients_for_commitments,
+            deal_secret_message,
+            ProveEqualityOfDiscreteLogMessage(share_threshold_encryption_key_message),
+        ))
     }
 
     #[allow(clippy::type_complexity)]

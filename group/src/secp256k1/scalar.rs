@@ -136,6 +136,14 @@ impl crate::GroupElement for Scalar {
         self + other
     }
 
+    fn sub_randomized(self, other: &Self) -> Self {
+        self - other
+    }
+
+    fn sub_vartime(self, other: &Self) -> Self {
+        self - other
+    }
+
     fn double(&self) -> Self {
         Self(<k256::Scalar as Field>::double(&self.0))
     }
@@ -190,6 +198,13 @@ impl From<&Scalar> for U256 {
 impl From<Scalar> for k256::Scalar {
     fn from(value: Scalar) -> Self {
         value.0
+    }
+}
+
+impl From<k256::Scalar> for Scalar {
+    fn from(value: k256::Scalar) -> Self {
+        // Since `k256::Scalar` assures deserialized values are valid, this is always safe.
+        Self(value)
     }
 }
 

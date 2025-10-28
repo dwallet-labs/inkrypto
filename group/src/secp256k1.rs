@@ -12,7 +12,7 @@ pub mod scalar;
 pub const SCALAR_LIMBS: usize = U256::LIMBS;
 
 /// The order `q` of the secp256k1 group
-pub const ORDER: U256 = <Secp256k1 as Curve>::ORDER;
+pub const ORDER: U256 = *<Secp256k1 as Curve>::ORDER.as_ref();
 /// The modulus `p` of the secp256k1 group
 pub const MODULUS: U256 =
     U256::from_be_hex("fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f");

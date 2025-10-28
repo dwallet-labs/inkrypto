@@ -18,7 +18,6 @@ use mpc::secret_sharing::shamir::over_the_integers::{
 };
 use mpc::PartyID;
 use mpc::WeightedThresholdAccessStructure;
-pub(crate) use party::Party;
 
 use crate::accelerator::MultiFoldNupowAccelerator;
 use crate::equivalence_class::EquivalenceClassOps;
@@ -26,6 +25,8 @@ use crate::{
     equivalence_class, CiphertextSpaceGroupElement, CiphertextSpaceValue, CompactIbqf,
     EncryptionKey, EquivalenceClass, Error, Result,
 };
+
+pub use party::Party;
 
 pub mod chinese_remainder_theorem;
 mod deal_shares;
@@ -322,7 +323,11 @@ mod tests {
         .unwrap();
 
         let (encryption_scheme_public_parameters, decryption_key) =
-            Secp256k1DecryptionKey::generate(setup_parameters.clone(), &mut OsCsRng).unwrap();
+            Secp256k1DecryptionKey::generate_with_setup_parameters(
+                setup_parameters.clone(),
+                &mut OsCsRng,
+            )
+            .unwrap();
 
         let (_, decryption_key_shares) = deal_trusted_shares::<
             SECP256K1_SCALAR_LIMBS,
@@ -465,7 +470,7 @@ mod tests {
 }
 
 #[cfg(any(test, feature = "test_helpers"))]
-pub(crate) mod test_helpers {
+pub mod test_helpers {
     use std::collections::HashMap;
 
     use crypto_bigint::Uint;

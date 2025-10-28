@@ -18,6 +18,7 @@ pub mod encryption_of_discrete_log;
 pub mod encryption_of_tuple;
 pub mod equality_between_commitments_with_different_public_parameters;
 pub mod equality_of_discrete_logs;
+pub mod extended_encryption_of_tuple;
 pub mod language;
 mod proof;
 pub mod scaling_of_discrete_log;

@@ -10,8 +10,8 @@ pub use group::PartyID;
 use merlin::Transcript;
 pub use party::{
     guaranteed_output_delivery, AsynchronousRoundResult, AsynchronouslyAdvanceable,
-    GuaranteedOutputDeliveryParty, GuaranteedOutputDeliveryRoundResult, Message, Party,
-    PublicInput, PublicOutput, PublicOutputValue,
+    GuaranteedOutputDeliveryRoundResult, GuaranteesOutputDelivery, Message, Party, PublicInput,
+    PublicOutput, PublicOutputValue,
 };
 use rand::Rng;
 use rand_chacha::rand_core::SeedableRng;

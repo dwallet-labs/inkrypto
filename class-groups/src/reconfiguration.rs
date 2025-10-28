@@ -118,24 +118,24 @@ pub struct PublicInput<
         ScalarPublicParameters,
     >,
 {
-    upcoming_access_structure: WeightedThresholdAccessStructure,
-    plaintext_space_public_parameters: ScalarPublicParameters,
-    setup_parameters_per_crt_prime: [SecretKeyShareCRTPrimeSetupParameters; MAX_PRIMES],
-    setup_parameters: SetupParameters<
+    pub upcoming_access_structure: WeightedThresholdAccessStructure,
+    pub plaintext_space_public_parameters: ScalarPublicParameters,
+    pub setup_parameters_per_crt_prime: [SecretKeyShareCRTPrimeSetupParameters; MAX_PRIMES],
+    pub setup_parameters: SetupParameters<
         PLAINTEXT_SPACE_SCALAR_LIMBS,
         FUNDAMENTAL_DISCRIMINANT_LIMBS,
         NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
         ScalarPublicParameters,
     >,
-    computational_security_parameter: u32,
-    current_encryption_key_values_and_proofs_per_crt_prime: HashMap<
+    pub computational_security_parameter: u32,
+    pub current_encryption_key_values_and_proofs_per_crt_prime: HashMap<
         PartyID,
         [(
             CompactIbqf<CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
             KnowledgeOfDiscreteLogUCProof,
         ); MAX_PRIMES],
     >,
-    upcoming_encryption_key_values_and_proofs_per_crt_prime: HashMap<
+    pub upcoming_encryption_key_values_and_proofs_per_crt_prime: HashMap<
         PartyID,
         [(
             CompactIbqf<CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
@@ -143,15 +143,15 @@ pub struct PublicInput<
         ); MAX_PRIMES],
     >,
     // The *current* (latest) decryption key share public parameters.
-    decryption_key_share_public_parameters: decryption_key_share::PublicParameters<
+    pub decryption_key_share_public_parameters: decryption_key_share::PublicParameters<
         PLAINTEXT_SPACE_SCALAR_LIMBS,
         FUNDAMENTAL_DISCRIMINANT_LIMBS,
         NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
         ScalarPublicParameters,
     >,
     // If the party participates in the upcoming party set, then its value is `Some()`, otherwise its `None`
-    current_tangible_party_id_to_upcoming: HashMap<PartyID, Option<PartyID>>,
-    dkg_output: dkg::PublicOutput<
+    pub current_tangible_party_id_to_upcoming: HashMap<PartyID, Option<PartyID>>,
+    pub dkg_output: dkg::PublicOutput<
         PLAINTEXT_SPACE_SCALAR_LIMBS,
         FUNDAMENTAL_DISCRIMINANT_LIMBS,
         NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -221,6 +221,7 @@ pub enum Message<
     //  3.1. Verification Keys in the CRT Class-Groups
     //  3.2. Proof of consistency with the verificdation key in the Elliptic Curve Group.
     ThresholdDecryptShares {
+        malicious_randomizer_dealers: HashSet<PartyID>,
         masked_decryption_key_decryption_shares_and_proofs: HashMap<
             PartyID,
             [(
@@ -782,7 +783,11 @@ pub(crate) mod test_helpers {
         )
         .unwrap();
         let (encryption_scheme_public_parameters, decryption_key) =
-            Secp256k1DecryptionKey::generate(setup_parameters.clone(), &mut OsCsRng).unwrap();
+            Secp256k1DecryptionKey::generate_with_setup_parameters(
+                setup_parameters.clone(),
+                &mut OsCsRng,
+            )
+            .unwrap();
 
         let (decryption_key_share_public_parameters, decryption_key_shares) = deal_trusted_shares::<
             SECP256K1_SCALAR_LIMBS,
@@ -872,6 +877,71 @@ pub(crate) mod test_helpers {
                 use_same_keys,
             );
 
+        let (decryption_key_share_public_parameters, decryption_key_shares) =
+            reconfigures_secp256k1_internal_internal_internal(
+                session_id,
+                current_access_structure,
+                upcoming_access_structure,
+                private_inputs,
+                upcoming_decryption_keys,
+                public_inputs,
+                bench,
+            );
+
+        let plaintext_space_public_parameters =
+            group::secp256k1::scalar::PublicParameters::default();
+        let setup_parameters = SetupParameters::<
+            SECP256K1_SCALAR_LIMBS,
+            SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<secp256k1::Scalar>,
+        >::derive_from_plaintext_parameters::<secp256k1::Scalar>(
+            plaintext_space_public_parameters.clone(),
+            DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+        )
+        .unwrap();
+
+        interpolated_encryption_decryption_keys_checks_out(
+            upcoming_access_structure.threshold,
+            upcoming_access_structure.number_of_virtual_parties(),
+            decryption_key_shares.clone(),
+            decryption_key.decryption_key,
+            decryption_key_share_public_parameters
+                .public_verification_keys
+                .clone(),
+            decryption_key_share_public_parameters
+                .encryption_scheme_public_parameters
+                .encryption_key,
+            setup_parameters.equivalence_class_public_parameters(),
+        );
+
+        (
+            decryption_key,
+            decryption_key_share_public_parameters,
+            decryption_key_shares,
+        )
+    }
+
+    pub fn reconfigures_secp256k1_internal_internal_internal(
+        session_id: CommitmentSizedNumber,
+        current_access_structure: &WeightedThresholdAccessStructure,
+        upcoming_access_structure: &WeightedThresholdAccessStructure,
+        private_inputs: HashMap<PartyID, HashMap<PartyID, SecretKeyShareSizedInteger>>,
+        upcoming_decryption_keys: HashMap<
+            PartyID,
+            [Uint<CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS>; MAX_PRIMES],
+        >,
+        public_inputs: HashMap<PartyID, Secp256k1PublicInput>,
+        bench: bool,
+    ) -> (
+        decryption_key_share::PublicParameters<
+            SECP256K1_SCALAR_LIMBS,
+            SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            secp256k1::scalar::PublicParameters,
+        >,
+        HashMap<PartyID, SecretKeyShareSizedInteger>,
+    ) {
         let (total_time, rounds_times, public_output) =
             asynchronous_session_terminates_successfully_internal::<Secp256k1Party>(
                 session_id,
@@ -913,33 +983,6 @@ pub(crate) mod test_helpers {
         let decryption_time = measurement.end(now);
         let total_time_with_decryption = measurement.add(&total_time, &decryption_time);
 
-        let plaintext_space_public_parameters =
-            group::secp256k1::scalar::PublicParameters::default();
-        let setup_parameters = SetupParameters::<
-            SECP256K1_SCALAR_LIMBS,
-            SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            group::PublicParameters<secp256k1::Scalar>,
-        >::derive_from_plaintext_parameters::<secp256k1::Scalar>(
-            plaintext_space_public_parameters.clone(),
-            DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
-        )
-        .unwrap();
-
-        interpolated_encryption_decryption_keys_checks_out(
-            upcoming_access_structure.threshold,
-            upcoming_access_structure.number_of_virtual_parties(),
-            decryption_key_shares.clone(),
-            decryption_key.decryption_key,
-            decryption_key_share_public_parameters
-                .public_verification_keys
-                .clone(),
-            decryption_key_share_public_parameters
-                .encryption_scheme_public_parameters
-                .encryption_key,
-            setup_parameters.equivalence_class_public_parameters(),
-        );
-
         let decryption_key_shares_for_tdec: HashMap<_, _> = decryption_key_shares
             .clone()
             .into_iter()
@@ -979,7 +1022,6 @@ pub(crate) mod test_helpers {
         );
 
         (
-            decryption_key,
             decryption_key_share_public_parameters,
             decryption_key_shares,
         )
@@ -1218,7 +1260,11 @@ pub(crate) mod test_helpers {
         .unwrap();
 
         let (encryption_scheme_public_parameters, decryption_key) =
-            RistrettoDecryptionKey::generate(setup_parameters.clone(), &mut OsCsRng).unwrap();
+            RistrettoDecryptionKey::generate_with_setup_parameters(
+                setup_parameters.clone(),
+                &mut OsCsRng,
+            )
+            .unwrap();
 
         let (decryption_key_share_public_parameters, decryption_key_shares) = deal_trusted_shares::<
             RISTRETTO_SCALAR_LIMBS,

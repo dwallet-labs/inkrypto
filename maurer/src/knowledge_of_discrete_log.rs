@@ -34,11 +34,7 @@ pub type FischlinLanguage<const REPETITIONS: usize, Scalar, GroupElement> =
 
 impl<
         const REPETITIONS: usize,
-        Scalar: group::GroupElement
-            + Samplable
-            + Mul<GroupElement, Output = GroupElement>
-            + for<'r> Mul<&'r GroupElement, Output = GroupElement>
-            + Copy,
+        Scalar: group::GroupElement + Samplable + Mul<GroupElement, Output = GroupElement> + Copy,
         GroupElement: group::GroupElement + Scale<Scalar::Value>,
     > crate::Language<REPETITIONS> for private::Language<REPETITIONS, Scalar, GroupElement>
 {
@@ -129,7 +125,6 @@ impl<ScalarPublicParameters, GroupPublicParameters, GroupElementValue>
             + group::GroupElement
             + Samplable
             + Mul<GroupElement, Output = GroupElement>
-            + for<'r> Mul<&'r GroupElement, Output = GroupElement>
             + Copy,
         GroupElement: group::GroupElement<
             Value = GroupElementValue,

@@ -25,7 +25,7 @@ use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
     NUM_SECRET_SHARE_PRIMES,
 };
 use crate::publicly_verifiable_secret_sharing::{
-    BaseProtocolContext, DealtSecretShare, DealtSecretShareMessage,
+    BaseProtocolContext, DealSecretMessage, DealtSecretShare, DealtSecretShareMessage,
 };
 use crate::reconfiguration::party::RoundResult;
 use crate::reconfiguration::{
@@ -120,6 +120,76 @@ where
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
         >,
     > {
+        let (
+            malicious_parties,
+            _,
+            deal_randomizer_contribution_to_upcoming_parties_message,
+            threshold_encryption_of_randomizer_contribution_and_proof,
+        ) = Self::advance_first_round_internal(
+            tangible_party_id,
+            session_id,
+            randomizer_contribution_to_threshold_encryption_key_base_protocol_context,
+            public_input,
+            setup_parameters,
+            randomizer_contribution_to_upcoming_pvss_party,
+            randomizer_contribution_bits,
+            rng,
+        )?;
+
+        Ok(AsynchronousRoundResult::Advance {
+            malicious_parties,
+            message: Message::DealRandomizer {
+                deal_randomizer_contribution_to_upcoming_parties_message,
+                threshold_encryption_of_randomizer_contribution_and_proof,
+            },
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn advance_first_round_internal(
+        tangible_party_id: PartyID,
+        session_id: CommitmentSizedNumber,
+        randomizer_contribution_to_threshold_encryption_key_base_protocol_context: BaseProtocolContext,
+        public_input: &PublicInput<
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >,
+        setup_parameters: &SetupParameters<
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >,
+        randomizer_contribution_to_upcoming_pvss_party: &publicly_verifiable_secret_sharing::Party<
+            NUM_SECRET_SHARE_PRIMES,
+            SECRET_KEY_SHARE_LIMBS,
+            SECRET_KEY_SHARE_WITNESS_LIMBS,
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >,
+        randomizer_contribution_bits: u32,
+        rng: &mut impl CsRng,
+    ) -> Result<(
+        Vec<PartyID>,
+        Vec<bounded_integers_group::GroupElement<SECRET_KEY_SHARE_LIMBS>>,
+        DealSecretMessage<
+            NUM_SECRET_SHARE_PRIMES,
+            SECRET_KEY_SHARE_WITNESS_LIMBS,
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        >,
+        DealtSecretShareMessage<
+            NUM_ENCRYPTION_OF_DECRYPTION_KEY_PRIMES,
+            RANDOMIZER_WITNESS_LIMBS,
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        >,
+    )> {
         let public_parameters =
             group::bounded_natural_numbers_group::PublicParameters::<RANDOMIZER_LIMBS>::new(
                 randomizer_contribution_bits,
@@ -133,52 +203,15 @@ where
         let randomizer_contribution =
             Int::new_from_abs_sign(randomizer_contribution, ConstChoice::FALSE).unwrap();
 
-        let current_parties_with_valid_encryption_keys: HashSet<_> = public_input
-            .decryption_key_share_public_parameters
-            .public_verification_keys
-            .keys()
-            .copied()
-            .collect();
-        let upcoming_parties_with_valid_encryption_keys: HashSet<_> =
-            current_parties_with_valid_encryption_keys
-                .iter()
-                .flat_map(|current_tangible_party_id| {
-                    if let Some(upcoming_tangible_party_id) = public_input
-                        .current_tangible_party_id_to_upcoming
-                        .get(current_tangible_party_id)
-                        .unwrap_or(&None)
-                    {
-                        // If the current tangible party is also an upcoming party, and its using the same encryption key as in the previous DKG/Reconfiguration protocol,
-                        // and it was dealt shares (we know because it has a public verification key), then we know this key was verified. Otherwise, it must be verified.
-                        // Note that we support the case of a party replacing its encryption key here, it just requires verification.
-                        if public_input
-                            .current_encryption_key_values_and_proofs_per_crt_prime
-                            .get(current_tangible_party_id)
-                            == public_input
-                                .upcoming_encryption_key_values_and_proofs_per_crt_prime
-                                .get(upcoming_tangible_party_id)
-                        {
-                            Some(upcoming_tangible_party_id)
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                })
-                .copied()
-                .collect();
-
         // Each party uses PVSS to share $r_{i}$ to the upcoming parties.
         let (
             malicious_dealers_to_upcoming,
+            coefficients_for_commitments,
             deal_randomizer_contribution_to_upcoming_parties_message,
         ) = randomizer_contribution_to_upcoming_pvss_party
             .deal_and_encrypt_shares_to_valid_encryption_key_holders(
                 None,
                 randomizer_contribution,
-                upcoming_parties_with_valid_encryption_keys,
-                true,
                 rng,
             )?;
 
@@ -227,15 +260,15 @@ where
 
         let malicious_parties = malicious_dealers_to_upcoming.deduplicate_and_sort();
 
-        Ok(AsynchronousRoundResult::Advance {
+        let threshold_encryption_of_randomizer_contribution_and_proof =
+            DealtSecretShareMessage(threshold_encryption_of_randomizer_contribution_and_proof);
+
+        Ok((
             malicious_parties,
-            message: Message::DealRandomizer {
-                deal_randomizer_contribution_to_upcoming_parties_message,
-                threshold_encryption_of_randomizer_contribution_and_proof: DealtSecretShareMessage(
-                    threshold_encryption_of_randomizer_contribution_and_proof,
-                ),
-            },
-        })
+            coefficients_for_commitments,
+            deal_randomizer_contribution_to_upcoming_parties_message,
+            threshold_encryption_of_randomizer_contribution_and_proof,
+        ))
     }
 
     /// Make sure everyone sent the first round message.
@@ -313,7 +346,7 @@ where
             >,
         >,
     )> {
-        // First make sure everyone sent the first round message.
+        // Make sure everyone sent the first round message.
         let (parties_sending_invalid_deal_secret_messages, deal_randomizer_messages) =
             deal_randomizer_messages
                 .into_iter()

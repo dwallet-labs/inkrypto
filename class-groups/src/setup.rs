@@ -744,24 +744,27 @@ pub struct CanonicalSetupParameters<
 #[allow(dead_code)]
 #[cfg(any(test, feature = "test_helpers"))]
 pub mod test_helpers {
-    use group::{ristretto, secp256k1, CsRng, OsCsRng};
+    use group::{ristretto, secp256k1, secp256r1, CsRng, OsCsRng};
 
     use crate::setup::DeriveFromPlaintextPublicParameters;
     use crate::{
-        RISTRETTO_FUNDAMENTAL_DISCRIMINANT_LIMBS, RISTRETTO_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-        RISTRETTO_SCALAR_LIMBS, SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-        SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, SECP256K1_SCALAR_LIMBS,
+        Curve25519SetupParameters, RistrettoSetupParameters, Secp256k1SetupParameters,
+        Secp256r1SetupParameters,
     };
 
     use super::SetupParameters;
 
     /// Deterministic; the `p` selected for the scheme is the same every time.
-    pub fn get_setup_parameters_secp256k1_112_bits_deterministic() -> SetupParameters<
-        SECP256K1_SCALAR_LIMBS,
-        SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-        SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-        secp256k1::scalar::PublicParameters,
-    > {
+    pub fn get_setup_parameters_secp256r1_112_bits_deterministic() -> Secp256r1SetupParameters {
+        SetupParameters::derive_from_plaintext_parameters::<secp256r1::Scalar>(
+            secp256r1::scalar::PublicParameters::default(),
+            112,
+        )
+        .unwrap()
+    }
+
+    /// Deterministic; the `p` selected for the scheme is the same every time.
+    pub fn get_setup_parameters_secp256k1_112_bits_deterministic() -> Secp256k1SetupParameters {
         SetupParameters::derive_from_plaintext_parameters::<secp256k1::Scalar>(
             secp256k1::scalar::PublicParameters::default(),
             112,
@@ -772,12 +775,7 @@ pub mod test_helpers {
     /// Random; the `p` selected for the scheme is different every time.
     pub fn get_setup_parameters_secp256k1_112_bits_random(
         rng: &mut OsCsRng,
-    ) -> SetupParameters<
-        SECP256K1_SCALAR_LIMBS,
-        SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-        SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-        secp256k1::scalar::PublicParameters,
-    > {
+    ) -> Secp256k1SetupParameters {
         SetupParameters::derive_from_plaintext_parameters_random::<secp256k1::Scalar>(
             secp256k1::scalar::PublicParameters::default(),
             112,
@@ -787,12 +785,12 @@ pub mod test_helpers {
     }
 
     /// Deterministic; the `p` selected for the scheme is the same every time.
-    pub fn get_setup_parameters_ristretto_112_bits_deterministic() -> SetupParameters<
-        RISTRETTO_SCALAR_LIMBS,
-        RISTRETTO_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-        RISTRETTO_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-        ristretto::scalar::PublicParameters,
-    > {
+    pub fn get_setup_parameters_curve25519_112_bits_deterministic() -> Curve25519SetupParameters {
+        get_setup_parameters_ristretto_112_bits_deterministic()
+    }
+
+    /// Deterministic; the `p` selected for the scheme is the same every time.
+    pub fn get_setup_parameters_ristretto_112_bits_deterministic() -> RistrettoSetupParameters {
         SetupParameters::derive_from_plaintext_parameters::<ristretto::Scalar>(
             ristretto::scalar::PublicParameters::default(),
             112,
@@ -803,12 +801,7 @@ pub mod test_helpers {
     /// Random; the `p` selected for the scheme is different every time.
     pub fn get_setup_parameters_ristretto_112_bits_random(
         rng: &mut impl CsRng,
-    ) -> SetupParameters<
-        RISTRETTO_SCALAR_LIMBS,
-        RISTRETTO_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-        RISTRETTO_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-        ristretto::scalar::PublicParameters,
-    > {
+    ) -> RistrettoSetupParameters {
         SetupParameters::derive_from_plaintext_parameters_random::<ristretto::Scalar>(
             ristretto::scalar::PublicParameters::default(),
             112,

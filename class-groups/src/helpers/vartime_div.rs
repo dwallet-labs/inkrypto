@@ -5,25 +5,34 @@ use crypto_bigint::{div3by2, ConstChoice, Int, Limb, NonZero, Reciprocal, Uint};
 
 use crate::helpers::limbs::Limbs;
 
-trait BoundedDivRemVartime<Rhs = Self>: Sized {
-    type Output;
+pub(crate) trait FullVartimeDiv<Rhs = Self>: Sized {
+    type Quotient;
+    type Remainder;
 
-    fn bounded_div_rem_vartime(&self, rhs: &Rhs, lhs_limbs_upper_bound: usize) -> Self::Output;
+    fn div_rem_full_vartime(&self, rhs: &Rhs) -> (Self::Quotient, Self::Remainder);
+
+    fn div_full_vartime(&self, rhs: &Rhs) -> Self::Quotient {
+        self.div_rem_full_vartime(rhs).0
+    }
+
+    fn rem_full_vartime(&self, rhs: &Rhs) -> Self::Remainder {
+        self.div_rem_full_vartime(rhs).1
+    }
 }
 
-impl<const NUM_LIMBS: usize, const DENOM_LIMBS: usize>
-    BoundedDivRemVartime<NonZero<Uint<DENOM_LIMBS>>> for Uint<NUM_LIMBS>
+impl<const NUM_LIMBS: usize, const DENOM_LIMBS: usize> FullVartimeDiv<NonZero<Uint<DENOM_LIMBS>>>
+    for Uint<NUM_LIMBS>
 {
-    type Output = (Self, Uint<DENOM_LIMBS>);
+    type Quotient = Self;
+    type Remainder = Uint<DENOM_LIMBS>;
 
-    fn bounded_div_rem_vartime(
+    fn div_rem_full_vartime(
         &self,
         denominator: &NonZero<Uint<DENOM_LIMBS>>,
-        numerator_limbs_upper_bound: usize,
-    ) -> Self::Output {
+    ) -> (Self::Quotient, Self::Remainder) {
         // Based on Section 4.3.1, of The Art of Computer Programming, Volume 2, by Donald E. Knuth.
         // Further explanation at https://janmr.com/blog/2014/04/basic-multiple-precision-long-division/
-
+        let numerator_limbs = self.limbs_vartime();
         let denominator_bits = denominator.as_ref().bits_vartime();
         let denominator_limbs = denominator_bits.div_ceil(Limb::BITS) as usize;
 
@@ -35,7 +44,7 @@ impl<const NUM_LIMBS: usize, const DENOM_LIMBS: usize>
             ));
             return (q, Uint::from_word(r.0));
         }
-        if denominator_limbs > numerator_limbs_upper_bound {
+        if denominator_limbs > numerator_limbs {
             // Divisor is greater than dividend. Return zero and the dividend as the
             // quotient and remainder
             return (Uint::ZERO, self.resize::<DENOM_LIMBS>());
@@ -45,7 +54,7 @@ impl<const NUM_LIMBS: usize, const DENOM_LIMBS: usize>
         // 2^shift == d in the algorithm above.
         let shift = (Limb::BITS - (denominator_bits % Limb::BITS)) % Limb::BITS;
 
-        let (x, mut x_hi) = self.shl_limb_vartime(shift, numerator_limbs_upper_bound);
+        let (x, mut x_hi) = self.shl_limb_vartime(shift, numerator_limbs);
         let mut x = x.to_limbs();
         let (y, _) = denominator
             .as_ref()
@@ -56,7 +65,7 @@ impl<const NUM_LIMBS: usize, const DENOM_LIMBS: usize>
 
         let mut i;
 
-        let mut xi = numerator_limbs_upper_bound - 1;
+        let mut xi = numerator_limbs - 1;
 
         loop {
             // Divide high dividend words by the high divisor word to estimate the quotient word
@@ -121,8 +130,8 @@ impl<const NUM_LIMBS: usize, const DENOM_LIMBS: usize>
 
         // Shift the quotient to the low limbs within dividend
         i = 0;
-        while i < numerator_limbs_upper_bound {
-            if i <= (numerator_limbs_upper_bound - denominator_limbs) {
+        while i < numerator_limbs {
+            if i <= (numerator_limbs - denominator_limbs) {
                 x[i] = x[i + denominator_limbs - 1];
             } else {
                 x[i] = Limb::ZERO;
@@ -131,50 +140,6 @@ impl<const NUM_LIMBS: usize, const DENOM_LIMBS: usize>
         }
 
         (Uint::new(x), y)
-    }
-}
-
-impl<const NUM_LIMBS: usize, const DENOM_LIMBS: usize>
-    BoundedDivRemVartime<NonZero<Uint<DENOM_LIMBS>>> for NonZero<Uint<NUM_LIMBS>>
-{
-    type Output = (Uint<NUM_LIMBS>, Uint<DENOM_LIMBS>);
-
-    fn bounded_div_rem_vartime(
-        &self,
-        rhs: &NonZero<Uint<DENOM_LIMBS>>,
-        lhs_limbs_upper_bound: usize,
-    ) -> Self::Output {
-        self.as_ref()
-            .bounded_div_rem_vartime(rhs, lhs_limbs_upper_bound)
-    }
-}
-
-pub(crate) trait FullVartimeDiv<Rhs = Self>: Sized {
-    type Quotient;
-    type Remainder;
-
-    fn div_rem_full_vartime(&self, rhs: &Rhs) -> (Self::Quotient, Self::Remainder);
-
-    fn div_full_vartime(&self, rhs: &Rhs) -> Self::Quotient {
-        self.div_rem_full_vartime(rhs).0
-    }
-
-    fn rem_full_vartime(&self, rhs: &Rhs) -> Self::Remainder {
-        self.div_rem_full_vartime(rhs).1
-    }
-}
-
-impl<const NUM_LIMBS: usize, const DENOM_LIMBS: usize> FullVartimeDiv<NonZero<Uint<DENOM_LIMBS>>>
-    for Uint<NUM_LIMBS>
-{
-    type Quotient = Self;
-    type Remainder = Uint<DENOM_LIMBS>;
-
-    fn div_rem_full_vartime(
-        &self,
-        rhs: &NonZero<Uint<DENOM_LIMBS>>,
-    ) -> (Self::Quotient, Self::Remainder) {
-        self.bounded_div_rem_vartime(rhs, self.limbs_vartime())
     }
 }
 
@@ -188,7 +153,7 @@ impl<const NUM_LIMBS: usize, const DENOM_LIMBS: usize> FullVartimeDiv<NonZero<Ui
         &self,
         rhs: &NonZero<Uint<DENOM_LIMBS>>,
     ) -> (Self::Quotient, Self::Remainder) {
-        self.bounded_div_rem_vartime(rhs, self.limbs_vartime())
+        self.as_ref().div_rem_full_vartime(rhs)
     }
 }
 

@@ -74,7 +74,6 @@ pub type RistrettoPublicInput = PublicInput<
     ristretto::scalar::PublicParameters,
 >;
 
-// TODO: @offir new name, generalize doc
 /// The serializable message sent by a dealer to share the encryption keys used to encrypt secret modulo each CRT prime
 /// * The encryption keys used to encrypt the secret modulo each CRT prime.
 /// * Proofs that the encryption key contributions match the encryption key shares.
@@ -170,8 +169,8 @@ pub struct PublicInput<
 {
     plaintext_space_public_parameters: ScalarPublicParameters,
     computational_security_parameter: u32,
-    setup_parameters_per_crt_prime: [SecretKeyShareCRTPrimeSetupParameters; MAX_PRIMES],
-    setup_parameters: SetupParameters<
+    pub setup_parameters_per_crt_prime: [SecretKeyShareCRTPrimeSetupParameters; MAX_PRIMES],
+    pub setup_parameters: SetupParameters<
         PLAINTEXT_SPACE_SCALAR_LIMBS,
         FUNDAMENTAL_DISCRIMINANT_LIMBS,
         NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -230,6 +229,7 @@ pub enum Message<
     ),
     VerifiedDealers(HashSet<PartyID>),
     EncryptDecryptionKeyShares {
+        malicious_decryption_key_contribution_dealers: HashSet<PartyID>,
         encryptions_of_decryption_key_shares_and_proofs: HashMap<
             PartyID,
             DealtSecretShareMessage<
@@ -406,7 +406,7 @@ where
 
 #[cfg(any(test, feature = "test_helpers"))]
 #[allow(dead_code)]
-pub(crate) mod test_helpers {
+pub mod test_helpers {
     use std::array;
 
     use criterion::measurement::{Measurement, WallTime};
@@ -449,7 +449,16 @@ pub(crate) mod test_helpers {
 
     use super::*;
 
-    pub(crate) fn mock_dkg_output<
+    /// The size of the fundamental discriminant is typically chosen only based on security,
+    /// as long as we don't want to either:
+    ///
+    /// - Have different security parameters for different class-group schemes
+    /// - Use a very large plaintext.
+    ///
+    /// All of our fundamental discriminants should have the same bit-size bound.
+    const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize = CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS;
+
+    pub fn mock_dkg_output<
         const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
         const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         GroupElement: PrimeGroupElement<PLAINTEXT_SPACE_SCALAR_LIMBS>,
@@ -463,7 +472,7 @@ pub(crate) mod test_helpers {
         >,
     ) -> PublicOutput<
         PLAINTEXT_SPACE_SCALAR_LIMBS,
-        CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
         NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
     >
     where
@@ -610,6 +619,11 @@ pub(crate) mod test_helpers {
         access_structure: &WeightedThresholdAccessStructure,
         bench: bool,
     ) -> (
+        PublicOutput<
+            SECP256K1_SCALAR_LIMBS,
+            SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        >,
         decryption_key_share::PublicParameters<
             SECP256K1_SCALAR_LIMBS,
             SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -792,6 +806,7 @@ pub(crate) mod test_helpers {
         );
 
         (
+            public_output,
             decryption_key_share_public_parameters,
             decryption_key_shares,
         )
@@ -1133,7 +1148,11 @@ mod tests {
         )
         .unwrap();
         let (encryption_scheme_public_parameters, decryption_key) =
-            Secp256k1DecryptionKey::generate(setup_parameters.clone(), &mut OsCsRng).unwrap();
+            Secp256k1DecryptionKey::generate_with_setup_parameters(
+                setup_parameters.clone(),
+                &mut OsCsRng,
+            )
+            .unwrap();
 
         let (decryption_key_share_public_parameters, _) = deal_trusted_shares::<
             SECP256K1_SCALAR_LIMBS,

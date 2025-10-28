@@ -89,15 +89,8 @@ where
     pub(crate) fn advance_fourth_round(
         tangible_party_id: PartyID,
         current_access_structure: &WeightedThresholdAccessStructure,
-        upcoming_access_structure: &WeightedThresholdAccessStructure,
         session_id: CommitmentSizedNumber,
-        knowledge_of_discrete_log_base_protocol_context: BaseProtocolContext,
-        setup_parameters: &SetupParameters<
-            PLAINTEXT_SPACE_SCALAR_LIMBS,
-            FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            group::PublicParameters<GroupElement::Scalar>,
-        >,
+        equality_of_discrete_log_in_hidden_order_group_base_protocol_context: BaseProtocolContext,
         public_input: &PublicInput<
             PLAINTEXT_SPACE_SCALAR_LIMBS,
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -121,7 +114,7 @@ where
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             GroupElement,
         >,
-        deal_masked_decryption_key_share_messages: HashMap<
+        threshold_decrypt_messages: HashMap<
             PartyID,
             Message<
                 PLAINTEXT_SPACE_SCALAR_LIMBS,
@@ -129,7 +122,6 @@ where
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             >,
         >,
-        malicious_third_round_parties: HashSet<PartyID>,
         current_decryption_key_share_bits: u32,
         rng: &mut impl CsRng,
     ) -> Result<
@@ -139,6 +131,73 @@ where
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
         >,
     > {
+        let (malicious_parties, _, public_output) = Self::advance_fourth_round_internal(
+            tangible_party_id,
+            current_access_structure,
+            session_id,
+            equality_of_discrete_log_in_hidden_order_group_base_protocol_context,
+            public_input,
+            deal_randomizer_messages,
+            randomizer_contribution_to_upcoming_pvss_party,
+            threshold_decrypt_messages,
+            current_decryption_key_share_bits,
+            rng,
+        )?;
+
+        Ok(AsynchronousRoundResult::Finalize {
+            malicious_parties,
+            private_output: (),
+            public_output,
+        })
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn advance_fourth_round_internal(
+        tangible_party_id: PartyID,
+        current_access_structure: &WeightedThresholdAccessStructure,
+        session_id: CommitmentSizedNumber,
+        equality_of_discrete_log_in_hidden_order_group_base_protocol_context: BaseProtocolContext,
+        public_input: &PublicInput<
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >,
+        deal_randomizer_messages: HashMap<
+            PartyID,
+            Message<
+                PLAINTEXT_SPACE_SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
+        randomizer_contribution_to_upcoming_pvss_party: &publicly_verifiable_secret_sharing::Party<
+            NUM_SECRET_SHARE_PRIMES,
+            SECRET_KEY_SHARE_LIMBS,
+            SECRET_KEY_SHARE_WITNESS_LIMBS,
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >,
+        threshold_decrypt_messages: HashMap<
+            PartyID,
+            Message<
+                PLAINTEXT_SPACE_SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
+        current_decryption_key_share_bits: u32,
+        rng: &mut impl CsRng,
+    ) -> Result<(
+        Vec<PartyID>,
+        Int<RANDOMIZER_LIMBS>,
+        PublicOutput<
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        >,
+    )> {
         let (
             first_round_malicious_parties,
             upcoming_parties_that_were_dealt_randomizer_shares,
@@ -156,12 +215,13 @@ where
 
         let (
             third_round_malicious_parties,
+            malicious_randomizer_dealers,
             masked_decryption_key_decryption_shares_and_proofs,
             threshold_public_verification_keys_and_proofs,
         ) = Self::handle_third_round_messages(
             current_access_structure,
             public_input,
-            deal_masked_decryption_key_share_messages,
+            threshold_decrypt_messages,
         )?;
 
         // Instantiate the current public verification keys and adapt them to the structure used by the verification function.
@@ -176,7 +236,9 @@ where
             .map(|(dealer_virtual_party_id, public_verification_key)| {
                 let public_verification_key = EquivalenceClass::new(
                     public_verification_key,
-                    setup_parameters.equivalence_class_public_parameters(),
+                    public_input
+                        .setup_parameters
+                        .equivalence_class_public_parameters(),
                 )?;
 
                 current_access_structure
@@ -234,10 +296,10 @@ where
             >(
                 session_id,
                 current_access_structure,
-                knowledge_of_discrete_log_base_protocol_context,
+                equality_of_discrete_log_in_hidden_order_group_base_protocol_context,
                 discrete_log_public_parameters,
                 &public_input.setup_parameters_per_crt_prime,
-                setup_parameters,
+                &public_input.setup_parameters,
                 current_public_verification_keys,
                 &threshold_public_verification_keys_and_proofs_for_verification,
                 current_decryption_key_share_bits,
@@ -251,11 +313,10 @@ where
                 &public_input.setup_parameters_per_crt_prime,
             )?;
 
-        let malicious_third_round_parties = malicious_third_round_parties.deduplicate_and_sort();
         let malicious_parties: Vec<_> = first_round_malicious_parties
             .into_iter()
             .chain(third_round_malicious_parties)
-            .chain(malicious_third_round_parties.clone())
+            .chain(malicious_randomizer_dealers.clone())
             .chain(parties_sending_invalid_threshold_public_verification_keys_proofs)
             .deduplicate_and_sort();
 
@@ -265,7 +326,7 @@ where
         ) = Self::compute_threshold_decryption_key_share_public_parameters_per_crt_prime(
             current_access_structure,
             public_input,
-            &malicious_third_round_parties,
+            &malicious_randomizer_dealers,
             &malicious_parties,
             threshold_encryption_scheme_public_parameters_per_crt_prime,
             threshold_encryption_of_randomizer_contribution_and_proof,
@@ -332,8 +393,11 @@ where
             masked_decryption_key_per_crt_prime,
         )?;
         // The masked decryption key is multiplied by $n_{new}!$ which is the values that will be used both for generation of the new shares and the new public keys.
-        let upcoming_parties_n_factorial =
-            factorial(upcoming_access_structure.number_of_virtual_parties());
+        let upcoming_parties_n_factorial = factorial(
+            public_input
+                .upcoming_access_structure
+                .number_of_virtual_parties(),
+        );
 
         // Filter the commitments and encryptions of the PVSS dealt randomizer to upcoming parties
         // using the same (majority voted) malicious parties that were used to filter it in the third round
@@ -343,7 +407,7 @@ where
             reconstructed_commitments_to_randomizer_contribution_sharing_to_upcoming
                 .into_iter()
                 .filter(|(dealer_tangible_party_id, _)| {
-                    !malicious_third_round_parties.contains(dealer_tangible_party_id)
+                    !malicious_randomizer_dealers.contains(dealer_tangible_party_id)
                 })
                 .collect();
 
@@ -351,7 +415,7 @@ where
             encryptions_of_randomizer_contribution_shares_and_proofs_to_upcoming
                 .into_iter()
                 .filter(|(dealer_tangible_party_id, _)| {
-                    !malicious_third_round_parties.contains(dealer_tangible_party_id)
+                    !malicious_randomizer_dealers.contains(dealer_tangible_party_id)
                 })
                 .collect();
 
@@ -360,7 +424,7 @@ where
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
         >::new::<GroupElement>(
-            upcoming_access_structure,
+            &public_input.upcoming_access_structure,
             upcoming_parties_that_were_dealt_randomizer_shares,
             masked_decryption_key,
             reconstructed_commitments_to_randomizer_contribution_sharing_to_upcoming,
@@ -370,7 +434,7 @@ where
                 .encryption_scheme_public_parameters
                 .encryption_key
                 .value(),
-            setup_parameters.h,
+            public_input.setup_parameters.h,
             upcoming_parties_n_factorial,
         )?;
 
@@ -379,11 +443,7 @@ where
             .chain(malicious_decrypters)
             .deduplicate_and_sort();
 
-        Ok(AsynchronousRoundResult::Finalize {
-            malicious_parties,
-            private_output: (),
-            public_output,
-        })
+        Ok((malicious_parties, masked_decryption_key, public_output))
     }
 
     fn compute_threshold_decryption_key_share_public_parameters_per_crt_prime(

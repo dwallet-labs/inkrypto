@@ -476,7 +476,8 @@ mod tests {
     use std::ops::{Add, Deref, Div, Sub};
 
     use crypto_bigint::{
-        ConcatMixed, Random, RandomMod, I1024, I128, I2048, I256, U1024, U128, U1536, U2048, U256,
+        ConcatMixed, Gcd, Random, RandomMod, I1024, I128, I2048, I256, U1024, U128, U1536, U2048,
+        U256,
     };
 
     use group::OsCsRng;
@@ -496,7 +497,7 @@ mod tests {
         let (g, x, b_div_gcd) = half_xgcd_vartime(a, b);
 
         // Test correct gcd value
-        assert_eq!(*g, a.bingcd(&b));
+        assert_eq!(*g, a.gcd_uint(&b));
 
         // Test correct quotient
         assert_eq!(*b_div_gcd, b.div(&g));
@@ -555,7 +556,7 @@ mod tests {
         let (g, x, y, a_div_gcd, b_div_gcd) = xgcd_vartime(a.to_nz().unwrap(), b);
 
         // Test correct gcd value
-        assert_eq!(*g, a.bingcd(&b));
+        assert_eq!(*g, a.gcd_uint(&b));
 
         // Test correctness of quotients
         assert_eq!(*a_div_gcd, a.div(&g));
@@ -607,7 +608,7 @@ mod tests {
         let (g, x, y, a_div_gcd, b_div_gcd) = int_xgcd_vartime(a.to_nz().unwrap(), b);
 
         // Test correct gcd value
-        assert_eq!(*g, a.bingcd(&b.abs()));
+        assert_eq!(*g, a.gcd(&b));
 
         // Test correctness of quotients
         assert_eq!(*a_div_gcd, a.div(&g));
@@ -667,7 +668,7 @@ mod tests {
 
         // Test requirement 1:
         // the partials still have the same gcd as the full values.
-        assert_eq!(partial_a.bingcd(&partial_b), a.bingcd(&b));
+        assert_eq!(partial_a.gcd_uint(&partial_b), a.gcd_uint(&b));
 
         // Test requirement 2:
         // the partials are smaller than the reduction bound.

@@ -20,8 +20,8 @@ use crate::encryption_key::public_parameters::Instantiate;
 use crate::encryption_key::{Ciphertext, EncryptionKey, Plaintext, PublicParameters};
 use crate::equivalence_class::{EquivalenceClass, EquivalenceClassOps};
 use crate::helpers::math;
-use crate::setup::SetupParameters;
-use crate::{equivalence_class, CompactIbqf, Error};
+use crate::setup::{DeriveFromPlaintextPublicParameters, SetupParameters};
+use crate::{equivalence_class, CompactIbqf, Error, DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER};
 
 pub type SecretKey<const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize> =
     Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>;
@@ -171,7 +171,7 @@ where
     /// Randomly generate a new decryption key, given the public setup parameters of the
     /// scheme instance.
     #[allow(clippy::type_complexity)]
-    pub fn generate(
+    pub fn generate_with_setup_parameters(
         setup_parameters: SetupParameters<
             PLAINTEXT_SPACE_SCALAR_LIMBS,
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -419,6 +419,18 @@ where
     Uint<DOUBLE_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>:
         Split<Output = Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
 
+    SetupParameters<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<GroupElement::Scalar>,
+    >: DeriveFromPlaintextPublicParameters<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<GroupElement::Scalar>,
+    >,
+
     group::PublicParameters<GroupElement::Scalar>: Eq,
 {
     type SecretKey = SecretKey<FUNDAMENTAL_DISCRIMINANT_LIMBS>;
@@ -446,6 +458,27 @@ where
             neutral,
             _group_choice: PhantomData,
         })
+    }
+
+    fn generate(
+        plaintext_space_public_parameters: group::PublicParameters<GroupElement::Scalar>,
+        rng: &mut impl CsRng,
+    ) -> homomorphic_encryption::Result<Self> {
+        let setup_parameters = SetupParameters::<
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >::derive_from_plaintext_parameters::<GroupElement::Scalar>(
+            plaintext_space_public_parameters,
+            DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+        )
+        .map_err(|_| homomorphic_encryption::Error::InternalError)?;
+
+        let (_, decryption_key) = Self::generate_with_setup_parameters(setup_parameters, rng)
+            .map_err(|_| homomorphic_encryption::Error::InternalError)?;
+
+        Ok(decryption_key)
     }
 
     fn decrypt(
@@ -485,7 +518,11 @@ mod tests {
         #[test]
         fn test_new_invalid() {
             let setup_parameters = get_setup_parameters_ristretto_112_bits_deterministic();
-            let (pp, _) = RistrettoDecryptionKey::generate(setup_parameters, &mut OsCsRng).unwrap();
+            let (pp, _) = RistrettoDecryptionKey::generate_with_setup_parameters(
+                setup_parameters,
+                &mut OsCsRng,
+            )
+            .unwrap();
 
             let wrong_key = Uint::ONE;
             assert!(RistrettoDecryptionKey::new(wrong_key, &pp).is_err());
@@ -494,14 +531,17 @@ mod tests {
         #[test]
         fn test_generate() {
             let cp = get_setup_parameters_ristretto_112_bits_deterministic();
-            RistrettoDecryptionKey::generate(cp, &mut OsCsRng).unwrap();
+            RistrettoDecryptionKey::generate_with_setup_parameters(cp, &mut OsCsRng).unwrap();
         }
 
         #[test]
         fn test_encrypt_decrypt() {
             let setup_parameters = get_setup_parameters_ristretto_112_bits_deterministic();
-            let (pp, decryption_key) =
-                RistrettoDecryptionKey::generate(setup_parameters, &mut OsCsRng).unwrap();
+            let (pp, decryption_key) = RistrettoDecryptionKey::generate_with_setup_parameters(
+                setup_parameters,
+                &mut OsCsRng,
+            )
+            .unwrap();
             homomorphic_encryption::test_helpers::encrypt_decrypts(
                 decryption_key,
                 &pp,
@@ -512,8 +552,11 @@ mod tests {
         #[test]
         fn test_evaluates() {
             let setup_parameters = get_setup_parameters_ristretto_112_bits_deterministic();
-            let (pp, decryption_key) =
-                RistrettoDecryptionKey::generate(setup_parameters, &mut OsCsRng).unwrap();
+            let (pp, decryption_key) = RistrettoDecryptionKey::generate_with_setup_parameters(
+                setup_parameters,
+                &mut OsCsRng,
+            )
+            .unwrap();
 
             homomorphic_encryption::test_helpers::evaluates::<
                 RISTRETTO_SCALAR_LIMBS,
@@ -544,7 +587,11 @@ mod tests {
         #[test]
         fn test_new_invalid() {
             let setup_parameters = get_setup_parameters_secp256k1_112_bits_deterministic();
-            let (pp, _) = Secp256k1DecryptionKey::generate(setup_parameters, &mut OsCsRng).unwrap();
+            let (pp, _) = Secp256k1DecryptionKey::generate_with_setup_parameters(
+                setup_parameters,
+                &mut OsCsRng,
+            )
+            .unwrap();
 
             let wrong_key = Uint::ONE;
             assert!(Secp256k1DecryptionKey::new(wrong_key, &pp).is_err());
@@ -553,14 +600,18 @@ mod tests {
         #[test]
         fn test_generate() {
             let setup_parameters = get_setup_parameters_secp256k1_112_bits_deterministic();
-            Secp256k1DecryptionKey::generate(setup_parameters, &mut OsCsRng).unwrap();
+            Secp256k1DecryptionKey::generate_with_setup_parameters(setup_parameters, &mut OsCsRng)
+                .unwrap();
         }
 
         #[test]
         fn test_encrypt_decrypt() {
             let setup_parameters = get_setup_parameters_secp256k1_112_bits_deterministic();
-            let (pp, decryption_key) =
-                Secp256k1DecryptionKey::generate(setup_parameters, &mut OsCsRng).unwrap();
+            let (pp, decryption_key) = Secp256k1DecryptionKey::generate_with_setup_parameters(
+                setup_parameters,
+                &mut OsCsRng,
+            )
+            .unwrap();
 
             homomorphic_encryption::test_helpers::encrypt_decrypts(
                 decryption_key,
@@ -572,8 +623,11 @@ mod tests {
         #[test]
         fn test_evaluates() {
             let setup_parameters = get_setup_parameters_secp256k1_112_bits_deterministic();
-            let (pp, decryption_key) =
-                Secp256k1DecryptionKey::generate(setup_parameters, &mut OsCsRng).unwrap();
+            let (pp, decryption_key) = Secp256k1DecryptionKey::generate_with_setup_parameters(
+                setup_parameters,
+                &mut OsCsRng,
+            )
+            .unwrap();
 
             homomorphic_encryption::test_helpers::evaluates::<
                 SECP256K1_SCALAR_LIMBS,
@@ -666,8 +720,11 @@ pub(crate) mod benches {
         group.measurement_time(Duration::from_secs(10));
 
         let setup_parameters = get_setup_parameters_secp256k1_112_bits_deterministic();
-        let (pp, decryption_key) =
-            Secp256k1DecryptionKey::generate(setup_parameters.clone(), &mut OsCsRng).unwrap();
+        let (pp, decryption_key) = Secp256k1DecryptionKey::generate_with_setup_parameters(
+            setup_parameters.clone(),
+            &mut OsCsRng,
+        )
+        .unwrap();
 
         benchmark_decrypt(group, &decryption_key, &pp, &mut OsCsRng);
     }
@@ -677,8 +734,11 @@ pub(crate) mod benches {
         group.measurement_time(Duration::from_secs(10));
 
         let setup_parameters = get_setup_parameters_ristretto_112_bits_deterministic();
-        let (pp, decryption_key) =
-            RistrettoDecryptionKey::generate(setup_parameters.clone(), &mut OsCsRng).unwrap();
+        let (pp, decryption_key) = RistrettoDecryptionKey::generate_with_setup_parameters(
+            setup_parameters.clone(),
+            &mut OsCsRng,
+        )
+        .unwrap();
 
         benchmark_decrypt(group, &decryption_key, &pp, &mut OsCsRng);
     }

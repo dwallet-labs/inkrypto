@@ -1,23 +1,20 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
-#[cfg(feature = "class_groups")]
 pub mod class_groups;
-#[cfg(all(feature = "paillier", feature = "bulletproofs"))]
-pub mod paillier;
 
 use crate::dkg::centralized_party::trusted_dealer::knowledge_of_secret_key_share_protocol_context;
-use crate::dkg::decentralized_party::Output;
+use crate::dkg::decentralized_party::{Output, VersionedOutput};
 use crate::languages::{verify_knowledge_of_discrete_log, KnowledgeOfDiscreteLogProof};
 use crate::Error;
 use commitment::CommitmentSizedNumber;
+use crypto_bigint::{Encoding, Uint};
 use group::PrimeGroupElement;
 use homomorphic_encryption::AdditivelyHomomorphicEncryptionKey;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Party<
     const SCALAR_LIMBS: usize,
     const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
@@ -25,35 +22,49 @@ pub struct Party<
     EncryptionKey,
     Message,
     ProtocolPublicParameters,
+    CentralizedPartyKeyShareVerification,
 >(
     PhantomData<GroupElement>,
     PhantomData<EncryptionKey>,
     PhantomData<Message>,
     PhantomData<ProtocolPublicParameters>,
+    PhantomData<CentralizedPartyKeyShareVerification>,
 );
 
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
-pub struct PublicInput<Message, ProtocolPublicParameters> {
+pub struct PublicInput<Message, ProtocolPublicParameters, CentralizedPartyKeyShareVerification> {
     pub centralized_party_message: Message,
     pub protocol_public_parameters: ProtocolPublicParameters,
     pub session_id: CommitmentSizedNumber,
+    pub centralized_party_secret_key_share_verification: CentralizedPartyKeyShareVerification,
 }
 
-impl<Message, ProtocolPublicParameters>
-    From<(ProtocolPublicParameters, CommitmentSizedNumber, Message)>
-    for PublicInput<Message, ProtocolPublicParameters>
+impl<Message, ProtocolPublicParameters, CentralizedPartyKeyShareVerification>
+    From<(
+        ProtocolPublicParameters,
+        CommitmentSizedNumber,
+        Message,
+        CentralizedPartyKeyShareVerification,
+    )> for PublicInput<Message, ProtocolPublicParameters, CentralizedPartyKeyShareVerification>
 {
     fn from(
-        (protocol_public_parameters, session_id, centralized_party_message): (
+        (
+            protocol_public_parameters,
+            session_id,
+            centralized_party_message,
+            centralized_party_secret_key_share_verification,
+        ): (
             ProtocolPublicParameters,
             CommitmentSizedNumber,
             Message,
+            CentralizedPartyKeyShareVerification,
         ),
     ) -> Self {
         Self {
             centralized_party_message,
             session_id,
             protocol_public_parameters,
+            centralized_party_secret_key_share_verification,
         }
     }
 }
@@ -65,6 +76,7 @@ impl<
         EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
         Message: Clone + Serialize + Debug + PartialEq + Eq + Send + Sync + Send + Sync,
         ProtocolPublicParameters: Clone + Serialize + Debug + PartialEq + Eq + Send + Sync + Send + Sync,
+        CentralizedPartyKeyShareVerification: Clone + Serialize + Debug + PartialEq + Eq + Send + Sync + Send + Sync,
     >
     Party<
         SCALAR_LIMBS,
@@ -73,7 +85,10 @@ impl<
         EncryptionKey,
         Message,
         ProtocolPublicParameters,
+        CentralizedPartyKeyShareVerification,
     >
+where
+    Uint<SCALAR_LIMBS>: Encoding,
 {
     /// A helper function for the first and only round of the decentralized party in a trusted dealer setting.
     /// Verifies that the centralized party knows the secret key share that corresponds to the value of the public key share it sent.
@@ -96,6 +111,11 @@ impl<
             crate::ProtocolPublicParameters<
                 group::PublicParameters<GroupElement::Scalar>,
                 GroupElement::PublicParameters,
+                GroupElement::Value,
+                homomorphic_encryption::CiphertextSpaceValue<
+                    PLAINTEXT_SPACE_SCALAR_LIMBS,
+                    EncryptionKey,
+                >,
                 EncryptionKey::PublicParameters,
             >,
         >,
@@ -143,6 +163,7 @@ impl<
         EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
         Message: Clone + Serialize + Debug + PartialEq + Eq + Send + Sync + Send + Sync,
         ProtocolPublicParameters: Clone + Serialize + Debug + PartialEq + Eq + Send + Sync + Send + Sync,
+        CentralizedPartyKeyShareVerification: Clone + Serialize + Debug + PartialEq + Eq + Send + Sync + Send + Sync,
     > mpc::Party
     for Party<
         SCALAR_LIMBS,
@@ -151,13 +172,20 @@ impl<
         EncryptionKey,
         Message,
         ProtocolPublicParameters,
+        CentralizedPartyKeyShareVerification,
     >
+where
+    Uint<SCALAR_LIMBS>: Encoding,
 {
     type Error = Error;
-    type PublicInput = PublicInput<Message, ProtocolPublicParameters>;
+    type PublicInput =
+        PublicInput<Message, ProtocolPublicParameters, CentralizedPartyKeyShareVerification>;
     type PrivateOutput = ();
     type PublicOutputValue = Self::PublicOutput;
-    type PublicOutput =
-        Output<GroupElement::Value, group::Value<EncryptionKey::CiphertextSpaceGroupElement>>;
+    type PublicOutput = VersionedOutput<
+        SCALAR_LIMBS,
+        GroupElement::Value,
+        group::Value<EncryptionKey::CiphertextSpaceGroupElement>,
+    >;
     type Message = ();
 }

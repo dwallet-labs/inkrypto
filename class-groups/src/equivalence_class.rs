@@ -6,9 +6,9 @@ use std::ops::{BitAnd, Deref};
 
 use crypto_bigint::subtle::{Choice, ConditionallySelectable, ConstantTimeEq, CtOption};
 use crypto_bigint::{
-    Concat, ConstantTimeSelect, Encoding, Int, Integer, NonZero, NonZeroUint, Split, Uint,
+    Concat, ConstantTimeSelect, Encoding, Int, Integer, NonZero, NonZeroUint, Split, Uint, U64,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub use public_parameters::PublicParameters;
 
@@ -20,50 +20,26 @@ use crate::{discriminant::Discriminant, ibqf::Ibqf, Error};
 
 mod group_element;
 pub(crate) mod public_parameters;
-mod traits;
 
 /// Class of equivalent [Ibqf]s.
 ///
 /// TODO(#300): the serialization of this object should not be sent over a wire.
 ///  Use [`CompactIbqf`] instead.
-#[derive(Clone, Debug, Eq, Copy, Serialize)]
+#[derive(Clone, Debug, Eq, Copy, Serialize, Deserialize)]
 pub struct EquivalenceClass<const DISCRIMINANT_LIMBS: usize>
 where
     Int<DISCRIMINANT_LIMBS>: Encoding,
+    Uint<DISCRIMINANT_LIMBS>: Encoding,
 {
     representative: Ibqf<DISCRIMINANT_LIMBS>,
-    #[serde(skip_serializing)]
     discriminant: Discriminant<DISCRIMINANT_LIMBS>,
-}
-
-impl<const DISCRIMINANT_LIMBS: usize> From<Ibqf<DISCRIMINANT_LIMBS>>
-    for EquivalenceClass<DISCRIMINANT_LIMBS>
-where
-    Int<DISCRIMINANT_LIMBS>: Encoding,
-{
-    fn from(form: Ibqf<DISCRIMINANT_LIMBS>) -> Self {
-        Self::new_from_representative(form)
-    }
 }
 
 impl<const DISCRIMINANT_LIMBS: usize> EquivalenceClass<DISCRIMINANT_LIMBS>
 where
     Int<DISCRIMINANT_LIMBS>: Encoding,
+    Uint<DISCRIMINANT_LIMBS>: Encoding,
 {
-    /// Construct a new [EquivalenceClass] from an [Ibqf].
-    pub fn new_from_representative(representative: Ibqf<DISCRIMINANT_LIMBS>) -> Self {
-        let discriminant = representative
-            .discriminant()
-            .and_then(|d| d.to_nz().into())
-            .and_then(Discriminant::new)
-            .expect("discriminant exists; representative is a valid form");
-
-        Self {
-            representative,
-            discriminant,
-        }
-    }
-
     /// Constructs another element in the same class with `representative`.
     ///
     /// Note: does not verify whether `representative` belongs to the same class as `self`.
@@ -129,6 +105,7 @@ where
 pub trait EquivalenceClassOps<const DISCRIMINANT_LIMBS: usize>: Sized
 where
     Int<DISCRIMINANT_LIMBS>: Encoding,
+    Uint<DISCRIMINANT_LIMBS>: Encoding,
 {
     type MultiFoldNupowAccelerator;
 
@@ -280,7 +257,7 @@ impl<const HALF: usize, const DISCRIMINANT_LIMBS: usize, const DOUBLE: usize>
     EquivalenceClassOps<DISCRIMINANT_LIMBS> for EquivalenceClass<DISCRIMINANT_LIMBS>
 where
     Int<DISCRIMINANT_LIMBS>: Encoding,
-    Uint<DISCRIMINANT_LIMBS>: Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
+    Uint<DISCRIMINANT_LIMBS>: Encoding + Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
     Uint<HALF>: Concat<Output = Uint<DISCRIMINANT_LIMBS>>,
     Uint<DOUBLE>: Split<Output = Uint<DISCRIMINANT_LIMBS>>,
 {
@@ -417,11 +394,13 @@ where
     /// constructs the equivalence class for the form `f = (p, ..., ...)` in `CL(∆)`.
     /// Such a form is called a _prime form_.
     ///
+    /// Executes in variable time w.r.t. `discriminant`.
+    ///
     /// Ref: Section 5.5.1 in "A Course in Computational Algebraic Number Theory" (978-3-662-02945-9).
     ///
     /// Note: assumes `∆` and prime `p` s.t. Kronecker Symbol `(∆|p) = 1`; returns an error otherwise.
-    pub(crate) fn prime_form(
-        discriminant: &Discriminant<DISCRIMINANT_LIMBS>,
+    pub(crate) fn prime_form_vartime_discriminant(
+        discriminant: Discriminant<DISCRIMINANT_LIMBS>,
         p: NonZero<Uint<HALF>>,
     ) -> Result<EquivalenceClass<DISCRIMINANT_LIMBS>, Error> {
         let d_mod_p = discriminant.deref().get().normalized_rem(&p);
@@ -436,8 +415,7 @@ where
             .into_option()
             .ok_or(Error::InternalError)?;
 
-        Ibqf::new_is_reduced(p, b, discriminant)
-            .map(EquivalenceClass::new_from_representative)
+        EquivalenceClass::new_from_coefficients_reduced_vartime_discriminant(p, b, discriminant)
             .into_option()
             .ok_or(Error::InternalError)
     }
@@ -451,12 +429,14 @@ where
 {
     /// Variant of [Self::new_from_coefficients] that assumes the constructed form will be reduced;
     /// returns a `None` if this assumption is invalid.
-    pub fn new_from_coefficients_reduced(
+    ///
+    /// Executes in variable time w.r.t. `self.discriminant`.
+    pub fn new_from_coefficients_reduced_vartime_discriminant(
         a: NonZeroUint<HALF>,
         b: Int<HALF>,
         discriminant: Discriminant<DISCRIMINANT_LIMBS>,
     ) -> CtOption<Self> {
-        Ibqf::new_is_reduced(a, b, &discriminant).map(|representative| Self {
+        Ibqf::new_is_reduced_vartime_discriminant(a, b, &discriminant).map(|representative| Self {
             representative,
             discriminant,
         })
@@ -467,7 +447,7 @@ impl<const HALF: usize, const DISCRIMINANT_LIMBS: usize, const DOUBLE: usize>
     EquivalenceClass<DISCRIMINANT_LIMBS>
 where
     Int<DISCRIMINANT_LIMBS>: Encoding,
-    Uint<DISCRIMINANT_LIMBS>: Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
+    Uint<DISCRIMINANT_LIMBS>: Encoding + Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
     Uint<HALF>: Concat<Output = Uint<DISCRIMINANT_LIMBS>>,
     Uint<DOUBLE>: Split<Output = Uint<DISCRIMINANT_LIMBS>>,
 {
@@ -475,7 +455,7 @@ where
     /// targeted at exponents of size ~`target_bits`.
     ///
     /// Runs in time variable in `target_bits` and `self.representative`.
-    pub(crate) fn get_multifold_accelerator_vartime(
+    pub fn get_multifold_accelerator_vartime(
         self,
         folding_degree: u32,
         target_bits: u32,
@@ -893,6 +873,7 @@ where
 impl<const DISCRIMINANT_LIMBS: usize> ConstantTimeEq for EquivalenceClass<DISCRIMINANT_LIMBS>
 where
     Int<DISCRIMINANT_LIMBS>: Encoding,
+    Uint<DISCRIMINANT_LIMBS>: Encoding,
 {
     fn ct_eq(&self, other: &Self) -> Choice {
         self.representative
@@ -905,6 +886,7 @@ impl<const DISCRIMINANT_LIMBS: usize> ConditionallySelectable
     for EquivalenceClass<DISCRIMINANT_LIMBS>
 where
     Int<DISCRIMINANT_LIMBS>: Encoding,
+    Uint<DISCRIMINANT_LIMBS>: Encoding,
 {
     fn conditional_select(a: &Self, b: &Self, choice: Choice) -> Self {
         Self {
@@ -921,6 +903,7 @@ where
 impl<const DISCRIMINANT_LIMBS: usize> PartialEq for EquivalenceClass<DISCRIMINANT_LIMBS>
 where
     Int<DISCRIMINANT_LIMBS>: Encoding,
+    Uint<DISCRIMINANT_LIMBS>: Encoding,
 {
     fn eq(&self, other: &Self) -> bool {
         (self.representative == other.representative) && (self.discriminant == other.discriminant)
@@ -930,12 +913,17 @@ where
 impl<const DISCRIMINANT_LIMBS: usize> Default for EquivalenceClass<DISCRIMINANT_LIMBS>
 where
     Int<DISCRIMINANT_LIMBS>: Encoding,
+    Uint<DISCRIMINANT_LIMBS>: Encoding,
 {
     fn default() -> Self {
         Self {
             representative: Ibqf::default(),
-            discriminant: Discriminant::new(Int::from(-15i64).to_nz().expect("-15 is non-zero"))
-                .unwrap(),
+            discriminant: Discriminant::new(
+                U64::from_u64(3).to_nz().unwrap(),
+                0,
+                U64::from_u64(5).to_nz().unwrap(),
+            )
+            .unwrap(),
         }
     }
 }
@@ -946,23 +934,30 @@ mod tests {
     use group::OsCsRng;
 
     use super::*;
-    use crate::ibqf::test_helpers::Ibqf64;
     use crate::test_helpers::get_setup_parameters_secp256k1_112_bits_deterministic;
     use crate::{discriminant::Discriminant, ibqf::Ibqf};
 
     fn get_ec() -> EquivalenceClass<{ I128::LIMBS }> {
-        let form = Ibqf::new_reduced_64(23, 7, -227).unwrap();
-        EquivalenceClass::from(form)
+        let fd = Discriminant::new_u64(227, 0, 1).unwrap();
+        EquivalenceClass::new_from_coefficients(
+            U128::from_u64(23).to_nz().unwrap(),
+            I128::from(7),
+            fd,
+        )
+        .unwrap()
     }
 
     #[test]
     fn test_new_from_coefficients() {
         let a = U128::from_u64(213).to_nz().unwrap();
         let b = I128::from_i64(5);
-        let disc = Int::from_i64(-2531).to_nz().unwrap().try_into().unwrap();
+        let discriminant = Discriminant::new_u64(2531, 0, 1).unwrap();
 
-        let ec = EquivalenceClass::new_from_coefficients(a, b, disc).unwrap();
-        let target = EquivalenceClass::from(Ibqf::new_reduced_64(213, 5, -2531).unwrap());
+        let ec = EquivalenceClass::new_from_coefficients(a, b, discriminant).unwrap();
+        let target = EquivalenceClass {
+            representative: Ibqf::new_reduced_64(213, 5, (2531, 0, 1)).unwrap(),
+            discriminant,
+        };
         assert_eq!(ec, target);
     }
 
@@ -971,7 +966,7 @@ mod tests {
         let ec = get_ec();
         let form = ec.representative;
 
-        let new = EquivalenceClass::new_from_coefficients_reduced(
+        let new = EquivalenceClass::new_from_coefficients_reduced_vartime_discriminant(
             form.a()
                 .as_ref()
                 .resize()
@@ -985,7 +980,7 @@ mod tests {
         assert!(bool::from(new.is_some()));
         assert_eq!(new.unwrap().representative, ec.representative);
 
-        let invalid = EquivalenceClass::new_from_coefficients_reduced(
+        let invalid = EquivalenceClass::new_from_coefficients_reduced_vartime_discriminant(
             form.c()
                 .as_ref()
                 .resize()
@@ -1007,25 +1002,34 @@ mod tests {
 
     #[test]
     fn test_unit_for_class() {
-        let d = Discriminant::new(I128::from(-55).to_nz().unwrap()).unwrap();
+        let d = Discriminant::<{ U128::LIMBS }>::new_u64(5, 0, 11).unwrap();
         let unit = EquivalenceClass::unit_for_class(&d);
         assert_eq!(unit, unit.mul(&unit).unwrap());
     }
 
     #[test]
     fn test_is_from_the_same_class_as() {
-        let d1 = -55;
-        let d2 = -227;
+        let d1 = Discriminant::new_u64(5, 0, 11).unwrap();
+        let d2 = Discriminant::new_u64(227, 0, 1).unwrap();
 
-        let a = Ibqf64::new_reduced_64(2, 1, d1)
-            .map(EquivalenceClass::new_from_representative)
-            .unwrap();
-        let b = Ibqf::new_reduced_64(4, 3, d1)
-            .map(EquivalenceClass::new_from_representative)
-            .unwrap();
-        let c = Ibqf::new_reduced_64(7, 5, d2)
-            .map(EquivalenceClass::new_from_representative)
-            .unwrap();
+        let a = EquivalenceClass::new_from_coefficients_reduced_vartime_discriminant(
+            U128::from_u64(2).to_nz().unwrap(),
+            I128::from(1i64),
+            d1,
+        )
+        .unwrap();
+        let b = EquivalenceClass::new_from_coefficients_reduced_vartime_discriminant(
+            U128::from_u64(4).to_nz().unwrap(),
+            I128::from(3i64),
+            d1,
+        )
+        .unwrap();
+        let c = EquivalenceClass::new_from_coefficients_reduced_vartime_discriminant(
+            U128::from_u64(7).to_nz().unwrap(),
+            I128::from(5i64),
+            d2,
+        )
+        .unwrap();
 
         assert!(a.is_from_the_same_class_as(&b));
         assert!(!a.is_from_the_same_class_as(&c));
@@ -1036,7 +1040,10 @@ mod tests {
         let ec = get_ec();
         assert_eq!(ec.wrapping_negate_if(Choice::from(0)), ec);
         let inv = ec.wrapping_negate_if(Choice::from(1));
-        let target = EquivalenceClass::from(Ibqf::new_reduced_64(23, -7, -227).unwrap());
+        let target = EquivalenceClass {
+            representative: Ibqf::new_reduced_64(23, -7, (227, 0, 1)).unwrap(),
+            discriminant: ec.discriminant,
+        };
         assert_eq!(inv, target);
     }
 
@@ -1116,19 +1123,22 @@ mod tests {
 
     #[test]
     fn test_prime_form() {
-        let d = Discriminant::new(I128::from(-71i32).to_nz().unwrap()).unwrap();
-        let prime = EquivalenceClass::prime_form(&d, U64::from(3u32).to_nz().unwrap()).unwrap();
+        let d = Discriminant::<{ U128::LIMBS }>::new_u64(71, 0, 1).unwrap();
+        let prime =
+            EquivalenceClass::prime_form_vartime_discriminant(d, U64::from(3u32).to_nz().unwrap())
+                .unwrap();
         let target = Ibqf::new(U128::from_u64(3).to_nz().unwrap(), I128::ONE, &d).unwrap();
         assert_eq!(prime.representative, target);
     }
 
     #[test]
     fn test_prime_form_composed() {
-        let d = -703;
-        let target = Ibqf::new_reduced_64(2, 1, d).unwrap();
+        let target = Ibqf::new_reduced_64(2, 1, (19, 0, 37)).unwrap();
 
-        let d = Discriminant::new(I128::from(d).to_nz().unwrap()).unwrap();
-        let prime = EquivalenceClass::prime_form(&d, U64::from(2u32).to_nz().unwrap()).unwrap();
+        let d = Discriminant::new_u64(19, 0, 37).unwrap();
+        let prime =
+            EquivalenceClass::prime_form_vartime_discriminant(d, U64::from(2u32).to_nz().unwrap())
+                .unwrap();
         assert_eq!(prime.representative, target);
     }
 
@@ -1137,12 +1147,14 @@ mod tests {
         let setup_parameters = get_setup_parameters_secp256k1_112_bits_deterministic();
         let lhs = setup_parameters.h;
         let rhs = setup_parameters.h.square_vartime().square_vartime();
-        let target = lhs
-            .representative
-            .nudupl()
-            .nudupl()
-            .nucomp(lhs.representative)
-            .into();
+        let target = EquivalenceClass {
+            representative: lhs
+                .representative
+                .nudupl()
+                .nudupl()
+                .nucomp(lhs.representative),
+            discriminant: lhs.discriminant,
+        };
         assert_eq!(lhs.mul(&rhs).unwrap(), target);
     }
 
@@ -1191,8 +1203,10 @@ mod tests {
         let setup_parameters = get_setup_parameters_secp256k1_112_bits_deterministic();
         let form = setup_parameters.h;
 
-        let target = form.representative.nudupl().into();
-
+        let target = EquivalenceClass {
+            representative: form.representative.nudupl(),
+            discriminant: form.discriminant,
+        };
         assert_eq!(form.square(), target);
     }
 
@@ -1201,9 +1215,10 @@ mod tests {
         let setup_parameters = get_setup_parameters_secp256k1_112_bits_deterministic();
         let form = setup_parameters.h;
 
-        let target =
-            EquivalenceClass::new_from_representative(form.representative.nudupl_vartime());
-
+        let target = EquivalenceClass {
+            representative: form.representative.nudupl_vartime(),
+            discriminant: form.discriminant,
+        };
         assert_eq!(form.square_randomized(), target);
     }
 

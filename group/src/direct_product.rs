@@ -121,7 +121,7 @@ pub type FourWayPublicParameters<
 >;
 
 /// The value of the Direct Product of the two Groups `FirstGroupElement` and `SecondGroupElement`.
-#[derive(PartialEq, Eq, Clone, Debug, Default, Serialize, Deserialize, Copy)]
+#[derive(PartialEq, Eq, Clone, Debug, Default, Hash, Serialize, Deserialize, Copy)]
 pub struct Value<FirstGroupElementValue, SecondGroupElementValue>(
     FirstGroupElementValue,
     SecondGroupElementValue,
@@ -288,6 +288,14 @@ impl<FirstGroupElement: crate::GroupElement, SecondGroupElement: crate::GroupEle
 
     fn add_vartime(self, other: &Self) -> Self {
         Self(self.0.add_vartime(&other.0), self.1.add_vartime(&other.1))
+    }
+
+    fn sub_randomized(self, other: &Self) -> Self {
+        Self(self.0.sub_vartime(&other.0), self.1.sub_vartime(&other.1))
+    }
+
+    fn sub_vartime(self, other: &Self) -> Self {
+        Self(self.0.sub_vartime(&other.0), self.1.sub_vartime(&other.1))
     }
 
     fn double(&self) -> Self {
@@ -640,6 +648,24 @@ impl<FirstGroupElement, SecondGroupElement, ThirdGroupElement>
         let (first_element, second_element, third_element) = value;
 
         GroupElement(GroupElement(first_element, second_element), third_element)
+    }
+}
+
+impl<FirstValue, SecondValue, ThirdValue> From<(FirstValue, SecondValue, ThirdValue)>
+    for Value<Value<FirstValue, SecondValue>, ThirdValue>
+{
+    fn from(value: (FirstValue, SecondValue, ThirdValue)) -> Self {
+        let (first_value, second_value, third_value) = value;
+
+        Value(Value(first_value, second_value), third_value)
+    }
+}
+
+impl<FirstValue, SecondValue, ThirdValue> From<Value<Value<FirstValue, SecondValue>, ThirdValue>>
+    for (FirstValue, SecondValue, ThirdValue)
+{
+    fn from(value: Value<Value<FirstValue, SecondValue>, ThirdValue>) -> Self {
+        (value.0 .0, value.0 .1, value.1)
     }
 }
 

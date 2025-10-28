@@ -92,6 +92,14 @@ impl<const SCALAR_LIMBS: usize, S: GroupElement> GroupElement for Scalar<SCALAR_
     fn double_vartime(&self) -> Self {
         Self(self.0.double_vartime())
     }
+
+    fn sub_randomized(self, other: &Self) -> Self {
+        Self(self.0.sub_vartime(&other.0))
+    }
+
+    fn sub_vartime(self, other: &Self) -> Self {
+        Self(self.0.sub_vartime(&other.0))
+    }
 }
 impl<const SCALAR_LIMBS: usize, S: GroupElement> LinearlyCombinable for Scalar<SCALAR_LIMBS, S> {
     fn linearly_combine_bounded<const RHS_LIMBS: usize>(

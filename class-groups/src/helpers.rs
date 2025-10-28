@@ -7,14 +7,10 @@ use crypto_bigint::subtle::ConstantTimeLess;
 use crypto_bigint::ConstantTimeSelect;
 use sha3::{Digest, Sha3_256};
 
-pub(crate) mod binxgcd;
-pub(crate) mod extension;
 pub(crate) mod limbs;
 pub(crate) mod lookup;
 pub(crate) mod math;
-pub(crate) mod matrix;
 pub(crate) mod partial_xgcd;
-pub(crate) mod tools;
 pub(crate) mod vartime_div;
 pub(crate) mod vartime_mul;
 

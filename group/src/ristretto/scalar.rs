@@ -13,8 +13,8 @@ use subtle::{Choice, ConditionallySelectable, ConstantTimeEq, CtOption};
 
 use crate::linear_combination::linearly_combine_bounded_or_scale;
 use crate::{
-    BoundedGroupElement, CsRng, CyclicGroupElement, GroupElement as _, HashToGroup, Invert,
-    KnownOrderGroupElement, KnownOrderScalar, LinearlyCombinable, MulByGenerator,
+    curve25519, BoundedGroupElement, CsRng, CyclicGroupElement, GroupElement as _, HashToGroup,
+    Invert, KnownOrderGroupElement, KnownOrderScalar, LinearlyCombinable, MulByGenerator,
     PrimeGroupElement, Reduce, Samplable, Scale, Transcribeable,
 };
 
@@ -142,6 +142,14 @@ impl crate::GroupElement for Scalar {
         self + other
     }
 
+    fn sub_randomized(self, other: &Self) -> Self {
+        self - other
+    }
+
+    fn sub_vartime(self, other: &Self) -> Self {
+        self - other
+    }
+
     fn double(&self) -> Self {
         Self(self.0 + self.0)
     }
@@ -198,6 +206,14 @@ impl From<&Scalar> for U256 {
 impl From<Scalar> for curve25519_dalek::scalar::Scalar {
     fn from(value: Scalar) -> Self {
         value.0
+    }
+}
+
+impl From<curve25519_dalek::scalar::Scalar> for Scalar {
+    fn from(value: curve25519_dalek::Scalar) -> Self {
+        // Since `curve25519_dalek::scalar::Scalar` assures deserialized values are valid, this is
+        // always safe.
+        Self(value)
     }
 }
 
@@ -326,6 +342,38 @@ impl<'r> Mul<&'r GroupElement> for &'r Scalar {
 
     fn mul(self, rhs: &'r GroupElement) -> Self::Output {
         GroupElement(rhs.0.mul(self.0))
+    }
+}
+
+impl Mul<curve25519::GroupElement> for Scalar {
+    type Output = curve25519::GroupElement;
+
+    fn mul(self, rhs: curve25519::GroupElement) -> Self::Output {
+        curve25519::GroupElement(rhs.0.mul(self.0))
+    }
+}
+
+impl<'r> Mul<&'r curve25519::GroupElement> for Scalar {
+    type Output = curve25519::GroupElement;
+
+    fn mul(self, rhs: &'r curve25519::GroupElement) -> Self::Output {
+        curve25519::GroupElement(rhs.0.mul(self.0))
+    }
+}
+
+impl Mul<curve25519::GroupElement> for &Scalar {
+    type Output = curve25519::GroupElement;
+
+    fn mul(self, rhs: curve25519::GroupElement) -> Self::Output {
+        curve25519::GroupElement(rhs.0.mul(self.0))
+    }
+}
+
+impl<'r> Mul<&'r curve25519::GroupElement> for &'r Scalar {
+    type Output = curve25519::GroupElement;
+
+    fn mul(self, rhs: &'r curve25519::GroupElement) -> Self::Output {
+        curve25519::GroupElement(rhs.0.mul(self.0))
     }
 }
 

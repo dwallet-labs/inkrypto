@@ -294,6 +294,14 @@ pub trait AdditivelyHomomorphicDecryptionKey<
         public_parameters: &EncryptionKey::PublicParameters,
     ) -> Result<Self>;
 
+    /// Generates a new decryption key.
+    fn generate(
+        plaintext_space_public_parameters: group::PublicParameters<
+            EncryptionKey::PlaintextSpaceGroupElement,
+        >,
+        rng: &mut impl CsRng,
+    ) -> Result<Self>;
+
     /// $\Dec(sk, \ct) \to \pt$: Decrypt `ciphertext` using `decryption_key`.
     /// A deterministic algorithm that inputs a secret key $sk$ and a ciphertext $\ct \in
     /// \calC_{pk}$ outputs a plaintext $\pt \in \calP_{pk}$.
@@ -323,15 +331,30 @@ pub trait AdditivelyHomomorphicDecryptionKey<
 pub trait AdditivelyHomomorphicDecryptionKeyShare<
     const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
     EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
->: AsRef<EncryptionKey> + Clone + PartialEq + Send + Sync
+>: AsRef<EncryptionKey> + Clone + PartialEq + Eq + Debug + Send + Sync
 {
     /// The decryption key share used for decryption.
-    type SecretKeyShare;
+    type SecretKeyShare: Clone + Debug + PartialEq + Eq + Send + Sync;
     /// A decryption share of a ciphertext in the process of Threshold Decryption.
-    type DecryptionShare: Clone + Debug + PartialEq + Eq + Default + Send + Sync;
+    type DecryptionShare: Serialize
+        + for<'r> Deserialize<'r>
+        + Clone
+        + Debug
+        + PartialEq
+        + Eq
+        + Default
+        + Send
+        + Sync;
     /// A proof that a decryption share was correctly computed on a ciphertext using the decryption
     /// key share `Self`.
-    type PartialDecryptionProof: Clone + Debug + PartialEq + Eq + Send + Sync;
+    type PartialDecryptionProof: Serialize
+        + for<'r> Deserialize<'r>
+        + Clone
+        + Debug
+        + PartialEq
+        + Eq
+        + Send
+        + Sync;
     /// A lagrange coefficient used for Threshold Decryption.
     /// These values are passed to the `Self::combine_decryption_shares` methods
     /// separately from `Self::PublicParameters` as they depend on the decrypter set.
@@ -1311,8 +1334,6 @@ pub mod test_helpers {
                 (*j, decryption_shares.unwrap())
             })
             .collect();
-
-        println!("num {:?}", decryption_shares_and_proofs.len()); // todo
 
         let mut g = c.benchmark_group(format!(
             "{encryption_scheme_name}/combine_decryption_shares()"

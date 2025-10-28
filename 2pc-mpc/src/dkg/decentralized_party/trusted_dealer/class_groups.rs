@@ -3,10 +3,11 @@
 
 //! This file implements the decentralized party in the trusted dealer setting for Class Groups
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
-use crypto_bigint::{Encoding, Int, Uint};
+use crypto_bigint::{ConcatMixed, Encoding, Int, Uint};
 
+use class_groups::encryption_key::public_parameters::Instantiate;
 use class_groups::equivalence_class::EquivalenceClassOps;
 use class_groups::MultiFoldNupowAccelerator;
 use class_groups::{
@@ -15,15 +16,16 @@ use class_groups::{
     EquivalenceClass, RandomnessSpaceGroupElement, RandomnessSpacePublicParameters,
 };
 use commitment::CommitmentSizedNumber;
-use group::{CsRng, PartyID, PrimeGroupElement};
+use group::{CsRng, PartyID, PrimeGroupElement, StatisticalSecuritySizedNumber};
 use homomorphic_encryption::AdditivelyHomomorphicEncryptionKey;
 use mpc::{AsynchronousRoundResult, AsynchronouslyAdvanceable, WeightedThresholdAccessStructure};
 
-use crate::class_groups::ProtocolPublicParameters;
+use crate::class_groups::{CentralizedPartyKeyShareVerification, ProtocolPublicParameters};
 use crate::dkg::centralized_party::trusted_dealer::class_groups::Message;
 use crate::dkg::centralized_party::trusted_dealer::encryption_of_decenetralized_party_secret_key_share_protocol_context;
+use crate::dkg::class_groups::asynchronous::verify_centralized_party_key_share;
 use crate::dkg::decentralized_party::trusted_dealer::Party;
-use crate::dkg::decentralized_party::Output;
+use crate::dkg::decentralized_party::{Output, VersionedOutput};
 use crate::languages::class_groups::{
     verify_encryption_of_discrete_log, EncryptionOfDiscreteLogProof,
 };
@@ -36,38 +38,22 @@ impl<
         const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
     >
-    super::Party<
+    crate::class_groups::TrustedDealerDKGDecentralizedParty<
         SCALAR_LIMBS,
-        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
         GroupElement,
-        EncryptionKey<
-            SCALAR_LIMBS,
-            FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            GroupElement,
-        >,
-        Message<
-            KnowledgeOfDiscreteLogProof<SCALAR_LIMBS, GroupElement>,
-            EncryptionOfDiscreteLogProof<
-                SCALAR_LIMBS,
-                FUNDAMENTAL_DISCRIMINANT_LIMBS,
-                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-                GroupElement,
-                ProtocolContext,
-            >,
-            GroupElement::Value,
-            CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        >,
-        ProtocolPublicParameters<
-            SCALAR_LIMBS,
-            FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            GroupElement,
-        >,
     >
 where
     Int<SCALAR_LIMBS>: Encoding,
     Uint<SCALAR_LIMBS>: Encoding,
+    Uint<SCALAR_LIMBS>: Encoding
+        + ConcatMixed<StatisticalSecuritySizedNumber>
+        + for<'a> From<
+            &'a <Uint<SCALAR_LIMBS> as ConcatMixed<StatisticalSecuritySizedNumber>>::MixedOutput,
+        > + for<'a> From<
+            &'a <Uint<SCALAR_LIMBS> as ConcatMixed<StatisticalSecuritySizedNumber>>::MixedOutput,
+        >,
     Int<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
@@ -113,6 +99,17 @@ where
             RandomnessSpacePublicParameters<FUNDAMENTAL_DISCRIMINANT_LIMBS>,
             CiphertextSpacePublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
         >,
+    >,
+    encryption_key::PublicParameters<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<GroupElement::Scalar>,
+    >: Instantiate<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<GroupElement::Scalar>,
     >,
 {
     /// This function implements the first and only round of the decentralized party in a trusted dealer setting.
@@ -203,10 +200,23 @@ impl<
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             GroupElement,
         >,
+        CentralizedPartyKeyShareVerification<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >,
     >
 where
     Int<SCALAR_LIMBS>: Encoding,
     Uint<SCALAR_LIMBS>: Encoding,
+    Uint<SCALAR_LIMBS>: Encoding
+        + ConcatMixed<StatisticalSecuritySizedNumber>
+        + for<'a> From<
+            &'a <Uint<SCALAR_LIMBS> as ConcatMixed<StatisticalSecuritySizedNumber>>::MixedOutput,
+        > + for<'a> From<
+            &'a <Uint<SCALAR_LIMBS> as ConcatMixed<StatisticalSecuritySizedNumber>>::MixedOutput,
+        >,
     Int<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
@@ -253,6 +263,17 @@ where
             CiphertextSpacePublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
         >,
     >,
+    encryption_key::PublicParameters<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<GroupElement::Scalar>,
+    >: Instantiate<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<GroupElement::Scalar>,
+    >,
 {
     type PrivateInput = ();
 
@@ -263,7 +284,6 @@ where
         _messages: Vec<HashMap<PartyID, Self::Message>>,
         _private_input: Option<Self::PrivateInput>,
         public_input: &Self::PublicInput,
-        _malicious_parties_by_round: HashMap<u64, HashSet<PartyID>>,
         _rng: &mut impl CsRng,
     ) -> std::result::Result<
         AsynchronousRoundResult<Self::Message, Self::PrivateOutput, Self::PublicOutput>,
@@ -273,6 +293,21 @@ where
             public_input.session_id,
             &public_input.protocol_public_parameters,
             &public_input.centralized_party_message,
+        )?;
+
+        let public_output = VersionedOutput::TargetedPublicDKGOutput(public_output);
+
+        verify_centralized_party_key_share::<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >(
+            &public_input.protocol_public_parameters,
+            public_output.clone(),
+            public_input
+                .centralized_party_secret_key_share_verification
+                .clone(),
         )?;
 
         Ok(AsynchronousRoundResult::Finalize {

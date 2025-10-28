@@ -8,7 +8,7 @@ use crate::helpers::CtMinMax;
 use crate::ibqf::Ibqf;
 use crate::{EquivalenceClass, Error};
 use crypto_bigint::subtle::ConstantTimeEq;
-use crypto_bigint::{Concat, ConstantTimeSelect, Encoding, Int, Limb, Split, Uint, Zero};
+use crypto_bigint::{Concat, ConstantTimeSelect, Encoding, Int, Limb, Split, Uint};
 use serde::{Deserialize, Serialize};
 
 /// Struct capable of accelerating the [Ibqf::nupow] operation.
@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 pub struct MultiFoldNupowAccelerator<const LIMBS: usize>
 where
     Int<LIMBS>: Encoding,
+    Uint<LIMBS>: Encoding,
 {
     form: EquivalenceClass<LIMBS>,
     table: Vec<Ibqf<LIMBS>>,
@@ -32,7 +33,7 @@ impl<const HALF: usize, const LIMBS: usize, const DOUBLE: usize> MultiFoldNupowA
 where
     Int<LIMBS>: Encoding,
     Uint<HALF>: Concat<Output = Uint<LIMBS>>,
-    Uint<LIMBS>: Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
+    Uint<LIMBS>: Encoding + Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
     Uint<DOUBLE>: Split<Output = Uint<LIMBS>>,
 {
     /// Construct a new [MultiFoldNupowAccelerator] for `form` that targets exponents of
@@ -251,8 +252,8 @@ where
             // First, we choose `elt` to be non-unit (we arbitrarily chose `self.form` here),
             // Then, we select the (randomized) composition of `res` and `elt` unless `idx` is zero,
             // in which case we simply select `res` as composition with unit returns the original value.
-            let elt = Ibqf::ct_select(&elt, self.form.representative(), idx.is_zero());
-            res = Ibqf::ct_select(&res.nucomp_randomized_pair(elt), &res, idx.is_zero())
+            let elt = Ibqf::ct_select(&elt, self.form.representative(), idx.ct_eq(&0));
+            res = Ibqf::ct_select(&res.nucomp_randomized_pair(elt), &res, idx.ct_eq(&0))
         }
 
         res
@@ -331,6 +332,7 @@ pub(crate) struct MultiFoldEncodedExponent<const EXPONENT_LIMBS: usize> {
 impl<const LIMBS: usize> From<&MultiFoldNupowAccelerator<LIMBS>> for EquivalenceClass<LIMBS>
 where
     Int<LIMBS>: Encoding,
+    Uint<LIMBS>: Encoding,
 {
     fn from(value: &MultiFoldNupowAccelerator<LIMBS>) -> Self {
         value.form

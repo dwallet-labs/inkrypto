@@ -4,7 +4,7 @@
 #![allow(clippy::type_complexity)]
 
 use std::array;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::marker::PhantomData;
 
 use crypto_bigint::subtle::{ConditionallySelectable, ConstantTimeLess};
@@ -200,8 +200,11 @@ pub fn generate_keypairs_per_crt_prime(
 ) -> Result<[Uint<CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS>; MAX_PRIMES]> {
     setup_parameters_per_crt_prime
         .map(|setup_parameters| {
-            SecretKeyShareCRTPrimeDecryptionKey::generate(setup_parameters, rng)
-                .map(|(_, decryption_key)| decryption_key.decryption_key)
+            SecretKeyShareCRTPrimeDecryptionKey::generate_with_setup_parameters(
+                setup_parameters,
+                rng,
+            )
+            .map(|(_, decryption_key)| decryption_key.decryption_key)
         })
         .flat_map_results()
 }
@@ -339,9 +342,7 @@ pub(super) fn instantiate_encryption_keys_per_crt_prime(
 pub fn verify_knowledge_of_decryption_key_proofs(
     language_public_parameters_per_crt_prime: [KnowledgeOfDiscreteLogUCPublicParameters;
         MAX_PRIMES],
-    preverified_parties: HashSet<PartyID>,
     parties_without_valid_encryption_keys: Vec<PartyID>,
-    verify_non_pre_verified: bool,
     encryption_keys_and_proofs_per_crt_prime: HashMap<
         PartyID,
         [(
@@ -359,22 +360,15 @@ pub fn verify_knowledge_of_decryption_key_proofs(
     let iter = encryption_keys_and_proofs_per_crt_prime.par_iter();
 
     let parties_sending_invalid_proofs: Vec<PartyID> = iter
-        .filter(|(party_id, encryption_keys_and_proofs)| {
-            // Verify all parties except those we know that already has been verified.
-            if preverified_parties.contains(party_id) {
-                false
-            } else if verify_non_pre_verified {
-                encryption_keys_and_proofs
-                    .iter()
-                    .zip(language_public_parameters_per_crt_prime.iter())
-                    .any(|((encryption_key, proof), language_public_parameters)| {
-                        proof
-                            .verify(&PhantomData, language_public_parameters, *encryption_key)
-                            .is_err()
-                    })
-            } else {
-                true
-            }
+        .filter(|(_, encryption_keys_and_proofs)| {
+            encryption_keys_and_proofs
+                .iter()
+                .zip(language_public_parameters_per_crt_prime.iter())
+                .any(|((encryption_key, proof), language_public_parameters)| {
+                    proof
+                        .verify(&PhantomData, language_public_parameters, *encryption_key)
+                        .is_err()
+                })
         })
         .map(|(party_id, _)| *party_id)
         .collect();
@@ -406,7 +400,7 @@ pub fn verify_knowledge_of_decryption_key_proofs(
 
 #[cfg(test)]
 mod tests {
-    use crypto_bigint::{CheckedMul, RandomMod};
+    use crypto_bigint::RandomMod;
 
     use group::{OsCsRng, Reduce};
     use mpc::secret_sharing::shamir::over_the_integers::{
@@ -501,8 +495,11 @@ pub(crate) mod benches {
                 .unwrap();
         let setup_parameters = setup_parameters_per_crt_prime[0].clone();
         let (pp, decryption_key) =
-            SecretKeyShareCRTPrimeDecryptionKey::generate(setup_parameters.clone(), &mut OsCsRng)
-                .unwrap();
+            SecretKeyShareCRTPrimeDecryptionKey::generate_with_setup_parameters(
+                setup_parameters.clone(),
+                &mut OsCsRng,
+            )
+            .unwrap();
         let encryption_key = decryption_key.encryption_key;
 
         group.bench_function("equivalence class mul (ct)", |b| {

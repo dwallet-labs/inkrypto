@@ -35,7 +35,8 @@ pub struct EncryptionKey<
     PhantomData<GroupElement>,
 )
 where
-    Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding;
+    Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding;
 
 pub(crate) type Plaintext<const PLAINTEXT_LIMBS: usize> = Uint<PLAINTEXT_LIMBS>;
 
@@ -159,8 +160,14 @@ where
         // c = [L(m)² - ∆(qk)/q²]/4 > [L(m)² - ∆(k)]/4 > -∆(k)/4 > q² > a
         // where (*) follows from the fact that -∆(k) ≥ 4q² + 1, since we're not in the large
         // message variant. Hence, this class is reduced by construction.
-        EquivalenceClass::new_from_coefficients_reduced(a, b, class_group_parameters.delta_qk)
-            .expect("is valid and reduced by construction")
+        //
+        // Safe to vartime; delta_qk is a public value.
+        EquivalenceClass::new_from_coefficients_reduced_vartime_discriminant(
+            a,
+            b,
+            class_group_parameters.delta_qk,
+        )
+        .expect("is valid and reduced by construction")
     }
 }
 
@@ -604,7 +611,8 @@ mod tests {
     #[test]
     fn test_encryption_internal() {
         let sp = get_setup_parameters_secp256k1_112_bits_deterministic();
-        let (pp, sk) = Secp256k1DecryptionKey::generate(sp, &mut OsCsRng).unwrap();
+        let (pp, sk) =
+            Secp256k1DecryptionKey::generate_with_setup_parameters(sp, &mut OsCsRng).unwrap();
         let pk = sk.encryption_key;
 
         let plaintext =
@@ -626,7 +634,8 @@ mod tests {
     #[test]
     fn test_encryption_function_equivalence() {
         let sp = get_setup_parameters_secp256k1_112_bits_deterministic();
-        let (pp, sk) = Secp256k1DecryptionKey::generate(sp, &mut OsCsRng).unwrap();
+        let (pp, sk) =
+            Secp256k1DecryptionKey::generate_with_setup_parameters(sp, &mut OsCsRng).unwrap();
         let pk = sk.encryption_key;
 
         let plaintext =
@@ -1169,8 +1178,11 @@ pub(crate) mod benches {
         group.measurement_time(Duration::from_secs(10));
 
         let setup_parameters = get_setup_parameters_secp256k1_112_bits_deterministic();
-        let (pp, decryption_key) =
-            Secp256k1DecryptionKey::generate(setup_parameters.clone(), &mut OsCsRng).unwrap();
+        let (pp, decryption_key) = Secp256k1DecryptionKey::generate_with_setup_parameters(
+            setup_parameters.clone(),
+            &mut OsCsRng,
+        )
+        .unwrap();
         let encryption_key = decryption_key.encryption_key;
 
         let normally_accelerated_public_parameters =
@@ -1217,8 +1229,11 @@ pub(crate) mod benches {
         group.measurement_time(Duration::from_secs(10));
 
         let setup_parameters = get_setup_parameters_ristretto_112_bits_deterministic();
-        let (pp, decryption_key) =
-            RistrettoDecryptionKey::generate(setup_parameters.clone(), &mut OsCsRng).unwrap();
+        let (pp, decryption_key) = RistrettoDecryptionKey::generate_with_setup_parameters(
+            setup_parameters.clone(),
+            &mut OsCsRng,
+        )
+        .unwrap();
         let encryption_key = decryption_key.encryption_key;
 
         let normally_accelerated_public_parameters =

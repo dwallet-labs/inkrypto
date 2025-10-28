@@ -589,7 +589,7 @@ mod tests {
 
     #[test]
     fn test_nupow_relative_to_nudupl_and_nucomp() {
-        let f = Ibqf128::new_reduced_64(11, 16, -2868).unwrap();
+        let f = Ibqf128::new_reduced_64(11, 16, (239, 0, 12)).unwrap();
 
         assert_eq!(f.nudupl(), f.nupow(&Uint::<1>::from(2u64)));
         assert_eq!(f.nudupl().nudupl(), f.nupow(&Uint::<1>::from(4u64)));
@@ -778,7 +778,7 @@ pub(crate) mod benches {
     ) where
         Int<LIMBS>: Encoding,
         Uint<HALF>: Concat<Output = Uint<LIMBS>>,
-        Uint<LIMBS>: Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
+        Uint<LIMBS>: Encoding + Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
         Uint<DOUBLE>: Split<Output = Uint<LIMBS>>,
     {
         let mut form = *form.representative();

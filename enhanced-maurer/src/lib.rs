@@ -12,6 +12,7 @@ pub mod aggregation;
 pub mod committed_linear_evaluation;
 pub mod encryption_of_discrete_log;
 pub mod encryption_of_tuple;
+pub mod extended_encryption_of_tuple;
 pub mod language;
 pub mod proof;
 pub mod scaling_of_discrete_log;
@@ -96,4 +97,8 @@ impl From<Error> for ::mpc::Error {
 }
 
 #[cfg(feature = "benchmarking")]
-criterion::criterion_group!(benches, encryption_of_tuple::benches::benchmark);
+criterion::criterion_group!(
+    benches,
+    encryption_of_tuple::benches::benchmark,
+    extended_encryption_of_tuple::benches::benchmark
+);

@@ -1,7 +1,7 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::marker::PhantomData;
 
 use crypto_bigint::{Encoding, Int, Uint};
@@ -175,10 +175,158 @@ where
         messages: Vec<HashMap<PartyID, Self::Message>>,
         decryption_key_per_crt_prime: Option<Self::PrivateInput>,
         public_input: &Self::PublicInput,
-        malicious_parties_by_round: HashMap<u64, HashSet<PartyID>>,
         rng: &mut impl CsRng,
     ) -> Result<AsynchronousRoundResult<Self::Message, Self::PrivateOutput, Self::PublicOutput>>
     {
+        let (
+            decryption_key_share_bits,
+            decryption_key_per_crt_prime,
+            equality_of_discrete_log_in_hidden_order_group_base_protocol_context,
+            encryption_of_decryption_key_base_protocol_context,
+            pvss_party,
+        ) = Self::prepare_advance(
+            session_id,
+            tangible_party_id,
+            access_structure,
+            decryption_key_per_crt_prime,
+            public_input,
+        )?;
+
+        match &messages[..] {
+            [] => Self::advance_first_round(
+                tangible_party_id,
+                session_id,
+                equality_of_discrete_log_in_hidden_order_group_base_protocol_context,
+                &public_input.setup_parameters_per_crt_prime,
+                &public_input.setup_parameters,
+                &pvss_party,
+                rng,
+            ),
+            [deal_decryption_key_contribution_messages] => Self::advance_second_round(
+                tangible_party_id,
+                access_structure,
+                &public_input.setup_parameters_per_crt_prime,
+                &pvss_party,
+                deal_decryption_key_contribution_messages.clone(),
+                rng,
+            ),
+            [deal_decryption_key_contribution_messages, verified_dealers_messages] => {
+                Self::advance_third_round(
+                    tangible_party_id,
+                    session_id,
+                    equality_of_discrete_log_in_hidden_order_group_base_protocol_context,
+                    encryption_of_decryption_key_base_protocol_context,
+                    access_structure,
+                    public_input,
+                    &pvss_party,
+                    deal_decryption_key_contribution_messages.clone(),
+                    verified_dealers_messages.clone(),
+                    decryption_key_per_crt_prime,
+                    decryption_key_share_bits,
+                    rng,
+                )
+            }
+            [deal_decryption_key_contribution_messages, _, encrypt_decryption_key_shares_messages] => {
+                Self::advance_fourth_round(
+                    tangible_party_id,
+                    session_id,
+                    encryption_of_decryption_key_base_protocol_context,
+                    access_structure,
+                    public_input,
+                    &pvss_party,
+                    deal_decryption_key_contribution_messages.clone(),
+                    encrypt_decryption_key_shares_messages.clone(),
+                    decryption_key_share_bits,
+                    rng,
+                )
+            }
+            _ => Err(Error::InvalidParameters),
+        }
+    }
+
+    fn round_causing_threshold_not_reached(failed_round: u64) -> Option<u64> {
+        match failed_round {
+            3 => Some(1),
+            4 => Some(3),
+            _ => None,
+        }
+    }
+}
+
+impl<
+        const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
+        const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+        const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+        GroupElement: PrimeGroupElement<PLAINTEXT_SPACE_SCALAR_LIMBS>,
+    >
+    Party<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        GroupElement,
+    >
+where
+    Int<PLAINTEXT_SPACE_SCALAR_LIMBS>: Encoding,
+    Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>: Encoding,
+
+    Int<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+
+    Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
+    SetupParameters<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<GroupElement::Scalar>,
+    >: DeriveFromPlaintextPublicParameters<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<GroupElement::Scalar>,
+    >,
+    GroupElement::Scalar: Default,
+{
+    #[allow(clippy::type_complexity)]
+    pub fn prepare_advance(
+        session_id: CommitmentSizedNumber,
+        tangible_party_id: PartyID,
+        access_structure: &WeightedThresholdAccessStructure,
+        decryption_key_per_crt_prime: Option<
+            [Uint<CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS>; MAX_PRIMES],
+        >,
+        public_input: &PublicInput<
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >,
+    ) -> Result<(
+        u32,
+        [Uint<CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS>; MAX_PRIMES],
+        BaseProtocolContext,
+        BaseProtocolContext,
+        publicly_verifiable_secret_sharing::Party<
+            NUM_SECRET_SHARE_PRIMES,
+            SECRET_KEY_SHARE_LIMBS,
+            SECRET_KEY_SHARE_WITNESS_LIMBS,
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >,
+    )> {
         let decryption_key_per_crt_prime =
             decryption_key_per_crt_prime.ok_or(Error::InvalidParameters)?;
 
@@ -195,11 +343,12 @@ where
             decryption_key_bits,
         );
 
-        let knowledge_of_discrete_log_base_protocol_context = BaseProtocolContext {
-            protocol_name: "Class Groups Distributed Key Generation (DKG)".to_string(),
-            round: 1,
-            proof_name: "Proof of Valid Threshold Encryption Key".to_string(),
-        };
+        let equality_of_discrete_log_in_hidden_order_group_base_protocol_context =
+            BaseProtocolContext {
+                protocol_name: "Class Groups Distributed Key Generation (DKG)".to_string(),
+                round: 1,
+                proof_name: "Proof of Valid Threshold Encryption Key".to_string(),
+            };
 
         let base_protocol_context = BaseProtocolContext {
             protocol_name: "Class Groups Distributed Key Generation (DKG)".to_string(),
@@ -241,70 +390,12 @@ where
                 .to_string(),
         };
 
-        match &messages[..] {
-            [] => Self::advance_first_round(
-                tangible_party_id,
-                session_id,
-                knowledge_of_discrete_log_base_protocol_context,
-                &public_input.setup_parameters_per_crt_prime,
-                &public_input.setup_parameters,
-                &pvss_party,
-                rng,
-            ),
-            [deal_decryption_key_contribution_messages] => Self::advance_second_round(
-                tangible_party_id,
-                access_structure,
-                &public_input.setup_parameters_per_crt_prime,
-                &pvss_party,
-                deal_decryption_key_contribution_messages.clone(),
-                rng,
-            ),
-            [deal_decryption_key_contribution_messages, verified_dealers_messages] => {
-                Self::advance_third_round(
-                    tangible_party_id,
-                    session_id,
-                    knowledge_of_discrete_log_base_protocol_context,
-                    encryption_of_decryption_key_base_protocol_context,
-                    access_structure,
-                    public_input,
-                    &pvss_party,
-                    deal_decryption_key_contribution_messages.clone(),
-                    verified_dealers_messages.clone(),
-                    decryption_key_per_crt_prime,
-                    decryption_key_share_bits,
-                    rng,
-                )
-            }
-            [deal_decryption_key_contribution_messages, _, encrypt_decryption_key_shares_messages] =>
-            {
-                let malicious_third_round_parties = malicious_parties_by_round
-                    .get(&3)
-                    .ok_or(Error::InvalidParameters)?
-                    .clone();
-
-                Self::advance_fourth_round(
-                    tangible_party_id,
-                    session_id,
-                    encryption_of_decryption_key_base_protocol_context,
-                    access_structure,
-                    public_input,
-                    &pvss_party,
-                    deal_decryption_key_contribution_messages.clone(),
-                    encrypt_decryption_key_shares_messages.clone(),
-                    malicious_third_round_parties,
-                    decryption_key_share_bits,
-                    rng,
-                )
-            }
-            _ => Err(Error::InvalidParameters),
-        }
-    }
-
-    fn round_causing_threshold_not_reached(failed_round: u64) -> Option<u64> {
-        match failed_round {
-            3 => Some(1),
-            4 => Some(3),
-            _ => None,
-        }
+        Ok((
+            decryption_key_share_bits,
+            decryption_key_per_crt_prime,
+            equality_of_discrete_log_in_hidden_order_group_base_protocol_context,
+            encryption_of_decryption_key_base_protocol_context,
+            pvss_party,
+        ))
     }
 }
