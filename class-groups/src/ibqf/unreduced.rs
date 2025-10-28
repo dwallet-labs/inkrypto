@@ -11,12 +11,12 @@ use crypto_bigint::subtle::{
     CtOption,
 };
 use crypto_bigint::{
-    CheckedAdd, CheckedMul, CheckedSub, Concat, ConstantTimeSelect, Encoding, Int, Limb,
+    CheckedAdd, CheckedMul, CheckedSub, Concat, ConstantTimeSelect, Encoding, Gcd, Int, Limb,
     NonZeroInt, NonZeroUint, Split, Uint, Zero,
 };
 use serde::{Deserialize, Serialize};
 use std::mem;
-use std::ops::{BitAnd, BitOr, Deref};
+use std::ops::{BitAnd, BitOr, Deref, Not};
 
 /// Unreduced Equivalent of [`Ibqf`].
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -33,7 +33,7 @@ where
 impl<const LIMBS: usize, const DOUBLE: usize> UnreducedIbqf<LIMBS>
 where
     Int<LIMBS>: Encoding,
-    Uint<LIMBS>: Concat<Output = Uint<DOUBLE>>,
+    Uint<LIMBS>: Encoding + Concat<Output = Uint<DOUBLE>>,
     Uint<DOUBLE>: Split<Output = Uint<LIMBS>>,
 {
     /// Construct a new form `(a, b, c)`, given `(a, b)` and discriminant `∆`.
@@ -104,7 +104,9 @@ where
     Uint<LIMBS>: Encoding + Split<Output = Uint<HALF>>,
 {
     /// Variation to [`Self::new`] which assumes `b² + |∆|` fits in [`Uint<LIMBS>`].
-    pub fn new_compact(
+    ///
+    /// Executes in variable time w.r.t. `discriminant`.
+    pub fn new_compact_vartime_discriminant(
         a: NonZeroUint<HALF>,
         b: Int<HALF>,
         discriminant: &Discriminant<LIMBS>,
@@ -142,24 +144,67 @@ where
                 })
             });
 
-        form.and_then(|form| CtOption::new(form, form.compact_is_primitive()))
+        form.and_then(|form| {
+            CtOption::new(
+                form,
+                form.compact_is_primitive_vartime_discriminant(discriminant),
+            )
+        })
     }
 
     /// Whether this form is primitive, i.e., whether `gcd(a, b, c) = 1`.
     ///
     /// Assumes `a` and `b` fit in [`Uint<HALF>`] and [`Int<HALF>`], respectively.
-    fn compact_is_primitive(&self) -> Choice {
+    ///
+    /// Executes in variable time w.r.t. `discriminant`.
+    fn compact_is_primitive_vartime_discriminant(
+        &self,
+        discriminant: &Discriminant<LIMBS>,
+    ) -> Choice {
         // Since `self` is constructed from a `CompactIbqf`, `a` and `b` fit in HALF limbs.
         let a = self.a.resize::<HALF>();
         let b = self.b.resize::<HALF>();
 
+        if 2 * discriminant.lower_bound_p_bits_vartime() >= discriminant.bits_vartime() {
+            // At this point ||p|| > ||Δ||/2 and thus p > q.
+            //
+            // Recall that Δ = -pq^{2k+1}. Let g := gcd(a, b, c).
+            // Let A := a/g, B := b/g and C := c/g. It now follows that
+            // -pq^{2k+1} = Δ = b² - 4ac = g²B² - 4g²AC = g²(B²-4AC), implying that g² must
+            // divide -pq^{2k+1}. With p and q both integral and p > q, it must be that g² must
+            // divide q^2k.
+
+            if discriminant.k() == 0 {
+                // With k = 0, g² must divide q^2k = 1 and thus g = ±1.
+                // We can therefore conclude that this form is primitive.
+                return Choice::from(1u8);
+            }
+
+            // Because gcd(a, b, c) is either 1 or a multiple of q, it is sufficient to check
+            // whether a, b, c are divisible by q. In fact, we only need to perform this check for
+            // a and c:
+            //
+            // Let f = gcd(a, c), A' := a/f, and C' := c/f.
+            // -pq^{2k+1} = Δ = b² - 4ac = b² - 4f²A'C'
+            // and thus
+            // -pq^{2k+1}/f² = b²/f² - 4A'C'
+            //
+            // Since k > 0, f² is a proper divisor of q^{2k+1}. It therefore follows that f² must
+            // be also be a proper divisor of b² and f thus a proper divisor of b.
+
+            let a_is_zero_mod_q = a.rem_uint(discriminant.q()).is_zero();
+            let c_is_zero_mod_q = self.c.rem_uint(discriminant.q()).is_zero();
+
+            return a_is_zero_mod_q.bitand(c_is_zero_mod_q).not();
+        }
+
         // Note that gcd(a, b, c) = gcd(gcd(a, b), c) and gcd(x, y) = gcd(x, y mod x)
         let gcd_a_b = a
-            .bingcd(&b)
+            .gcd(&b)
             .to_nz()
             .expect("gcd is non-zero since a is non-zero.");
         let c_mod_gcd = self.c.abs().rem(&gcd_a_b);
-        gcd_a_b.bingcd(&c_mod_gcd).ct_eq(&NonZeroUint::ONE)
+        gcd_a_b.gcd_uint(&c_mod_gcd).ct_eq(&NonZeroUint::ONE)
     }
 }
 
@@ -173,11 +218,7 @@ where
     ///
     /// Ref: Definition 5.2.3 in "A Course in Computational Algebraic Number Theory" (978-3-662-02945-9).
     fn is_primitive(&self) -> Choice {
-        self.a
-            .as_ref()
-            .bingcd(&self.b)
-            .bingcd(&self.c.abs())
-            .ct_eq(&Uint::ONE)
+        (*self.a.as_ref().gcd(&self.b).gcd(&self.c)).ct_eq(&Uint::ONE)
     }
 
     /// Construct `self⁻¹`.
@@ -522,6 +563,7 @@ where
 
 #[cfg(any(test, feature = "test_helpers"))]
 mod test_helpers {
+    use crate::discriminant::Discriminant;
     use crate::ibqf::unreduced::UnreducedIbqf;
     use crypto_bigint::subtle::CtOption;
     use crypto_bigint::{Concat, Encoding, Int, Split, Uint, U128, U64};
@@ -529,7 +571,7 @@ mod test_helpers {
     impl<const LIMBS: usize, const DOUBLE: usize> UnreducedIbqf<LIMBS>
     where
         Int<LIMBS>: Encoding,
-        Uint<LIMBS>: Concat<Output = Uint<DOUBLE>>,
+        Uint<LIMBS>: Encoding + Concat<Output = Uint<DOUBLE>>,
         Uint<DOUBLE>: Split<Output = Uint<LIMBS>>,
     {
         /// Construct an [`UnreducedIbqf`] from three `u64/i64` coefficients.
@@ -551,10 +593,12 @@ mod test_helpers {
         }
 
         /// Variation to [`UnreducedIbqf::new`] that accepts `u64/i64`s
-        pub(crate) fn new_64(a: u64, b: i64, d: i64) -> CtOption<Self> {
+        pub(crate) fn new_64(a: u64, b: i64, d: (u64, u32, u64)) -> CtOption<Self> {
             let a = Uint::from(a).to_nz().unwrap();
             let b = Int::from(b);
-            let d = Int::from(d).to_nz().unwrap().try_into().unwrap();
+
+            let (q, k, p) = d;
+            let d = Discriminant::new_u64(q, k, p).unwrap();
             Self::new(a, b, &d)
         }
     }
@@ -566,13 +610,14 @@ mod test_helpers {
         Uint<LIMBS>: Encoding + Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
         Uint<DOUBLE>: Split<Output = Uint<LIMBS>>,
     {
-        /// Variation to [`UnreducedIbqf::new_compact`] that accepts `u64/i64`s
-        pub(crate) fn new_compact_64(a: u64, b: i64, d: i128) -> CtOption<Self> {
+        /// Variation to [`UnreducedIbqf::new_compact_vartime_discriminant`] that accepts `u64/i64`s
+        pub(crate) fn new_compact_64(a: u64, b: i64, d: (u64, u32, u64)) -> CtOption<Self> {
             let a = Uint::from(a).to_nz().unwrap();
             let b = Int::from(b);
 
-            let d = Int::from_i128(d).to_nz().unwrap().try_into().unwrap();
-            Self::new_compact(a, b, &d)
+            let (q, k, p) = d;
+            let d = Discriminant::new_u64(q, k, p).unwrap();
+            Self::new_compact_vartime_discriminant(a, b, &d)
         }
     }
 
@@ -589,7 +634,7 @@ mod tests {
 
     #[test]
     fn test_new_compact() {
-        let d = -56459343505945252822355091064754986739;
+        let d = (9051846487106533807, 0, 6237328879402234877);
         let a = 710020825444479141;
         let b = -220583842534643419;
         let c = 19896599758943023575i128;
@@ -680,16 +725,44 @@ mod tests {
 pub(crate) mod benches {
     use crate::ibqf::unreduced::UnreducedIbqf;
 
+    use crate::discriminant::Discriminant;
     use criterion::measurement::WallTime;
-    use criterion::BenchmarkGroup;
-    use crypto_bigint::{Concat, Encoding, Gcd, Int, Split, Uint};
+    use criterion::{BatchSize, BenchmarkGroup};
+    use crypto_bigint::{Concat, Encoding, Int, NonZeroUint, Random, Split, Uint};
+    use group::OsCsRng;
+
+    pub(crate) fn benchmark_new_compact<
+        const HALF: usize,
+        const LIMBS: usize,
+        const DOUBLE: usize,
+    >(
+        g: &mut BenchmarkGroup<WallTime>,
+        d: &Discriminant<LIMBS>,
+    ) where
+        Uint<HALF>: Concat<Output = Uint<LIMBS>>,
+        Int<LIMBS>: Encoding,
+        Uint<LIMBS>: Encoding + Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
+        Uint<DOUBLE>: Split<Output = Uint<LIMBS>>,
+    {
+        g.bench_function("new_compact", |b| {
+            b.iter_batched(
+                || {
+                    let a = NonZeroUint::<HALF>::random(&mut OsCsRng);
+                    let b = Int::<HALF>::random(&mut OsCsRng);
+                    (a, b)
+                },
+                |(a, b)| UnreducedIbqf::new_compact_vartime_discriminant(a, b, d),
+                BatchSize::SmallInput,
+            )
+        });
+    }
 
     pub(crate) fn benchmark_reduce<const LIMBS: usize, const DOUBLE: usize>(
         g: &mut BenchmarkGroup<WallTime>,
         form: UnreducedIbqf<LIMBS>,
     ) where
         Int<LIMBS>: Encoding,
-        Uint<LIMBS>: Concat<Output = Uint<DOUBLE>> + Gcd<Output = Uint<LIMBS>>,
+        Uint<LIMBS>: Concat<Output = Uint<DOUBLE>>,
         Uint<DOUBLE>: Split<Output = Uint<LIMBS>>,
     {
         let form = form.mirror_unreduced().unwrap().inverse().unwrap();

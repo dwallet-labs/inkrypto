@@ -369,7 +369,8 @@ pub(crate) mod tests {
 
         let setup_parameters = get_setup_parameters_secp256k1_112_bits_deterministic();
         let (encryption_scheme_public_parameters, _) =
-            Secp256k1DecryptionKey::generate(setup_parameters, &mut OsCsRng).unwrap();
+            Secp256k1DecryptionKey::generate_with_setup_parameters(setup_parameters, &mut OsCsRng)
+                .unwrap();
 
         let encryption_key = <Secp256k1EncryptionKey as AdditivelyHomomorphicEncryptionKey<
             { secp256k1::SCALAR_LIMBS },

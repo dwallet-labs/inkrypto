@@ -77,7 +77,7 @@ where
 {
     /// The output of this round is an agreed upon subset of honest dealears along with the private shares gained by decrypting and summing over the agreed subset.
     /// This round essentially finishes the implementation of $\mathcal{F}_{\textaf{ACS}}$.
-    /// In addition this allows the parties to compute the encryption of the secret key under itself per CRT prime $\textsf_{ct}_{\textsf{sk},Q'_{m'}}$ using interpolation.
+    /// In addition, this allows the parties to compute the encryption of the secret key under itself per CRT prime $\textsf_{ct}_{\textsf{sk},Q'_{m'}}$ using interpolation.
     #[allow(clippy::too_many_arguments)]
     pub(in crate::dkg) fn advance_fourth_round(
         tangible_party_id: PartyID,
@@ -115,7 +115,6 @@ where
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             >,
         >,
-        malicious_third_round_parties: HashSet<PartyID>,
         decryption_key_share_bits: u32,
         rng: &mut impl CsRng,
     ) -> Result<
@@ -125,6 +124,73 @@ where
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
         >,
     > {
+        let (malicious_parties, public_output) = Self::advance_fourth_round_internal(
+            tangible_party_id,
+            session_id,
+            encryption_of_decryption_key_base_protocol_context,
+            access_structure,
+            public_input,
+            pvss_party,
+            deal_decryption_key_contribution_messages,
+            encrypt_decryption_key_shares_messages,
+            decryption_key_share_bits,
+            rng,
+        )?;
+
+        Ok(AsynchronousRoundResult::Finalize {
+            malicious_parties,
+            private_output: (),
+            public_output,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn advance_fourth_round_internal(
+        tangible_party_id: PartyID,
+        session_id: CommitmentSizedNumber,
+        encryption_of_decryption_key_base_protocol_context: BaseProtocolContext,
+        access_structure: &WeightedThresholdAccessStructure,
+        public_input: &PublicInput<
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >,
+        pvss_party: &publicly_verifiable_secret_sharing::Party<
+            NUM_SECRET_SHARE_PRIMES,
+            SECRET_KEY_SHARE_LIMBS,
+            SECRET_KEY_SHARE_WITNESS_LIMBS,
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >,
+        deal_decryption_key_contribution_messages: HashMap<
+            PartyID,
+            Message<
+                PLAINTEXT_SPACE_SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
+        encrypt_decryption_key_shares_messages: HashMap<
+            PartyID,
+            Message<
+                PLAINTEXT_SPACE_SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
+        decryption_key_share_bits: u32,
+        rng: &mut impl CsRng,
+    ) -> Result<(
+        Vec<PartyID>,
+        PublicOutput<
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        >,
+    )> {
         let (
             first_round_malicious_parties,
             parties_that_were_dealt_shares,
@@ -143,6 +209,7 @@ where
 
         let (
             third_round_malicious_parties,
+            malicious_decryption_key_contribution_dealers,
             threshold_encryptions_of_decryption_key_shares_and_proofs,
         ) = Self::handle_third_round_messages(
             access_structure,
@@ -156,7 +223,7 @@ where
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
         >::compute_public_verification_keys(
             access_structure,
-            malicious_third_round_parties.clone(),
+            malicious_decryption_key_contribution_dealers.clone(),
             reconstructed_commitments_to_sharing,
         );
 
@@ -166,7 +233,7 @@ where
                 FUNDAMENTAL_DISCRIMINANT_LIMBS,
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             >::compute_threshold_encryption_keys(
-                malicious_third_round_parties.clone(),
+                malicious_decryption_key_contribution_dealers.clone(),
                 threshold_encryption_key_shares_and_proofs,
             )?;
 
@@ -269,7 +336,7 @@ where
         let public_output = PublicOutput::new::<GroupElement>(
             access_structure,
             public_input.setup_parameters_per_crt_prime.clone(),
-            malicious_third_round_parties.clone(),
+            malicious_decryption_key_contribution_dealers.clone(),
             interpolation_subset,
             adjusted_lagrange_coefficients,
             parties_that_were_dealt_shares,
@@ -284,14 +351,10 @@ where
         let malicious_parties: Vec<_> = first_round_malicious_parties
             .into_iter()
             .chain(third_round_malicious_parties)
-            .chain(malicious_third_round_parties)
+            .chain(malicious_decryption_key_contribution_dealers)
             .chain(parties_sending_invalid_proofs)
             .deduplicate_and_sort();
 
-        Ok(AsynchronousRoundResult::Finalize {
-            malicious_parties,
-            private_output: (),
-            public_output,
-        })
+        Ok((malicious_parties, public_output))
     }
 }

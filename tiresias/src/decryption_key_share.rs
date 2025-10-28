@@ -274,10 +274,10 @@ impl AdditivelyHomomorphicDecryptionKeyShare<PLAINTEXT_SPACE_SCALAR_LIMBS, Encry
             .into_iter()
             .map(|c_prime| {
                 let paillier_associate_bi_prime_for_division = NonZero::new(
-                    public_parameters
+                    (*public_parameters
                         .encryption_scheme_public_parameters
                         .plaintext_space_public_parameters()
-                        .modulus
+                        .modulus)
                         .resize::<{ PaillierModulusSizedNumber::LIMBS }>(),
                 )
                 .unwrap();

@@ -1,7 +1,9 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
-use std::collections::{HashMap, HashSet};
+#![allow(clippy::type_complexity)]
+
+use std::collections::HashMap;
 use std::marker::PhantomData;
 
 use crypto_bigint::{Encoding, Int, Uint};
@@ -193,10 +195,154 @@ where
         messages: Vec<HashMap<PartyID, Self::Message>>,
         private_input: Option<Self::PrivateInput>,
         public_input: &Self::PublicInput,
-        malicious_parties_by_round: HashMap<u64, HashSet<PartyID>>,
         rng: &mut impl CsRng,
     ) -> Result<AsynchronousRoundResult<Self::Message, Self::PrivateOutput, Self::PublicOutput>>
     {
+        let (
+            decryption_key_shares,
+            current_decryption_key_share_bits,
+            randomizer_contribution_bits,
+            _,
+            equality_of_discrete_log_in_hidden_order_group_base_protocol_context,
+            randomizer_contribution_to_threshold_encryption_key_base_protocol_context,
+            randomizer_contribution_to_upcoming_pvss_party,
+        ) = Self::prepare_advance(
+            session_id,
+            tangible_party_id,
+            current_access_structure,
+            private_input,
+            public_input,
+        )?;
+
+        match &messages[..] {
+            [] => Self::advance_first_round(
+                tangible_party_id,
+                session_id,
+                randomizer_contribution_to_threshold_encryption_key_base_protocol_context,
+                public_input,
+                &public_input.setup_parameters,
+                &randomizer_contribution_to_upcoming_pvss_party,
+                randomizer_contribution_bits,
+                rng,
+            ),
+            [deal_randomizer_messages] => Self::advance_second_round(
+                tangible_party_id,
+                public_input,
+                deal_randomizer_messages.clone(),
+                &randomizer_contribution_to_upcoming_pvss_party,
+                rng,
+            ),
+            [deal_randomizer_messages, verified_dealers_messages] => Self::advance_third_round(
+                tangible_party_id,
+                session_id,
+                randomizer_contribution_to_threshold_encryption_key_base_protocol_context,
+                current_access_structure,
+                equality_of_discrete_log_in_hidden_order_group_base_protocol_context,
+                public_input,
+                deal_randomizer_messages.clone(),
+                &randomizer_contribution_to_upcoming_pvss_party,
+                verified_dealers_messages.clone(),
+                decryption_key_shares,
+                current_decryption_key_share_bits,
+                randomizer_contribution_bits,
+                rng,
+            ),
+            [deal_randomizer_messages, _, deal_masked_decryption_key_share_messages] => {
+                Self::advance_fourth_round(
+                    tangible_party_id,
+                    current_access_structure,
+                    session_id,
+                    equality_of_discrete_log_in_hidden_order_group_base_protocol_context,
+                    public_input,
+                    deal_randomizer_messages.clone(),
+                    &randomizer_contribution_to_upcoming_pvss_party,
+                    deal_masked_decryption_key_share_messages.clone(),
+                    current_decryption_key_share_bits,
+                    rng,
+                )
+            }
+            _ => Err(Error::InvalidParameters),
+        }
+    }
+
+    fn round_causing_threshold_not_reached(failed_round: u64) -> Option<u64> {
+        match failed_round {
+            3 => Some(1),
+            4 => Some(3),
+            _ => None,
+        }
+    }
+}
+
+impl<
+        const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
+        const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+        const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+        GroupElement: PrimeGroupElement<PLAINTEXT_SPACE_SCALAR_LIMBS>,
+    >
+    Party<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        GroupElement,
+    >
+where
+    Int<PLAINTEXT_SPACE_SCALAR_LIMBS>: Encoding,
+    Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>: Encoding,
+
+    Int<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+
+    Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
+    Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>: Encoding,
+    SetupParameters<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<GroupElement::Scalar>,
+    >: DeriveFromPlaintextPublicParameters<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<GroupElement::Scalar>,
+    >,
+    GroupElement::Scalar: Default,
+{
+    pub fn prepare_advance(
+        session_id: CommitmentSizedNumber,
+        tangible_party_id: PartyID,
+        current_access_structure: &WeightedThresholdAccessStructure,
+        private_input: Option<<Self as AsynchronouslyAdvanceable>::PrivateInput>,
+        public_input: &<Self as mpc::Party>::PublicInput,
+    ) -> Result<(
+        HashMap<PartyID, SecretKeyShareSizedInteger>,
+        u32,
+        u32,
+        u32,
+        BaseProtocolContext,
+        BaseProtocolContext,
+        publicly_verifiable_secret_sharing::Party<
+            NUM_SECRET_SHARE_PRIMES,
+            SECRET_KEY_SHARE_LIMBS,
+            SECRET_KEY_SHARE_WITNESS_LIMBS,
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >,
+    )> {
         let decryption_key_shares = private_input.ok_or(Error::InvalidParameters)?;
 
         let upcoming_party_id = public_input
@@ -205,13 +351,7 @@ where
             .cloned()
             .ok_or(Error::InvalidParameters)?;
 
-        let setup_parameters =
-            SetupParameters::derive_from_plaintext_parameters::<GroupElement::Scalar>(
-                public_input.plaintext_space_public_parameters.clone(),
-                public_input.computational_security_parameter,
-            )?;
-
-        let decryption_key_bits = setup_parameters.decryption_key_bits();
+        let decryption_key_bits = public_input.setup_parameters.decryption_key_bits();
         let current_decryption_key_share_bits = secret_key_share_size_upper_bound(
             u32::from(current_access_structure.number_of_virtual_parties()),
             u32::from(current_access_structure.threshold),
@@ -246,11 +386,13 @@ where
                 .number_of_virtual_parties()
         );
 
-        let knowledge_of_discrete_log_base_protocol_context = BaseProtocolContext {
-            protocol_name: protocol_name.clone(),
-            round: 1,
-            proof_name: "Proof of Valid Threshold Encryption Public Verification Key".to_string(),
-        };
+        let equality_of_discrete_log_in_hidden_order_group_base_protocol_context =
+            BaseProtocolContext {
+                protocol_name: protocol_name.clone(),
+                round: 1,
+                proof_name: "Proof of Valid Threshold Encryption Public Verification Key"
+                    .to_string(),
+            };
 
         let randomizer_contribution_to_upcoming_base_protocol_context = BaseProtocolContext {
             protocol_name: protocol_name.clone(),
@@ -275,7 +417,7 @@ where
                 upcoming_party_id,
                 current_access_structure.clone(),
                 public_input.upcoming_access_structure.clone(),
-                setup_parameters.clone(),
+                public_input.setup_parameters.clone(),
                 public_input.setup_parameters_per_crt_prime.clone(),
                 public_input
                     .upcoming_encryption_key_values_and_proofs_per_crt_prime
@@ -296,71 +438,14 @@ where
                         .to_string(),
             };
 
-        match &messages[..] {
-            [] => Self::advance_first_round(
-                tangible_party_id,
-                session_id,
-                randomizer_contribution_to_threshold_encryption_key_base_protocol_context,
-                public_input,
-                &setup_parameters,
-                &randomizer_contribution_to_upcoming_pvss_party,
-                randomizer_contribution_bits,
-                rng,
-            ),
-            [deal_randomizer_messages] => Self::advance_second_round(
-                tangible_party_id,
-                public_input,
-                deal_randomizer_messages.clone(),
-                &randomizer_contribution_to_upcoming_pvss_party,
-                rng,
-            ),
-            [deal_randomizer_messages, verified_dealers_messages] => Self::advance_third_round(
-                tangible_party_id,
-                session_id,
-                randomizer_contribution_to_threshold_encryption_key_base_protocol_context,
-                current_access_structure,
-                knowledge_of_discrete_log_base_protocol_context,
-                &setup_parameters,
-                public_input,
-                deal_randomizer_messages.clone(),
-                &randomizer_contribution_to_upcoming_pvss_party,
-                verified_dealers_messages.clone(),
-                decryption_key_shares,
-                current_decryption_key_share_bits,
-                randomizer_contribution_bits,
-                rng,
-            ),
-            [deal_randomizer_messages, _, deal_masked_decryption_key_share_messages] => {
-                let malicious_third_round_parties = malicious_parties_by_round
-                    .get(&3)
-                    .ok_or(Error::InvalidParameters)?
-                    .clone();
-
-                Self::advance_fourth_round(
-                    tangible_party_id,
-                    current_access_structure,
-                    &public_input.upcoming_access_structure,
-                    session_id,
-                    knowledge_of_discrete_log_base_protocol_context,
-                    &setup_parameters,
-                    public_input,
-                    deal_randomizer_messages.clone(),
-                    &randomizer_contribution_to_upcoming_pvss_party,
-                    deal_masked_decryption_key_share_messages.clone(),
-                    malicious_third_round_parties,
-                    current_decryption_key_share_bits,
-                    rng,
-                )
-            }
-            _ => Err(Error::InvalidParameters),
-        }
-    }
-
-    fn round_causing_threshold_not_reached(failed_round: u64) -> Option<u64> {
-        match failed_round {
-            3 => Some(1),
-            4 => Some(3),
-            _ => None,
-        }
+        Ok((
+            decryption_key_shares,
+            current_decryption_key_share_bits,
+            randomizer_contribution_bits,
+            randomizer_share_bits,
+            equality_of_discrete_log_in_hidden_order_group_base_protocol_context,
+            randomizer_contribution_to_threshold_encryption_key_base_protocol_context,
+            randomizer_contribution_to_upcoming_pvss_party,
+        ))
     }
 }

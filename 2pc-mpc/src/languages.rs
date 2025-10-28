@@ -3,9 +3,12 @@
 
 #![allow(clippy::type_complexity, clippy::too_many_arguments)]
 
+use crate::{Error, ProtocolContext, Result};
 use commitment::{MultiPedersen, Pedersen};
-use group::{self_product, CsRng, KnownOrderGroupElement, PrimeGroupElement};
-use maurer::UC_PROOFS_REPETITIONS;
+use crypto_bigint::{Encoding, Int, Uint};
+use group::{
+    bounded_integers_group, self_product, CsRng, KnownOrderGroupElement, PrimeGroupElement, Scale,
+};
 use maurer::{
     commitment_of_discrete_log, encryption_of_discrete_log, encryption_of_tuple,
     equality_between_commitments_with_different_public_parameters, knowledge_of_decommitment,
@@ -13,13 +16,9 @@ use maurer::{
     vector_commitment_of_discrete_log, vector_commitment_of_discrete_log::StatementAccessors as _,
     SOUND_PROOFS_REPETITIONS,
 };
+use maurer::{extended_encryption_of_tuple, UC_PROOFS_REPETITIONS};
 
-use crate::{Error, ProtocolContext, Result};
-
-#[cfg(feature = "class_groups")]
 pub mod class_groups;
-#[cfg(all(feature = "paillier", feature = "bulletproofs",))]
-pub mod paillier;
 
 /// The dimension of the Committed Affine Evaluation language used in the signing protocol.
 pub const DIMENSION: usize = 2;
@@ -267,6 +266,53 @@ pub type EncryptionOfTupleLanguage<
     MESSAGE_LIMBS,
     GroupElement,
     EncryptionKey,
+>;
+
+/// Encryption of Tuple Language $L_{\textsf{EncDH}}$.
+pub type ExtendedEncryptionOfTupleLanguage<
+    const N: usize,
+    const SCALAR_LIMBS: usize,
+    const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
+    const MESSAGE_LIMBS: usize,
+    GroupElement,
+    EncryptionKey,
+> = extended_encryption_of_tuple::Language<
+    N,
+    PLAINTEXT_SPACE_SCALAR_LIMBS,
+    SCALAR_LIMBS,
+    MESSAGE_LIMBS,
+    GroupElement,
+    EncryptionKey,
+>;
+
+/// A proof of equality of discrete logs $(g_1,g_1^x), (g_2,g_2^x), ..., (g_n,g_3^n)$ under different hidden order groups $g_1\in G_1, g_2 \in G_2,...,g_n \in G_n$.
+/// In a hidden order we group, we can use a knowledge of discrete log proof to prove the equality of discrete logs of two bases:
+/// Let $G_{1}$ and $G_{2}$ be groups of unknown order containing elements $g_{1},g_{2}, ..., g_{n}$ respectively.
+/// The prover shows it knows a number $s \in \mathbb{Z}$ such that $v_{1}=g_{1}^s,v_{2}=g_{2}^s,...,v_{n}=g_{n}^s$.
+///
+/// We don't decide the structure of the group element here, and take a generic one,
+/// supporting a combination of direct- and self-products of hidden-order groups (which we don't enforce here, the user must guarantee for safety.)
+pub type EqualityOfDiscreteLogsInHiddenOrderGroupProof<
+    const DISCRETE_LOG_WITNESS_LIMBS: usize,
+    HiddenOrderGroupElement,
+> = maurer::Proof<
+    SOUND_PROOFS_REPETITIONS,
+    knowledge_of_discrete_log::Language<
+        bounded_integers_group::GroupElement<DISCRETE_LOG_WITNESS_LIMBS>,
+        HiddenOrderGroupElement,
+    >,
+    ProtocolContext,
+>;
+
+/// The public parameters of an equality of discrete logs in hidden order group.
+/// See [`EqualityOfDiscreteLogsInHiddenOrderGroupProof`].
+pub type EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters<
+    const DISCRETE_LOG_WITNESS_LIMBS: usize,
+    HiddenOrderGroupElement,
+> = knowledge_of_discrete_log::PublicParameters<
+    bounded_integers_group::PublicParameters<DISCRETE_LOG_WITNESS_LIMBS>,
+    group::PublicParameters<HiddenOrderGroupElement>,
+    group::Value<HiddenOrderGroupElement>,
 >;
 
 /// Construct $L_{\textsf{DCom}}$ language parameters.
@@ -935,6 +981,106 @@ pub fn verify_vector_commitment_of_discrete_log<
             linear_combination_of_discrete_logs,
         )
             .into()],
+    )?;
+
+    Ok(())
+}
+
+/// This function constructs the public parameters for the equality of discrete log in hidden order language.
+pub fn construct_equality_of_discrete_log_public_parameters<
+    const DISCRETE_LOG_WITNESS_LIMBS: usize,
+    HiddenOrderGroupElement,
+>(
+    discrete_log_group_public_parameters: bounded_integers_group::PublicParameters<
+        DISCRETE_LOG_WITNESS_LIMBS,
+    >,
+    hidden_order_group_public_parameters: HiddenOrderGroupElement::PublicParameters,
+    base: HiddenOrderGroupElement::Value,
+) -> EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters<
+    DISCRETE_LOG_WITNESS_LIMBS,
+    HiddenOrderGroupElement,
+>
+where
+    Int<DISCRETE_LOG_WITNESS_LIMBS>: Encoding,
+    Uint<DISCRETE_LOG_WITNESS_LIMBS>: Encoding,
+    HiddenOrderGroupElement: group::GroupElement + Scale<Int<DISCRETE_LOG_WITNESS_LIMBS>>,
+{
+    let upper_bound_bits = Some(discrete_log_group_public_parameters.sample_bits);
+
+    knowledge_of_discrete_log::PublicParameters::new::<
+        bounded_integers_group::GroupElement<DISCRETE_LOG_WITNESS_LIMBS>,
+        HiddenOrderGroupElement,
+    >(
+        discrete_log_group_public_parameters,
+        hidden_order_group_public_parameters,
+        base,
+        upper_bound_bits,
+    )
+}
+
+/// Prove equality between the discrete logs $(g_1,g_1^x_i), (g_2,g_2^x_i), ..., (g_n,g_n^x_i)$
+/// under different hidden order groups $g_1\in G_1, g_2 \in G_2,...,g_n \in G_n$ for a batch $ {x_i}_i $.
+pub fn prove_equality_of_discrete_log<
+    const DISCRETE_LOG_WITNESS_LIMBS: usize,
+    HiddenOrderGroupElement,
+>(
+    language_public_parameters: EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters<
+        DISCRETE_LOG_WITNESS_LIMBS,
+        HiddenOrderGroupElement,
+    >,
+    discrete_logs: Vec<bounded_integers_group::GroupElement<DISCRETE_LOG_WITNESS_LIMBS>>,
+    protocol_context: &ProtocolContext,
+    rng: &mut impl CsRng,
+) -> Result<(
+    EqualityOfDiscreteLogsInHiddenOrderGroupProof<
+        DISCRETE_LOG_WITNESS_LIMBS,
+        HiddenOrderGroupElement,
+    >,
+    Vec<HiddenOrderGroupElement>,
+)>
+where
+    Int<DISCRETE_LOG_WITNESS_LIMBS>: Encoding,
+    Uint<DISCRETE_LOG_WITNESS_LIMBS>: Encoding,
+    HiddenOrderGroupElement: group::GroupElement + Scale<Int<DISCRETE_LOG_WITNESS_LIMBS>>,
+{
+    let (proof, base_by_discrete_logs) = EqualityOfDiscreteLogsInHiddenOrderGroupProof::<
+        DISCRETE_LOG_WITNESS_LIMBS,
+        HiddenOrderGroupElement,
+    >::prove(
+        protocol_context,
+        &language_public_parameters,
+        discrete_logs,
+        rng,
+    )?;
+
+    Ok((proof, base_by_discrete_logs))
+}
+
+/// Verify equality between the discrete logs $(g_1,g_1^x), (g_2,g_2^x), ..., (g_n,g_3^n)$ under different hidden order groups $g_1\in G_1, g_2 \in G_2,...,g_n \in G_n$.
+pub fn verify_equality_of_discrete_log_proof<
+    const DISCRETE_LOG_WITNESS_LIMBS: usize,
+    HiddenOrderGroupElement,
+>(
+    language_public_parameters: &EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters<
+        DISCRETE_LOG_WITNESS_LIMBS,
+        HiddenOrderGroupElement,
+    >,
+    base_by_discrete_logs: Vec<HiddenOrderGroupElement>,
+    protocol_context: &ProtocolContext,
+    proof: &EqualityOfDiscreteLogsInHiddenOrderGroupProof<
+        DISCRETE_LOG_WITNESS_LIMBS,
+        HiddenOrderGroupElement,
+    >,
+) -> Result<()>
+where
+    Int<DISCRETE_LOG_WITNESS_LIMBS>: Encoding,
+    Uint<DISCRETE_LOG_WITNESS_LIMBS>: Encoding,
+    HiddenOrderGroupElement: group::GroupElement + Scale<Int<DISCRETE_LOG_WITNESS_LIMBS>>,
+{
+    proof.verify(
+        protocol_context,
+        language_public_parameters,
+        base_by_discrete_logs,
     )?;
 
     Ok(())

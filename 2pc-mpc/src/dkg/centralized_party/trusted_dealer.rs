@@ -3,21 +3,16 @@
 
 use std::marker::PhantomData;
 
-use serde::{Deserialize, Serialize};
-
 use commitment::CommitmentSizedNumber;
 use group::{CsRng, GroupElement, PrimeGroupElement, Samplable};
 use homomorphic_encryption::AdditivelyHomomorphicEncryptionKey;
 
-use crate::dkg::centralized_party::{PublicOutput, SecretKeyShare};
+use crate::dkg::centralized_party::{Output, SecretKeyShare};
 use crate::languages::{prove_knowledge_of_discrete_log, KnowledgeOfDiscreteLogProof};
 use crate::Party::CentralizedParty;
 use crate::ProtocolContext;
 
-#[cfg(feature = "class_groups")]
 pub mod class_groups;
-#[cfg(all(feature = "paillier", feature = "bulletproofs"))]
-pub mod paillier;
 
 pub(crate) fn encryption_of_decenetralized_party_secret_key_share_protocol_context(
     session_id: CommitmentSizedNumber,
@@ -47,7 +42,6 @@ pub(crate) fn knowledge_of_secret_key_share_protocol_context(
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Party<
     const SCALAR_LIMBS: usize,
     const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
@@ -79,6 +73,11 @@ where
         crate::ProtocolPublicParameters<
             group::PublicParameters<GroupElement::Scalar>,
             GroupElement::PublicParameters,
+            GroupElement::Value,
+            homomorphic_encryption::CiphertextSpaceValue<
+                PLAINTEXT_SPACE_SCALAR_LIMBS,
+                EncryptionKey,
+            >,
             EncryptionKey::PublicParameters,
         >,
     >,
@@ -94,13 +93,18 @@ where
         SecretKeyShare<group::Value<GroupElement::Scalar>>,
         GroupElement::Scalar,
         KnowledgeOfDiscreteLogProof<SCALAR_LIMBS, GroupElement>,
-        PublicOutput<GroupElement::Value>,
+        Output<GroupElement::Value>,
     )>
     where
         ProtocolPublicParameters: AsRef<
             crate::ProtocolPublicParameters<
                 group::PublicParameters<GroupElement::Scalar>,
                 GroupElement::PublicParameters,
+                GroupElement::Value,
+                homomorphic_encryption::CiphertextSpaceValue<
+                    PLAINTEXT_SPACE_SCALAR_LIMBS,
+                    EncryptionKey,
+                >,
                 EncryptionKey::PublicParameters,
             >,
         >,
@@ -139,7 +143,7 @@ where
                 rng,
             )?;
 
-        let public_output = PublicOutput {
+        let public_output = Output {
             public_key,
             public_key_share: public_key_share.value(),
             decentralized_party_public_key_share,

@@ -223,6 +223,14 @@ where
         self + other
     }
 
+    fn sub_randomized(self, other: &Self) -> Self {
+        self - other
+    }
+
+    fn sub_vartime(self, other: &Self) -> Self {
+        self - other
+    }
+
     fn double(&self) -> Self {
         let value = self.value + self.value;
         assert!(value.abs().bits() <= self.upper_bound_bits);

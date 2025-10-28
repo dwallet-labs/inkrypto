@@ -39,10 +39,10 @@ pub struct PublicOutput<
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
 {
-    encryption_key: CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    masked_decryption_key_by_n_factorial: SecretKeyShareSizedInteger,
-    public_verification_keys: HashMap<PartyID, CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
-    encryptions_of_randomizer_shares_per_crt_prime: HashMap<
+    pub encryption_key: CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+    pub masked_decryption_key_by_n_factorial: SecretKeyShareSizedInteger,
+    pub public_verification_keys: HashMap<PartyID, CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+    pub encryptions_of_randomizer_shares_per_crt_prime: HashMap<
         PartyID,
         [CiphertextSpaceValue<CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>; NUM_SECRET_SHARE_PRIMES],
     >,
@@ -172,7 +172,7 @@ where
     // In addition, the parties compute commitment each party’s share on the randomizer first by using Homer’s method to compute commitment the each parties randomizer contribution share.
     // multiplying commitments to contribution share from each party in the authorized subset. This commitment will be denoted by $\bar{C}_{j}$.
     // The final verification key of the virtual upcoming party $j_{R}$ is computed as $h_{q}^{n_{new}!(r+s)}\cdot \bar{C}_{j_{R}}^{-1}$.    fn compute_public_verification_keys<
-    fn compute_public_verification_keys<
+    pub fn compute_public_verification_keys<
         GroupElement: PrimeGroupElement<PLAINTEXT_SPACE_SCALAR_LIMBS>,
     >(
         access_structure: &WeightedThresholdAccessStructure,
@@ -389,7 +389,7 @@ where
         Ok(decryption_key_share_public_parameters)
     }
 
-    // The final share is computed as $n_{new}!\cdot (r+s)-[r]_{i_{R}}$.
+    /// The final share is computed as $n_{new}!\cdot (r+s)-[r]_{i_{R}}$.
     pub fn decrypt_decryption_key_shares<
         GroupElement: PrimeGroupElement<PLAINTEXT_SPACE_SCALAR_LIMBS>,
     >(
@@ -401,29 +401,52 @@ where
     where
         GroupElement::Scalar: Default,
     {
+        Self::decrypt_decryption_key_shares_internal::<GroupElement>(
+            tangible_party_id,
+            access_structure,
+            decryption_key_per_crt_prime,
+            self.masked_decryption_key_by_n_factorial,
+            self.encryptions_of_randomizer_shares_per_crt_prime.clone(),
+        )
+    }
+
+    pub fn decrypt_decryption_key_shares_internal<
+        GroupElement: PrimeGroupElement<PLAINTEXT_SPACE_SCALAR_LIMBS>,
+    >(
+        tangible_party_id: PartyID,
+        access_structure: &WeightedThresholdAccessStructure,
+        decryption_key_per_crt_prime: [Uint<CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS>; MAX_PRIMES],
+        masked_decryption_key_by_n_factorial: SecretKeyShareSizedInteger,
+        encryptions_of_randomizer_shares_per_crt_prime: HashMap<
+            PartyID,
+            [CiphertextSpaceValue<CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>; NUM_SECRET_SHARE_PRIMES],
+        >,
+    ) -> Result<HashMap<PartyID, SecretKeyShareSizedInteger>>
+    where
+        GroupElement::Scalar: Default,
+    {
         let setup_parameters_per_crt_prime =
             construct_setup_parameters_per_crt_prime(DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER)?;
 
         // Upcoming quorum output round:
         let virtual_subset = access_structure.virtual_subset(HashSet::from([tangible_party_id]))?;
 
-        let encryptions_of_randomizer_shares_per_crt_prime = self
-            .encryptions_of_randomizer_shares_per_crt_prime
-            .clone()
-            .into_iter()
-            .filter(|(virtual_party_id, _)| virtual_subset.contains(virtual_party_id))
-            .map(|(virtual_party_id, encryption_of_share_per_crt_prime)| {
-                let encryption_of_share_per_crt_prime = array::from_fn(|i| {
-                    CiphertextSpaceGroupElement::<CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>::new(
-                        encryption_of_share_per_crt_prime[i],
-                        setup_parameters_per_crt_prime[i].ciphertext_space_public_parameters(),
-                    )
-                })
-                .flat_map_results()?;
+        let encryptions_of_randomizer_shares_per_crt_prime =
+            encryptions_of_randomizer_shares_per_crt_prime
+                .into_iter()
+                .filter(|(virtual_party_id, _)| virtual_subset.contains(virtual_party_id))
+                .map(|(virtual_party_id, encryption_of_share_per_crt_prime)| {
+                    let encryption_of_share_per_crt_prime = array::from_fn(|i| {
+                        CiphertextSpaceGroupElement::<CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>::new(
+                            encryption_of_share_per_crt_prime[i],
+                            setup_parameters_per_crt_prime[i].ciphertext_space_public_parameters(),
+                        )
+                    })
+                    .flat_map_results()?;
 
-                Ok::<_, group::Error>((virtual_party_id, encryption_of_share_per_crt_prime))
-            })
-            .try_collect_hash_map()?;
+                    Ok::<_, group::Error>((virtual_party_id, encryption_of_share_per_crt_prime))
+                })
+                .try_collect_hash_map()?;
 
         let randomizer_shares = publicly_verifiable_secret_sharing::Party::<
             NUM_SECRET_SHARE_PRIMES,
@@ -446,7 +469,7 @@ where
             .map(|(dealer_virtual_party_id, randomizer_share)| {
                 (
                     dealer_virtual_party_id,
-                    self.masked_decryption_key_by_n_factorial - randomizer_share,
+                    masked_decryption_key_by_n_factorial - randomizer_share,
                 )
             })
             .collect();

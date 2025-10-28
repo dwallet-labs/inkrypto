@@ -20,7 +20,7 @@ use mpc::two_party::RoundResult;
 
 use crate::class_groups::ProtocolPublicParameters;
 use crate::dkg::centralized_party::trusted_dealer::encryption_of_decenetralized_party_secret_key_share_protocol_context;
-use crate::dkg::centralized_party::{PublicInput, PublicOutput, SecretKeyShare};
+use crate::dkg::centralized_party::{Output, PublicInput, SecretKeyShare, VersionedOutput};
 use crate::languages::class_groups::{
     prove_encryption_of_discrete_log, EncryptionOfDiscreteLogProof,
 };
@@ -123,7 +123,7 @@ where
         rng: &mut impl CsRng,
     ) -> Result<(
         SecretKeyShare<group::Value<GroupElement::Scalar>>,
-        PublicOutput<GroupElement::Value>,
+        Output<GroupElement::Value>,
         Message<
             KnowledgeOfDiscreteLogProof<SCALAR_LIMBS, GroupElement>,
             EncryptionOfDiscreteLogProof<
@@ -249,6 +249,7 @@ where
             CiphertextSpacePublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
         >,
     >,
+    Uint<SCALAR_LIMBS>: Encoding,
 {
     type Error = Error;
     type PrivateInput = group::Value<GroupElement::Scalar>;
@@ -262,7 +263,7 @@ where
     >;
     type PrivateOutput = SecretKeyShare<group::Value<GroupElement::Scalar>>;
     type PublicOutputValue = Self::PublicOutput;
-    type PublicOutput = PublicOutput<GroupElement::Value>;
+    type PublicOutput = VersionedOutput<SCALAR_LIMBS, GroupElement::Value>;
     type IncomingMessage = ();
     type OutgoingMessage = Message<
         KnowledgeOfDiscreteLogProof<SCALAR_LIMBS, GroupElement>,
@@ -297,7 +298,7 @@ where
         Ok(RoundResult {
             outgoing_message,
             private_output: secret_key_share,
-            public_output,
+            public_output: VersionedOutput::TargetedPublicDKGOutput(public_output),
         })
     }
 }

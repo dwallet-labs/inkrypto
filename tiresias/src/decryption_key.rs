@@ -1,7 +1,7 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
-use crypto_bigint::{NonZero, Odd};
+use crypto_bigint::Odd;
 use crypto_primes::Flavor;
 use subtle::{Choice, CtOption};
 
@@ -14,7 +14,7 @@ use homomorphic_encryption::{
 use crate::{
     encryption_key::PublicParameters, CiphertextSpaceGroupElement, EncryptionKey,
     LargeBiPrimeSizedNumber, LargePrimeSizedNumber, PaillierModulusSizedNumber,
-    PlaintextSpaceGroupElement, PLAINTEXT_SPACE_SCALAR_LIMBS,
+    PlaintextSpaceGroupElement, PlaintextSpacePublicParameters, PLAINTEXT_SPACE_SCALAR_LIMBS,
 };
 
 /// A paillier decryption key.
@@ -27,7 +27,9 @@ pub struct DecryptionKey {
 
 impl DecryptionKey {
     /// Generates a new Paillier Key Pair.
-    pub fn generate(rng: &mut impl CsRng) -> crate::Result<(PublicParameters, DecryptionKey)> {
+    pub fn generate_keypair(
+        rng: &mut impl CsRng,
+    ) -> crate::Result<(PublicParameters, DecryptionKey)> {
         let p: LargePrimeSizedNumber = crypto_primes::random_prime(rng, Flavor::Safe, 1024);
         let q: LargePrimeSizedNumber = crypto_primes::random_prime(rng, Flavor::Safe, 1024);
 
@@ -67,18 +69,26 @@ impl AdditivelyHomomorphicDecryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS, Encryption
         })
     }
 
+    fn generate(
+        _plaintext_space_public_parameters: PlaintextSpacePublicParameters,
+        rng: &mut impl CsRng,
+    ) -> homomorphic_encryption::Result<Self> {
+        let (_, decryption_key) = Self::generate_keypair(rng)
+            .map_err(|_| homomorphic_encryption::Error::InternalError)?;
+
+        Ok(decryption_key)
+    }
+
     fn decrypt(
         &self,
         ciphertext: &CiphertextSpaceGroupElement,
         public_parameters: &PublicParameters,
     ) -> CtOption<PlaintextSpaceGroupElement> {
-        let n = NonZero::new(
-            public_parameters
-                .plaintext_space_public_parameters()
-                .modulus
-                .resize(),
-        )
-        .unwrap();
+        let n = *public_parameters
+            .plaintext_space_public_parameters()
+            .modulus
+            .resize()
+            .as_nz_ref();
 
         // $D(c,d)=\left(\frac{(c^{d}\mod(N^{2}))-1}{N}\right)\mod(N)$
         let plaintext: PaillierModulusSizedNumber =
@@ -202,7 +212,7 @@ mod tests {
     #[test]
     fn generated_key_encrypts_decrypts() {
         let rng = &mut OsCsRng;
-        let (public_parameters, decryption_key) = DecryptionKey::generate(rng).unwrap();
+        let (public_parameters, decryption_key) = DecryptionKey::generate_keypair(rng).unwrap();
 
         let plaintext = PlaintextSpaceGroupElement::new(
             LargeBiPrimeSizedNumber::from(42u8),

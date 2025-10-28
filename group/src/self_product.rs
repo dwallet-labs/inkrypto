@@ -268,6 +268,26 @@ impl<const N: usize, G: crate::GroupElement> crate::GroupElement for GroupElemen
         Self(result)
     }
 
+    fn sub_randomized(self, other: &Self) -> Self {
+        let mut result: [G; N] = self.0;
+
+        for (i, element) in result.iter_mut().enumerate() {
+            *element = element.sub_vartime(&other.0[i]);
+        }
+
+        Self(result)
+    }
+
+    fn sub_vartime(self, other: &Self) -> Self {
+        let mut result: [G; N] = self.0;
+
+        for (i, element) in result.iter_mut().enumerate() {
+            *element = element.sub_vartime(&other.0[i]);
+        }
+
+        Self(result)
+    }
+
     fn double(&self) -> Self {
         Self(self.0.map(|element| element.double()))
     }

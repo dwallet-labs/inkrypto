@@ -1,29 +1,27 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
+#![allow(clippy::type_complexity)]
+#![allow(clippy::too_many_arguments)]
+
 use crypto_bigint::U256;
+use merlin::Transcript;
 use serde::{Deserialize, Serialize};
 
 use commitment::CommitmentSizedNumber;
-use group::PartyID;
+use group::{PartyID, Transcribeable};
+use proof::TranscriptProtocol;
 
 pub mod languages;
 
-#[cfg(any(
-    all(feature = "paillier", feature = "bulletproofs",),
-    feature = "class_groups"
-))]
+pub mod decentralized_party;
 pub mod dkg;
-#[cfg(any(
-    all(feature = "paillier", feature = "bulletproofs",),
-    feature = "class_groups"
-))]
+pub mod ecdsa;
 pub mod presign;
-#[cfg(any(
-    all(feature = "paillier", feature = "bulletproofs",),
-    feature = "class_groups"
-))]
+pub mod schnorr;
 pub mod sign;
+
+pub use sign::Protocol;
 
 /// 2PC-MPC error.
 #[derive(thiserror::Error, Debug, Clone)]
@@ -42,13 +40,6 @@ pub enum Error {
     Proof(#[from] ::proof::Error),
     #[error("maurer error")]
     Maurer(#[from] maurer::Error),
-    #[cfg(feature = "paillier")]
-    #[error("enhanced maurer error")]
-    EnhancedMaurer(#[from] enhanced_maurer::Error),
-    #[cfg(feature = "paillier")]
-    #[error("tiresias error")]
-    Tiresias(#[from] tiresias::Error),
-    #[cfg(feature = "class_groups")]
     #[error("class groups error")]
     ClassGroup(#[from] ::class_groups::Error),
     #[error("serialization/deserialization error: {0:?}")]
@@ -71,6 +62,10 @@ pub enum Error {
     InvalidPublicCentralizedKeyShare,
     #[error("signature failed to verify")]
     SignatureVerification,
+    #[error("invalid message")]
+    InvalidMessage,
+    #[error("an unsupported non-standard signature scheme or variant")]
+    Nonstandard,
     #[error("invalid public parameters")]
     InvalidPublicParameters,
     #[error("invalid parameters")]
@@ -92,6 +87,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Party {
     CentralizedParty,
     DecentralizedParty,
+    DecentralizedPartyWithPartyID(PartyID),
 }
 
 /// The protocol context for the `2pc-mpc` protocol.
@@ -108,6 +104,48 @@ pub struct ProtocolContext {
     proof_name: String,
     // For presign & sign
     public_key: Option<Vec<u8>>,
+}
+
+/// The shared part of the protocol context, that defines a specific proof in a specific protocol.
+/// Needs a `PartyID` to transform into `ProtocolContext`, see [`BaseProtocolContext::with_party_id_and_session_id()`].
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct BaseProtocolContext {
+    protocol_name: String,
+    round_name: String,
+    proof_name: String,
+}
+
+impl BaseProtocolContext {
+    /// Transforms `BaseProtocolContext` into the specialized
+    /// per-party, per-session `ProtocolContext` given the `party_id` and `session_id`.
+    fn with_party_id_and_session_id(
+        &self,
+        party_id: PartyID,
+        session_id: CommitmentSizedNumber,
+    ) -> ProtocolContext {
+        ProtocolContext {
+            party: Party::DecentralizedPartyWithPartyID(party_id),
+            session_id,
+            protocol_name: self.protocol_name.clone(),
+            round_name: self.round_name.clone(),
+            proof_name: self.proof_name.clone(),
+            public_key: None,
+        }
+    }
+
+    /// Transforms `BaseProtocolContext` into the specialized
+    /// per-session `ProtocolContext` given the `session_id`.
+    /// Used for proof/statement aggregation protocols which internally wrap the protocol context with the party id.
+    fn with_session_id(&self, session_id: CommitmentSizedNumber) -> ProtocolContext {
+        ProtocolContext {
+            party: Party::DecentralizedParty,
+            session_id,
+            protocol_name: self.protocol_name.clone(),
+            round_name: self.round_name.clone(),
+            proof_name: self.proof_name.clone(),
+            public_key: None,
+        }
+    }
 }
 
 impl From<ProtocolContext> for U256 {
@@ -131,11 +169,6 @@ impl From<Error> for mpc::Error {
             }
             Error::InvalidParameters => mpc::Error::InvalidParameters,
             Error::InvalidPublicParameters => mpc::Error::InvalidParameters,
-            #[cfg(feature = "paillier")]
-            Error::Tiresias(e) => e.into(),
-            #[cfg(feature = "paillier")]
-            Error::EnhancedMaurer(e) => e.into(),
-            #[cfg(feature = "class_groups")]
             Error::ClassGroup(e) => e.into(),
             e => mpc::Error::Consumer(format!("2pc-mpc error {e:?}")),
         }
@@ -149,24 +182,96 @@ pub const DECENTRALIZED_PARTY_ID: PartyID = 2;
 pub struct ProtocolPublicParameters<
     ScalarPublicParameters,
     GroupPublicParameters,
+    GroupElementValue,
+    CiphertextSpaceValue,
     EncryptionSchemePublicParameters,
 > {
+    pub decentralized_party_public_key_share_first_part: GroupElementValue,
+    pub decentralized_party_public_key_share_second_part: GroupElementValue,
+    pub encryption_of_decentralized_party_secret_key_share_first_part: CiphertextSpaceValue,
+    pub encryption_of_decentralized_party_secret_key_share_second_part: CiphertextSpaceValue,
     pub scalar_group_public_parameters: ScalarPublicParameters,
     pub group_public_parameters: GroupPublicParameters,
     pub encryption_scheme_public_parameters: EncryptionSchemePublicParameters,
 }
 
-impl<ScalarPublicParameters, GroupPublicParameters, EncryptionSchemePublicParameters>
+impl<
+        ScalarPublicParameters,
+        GroupPublicParameters,
+        GroupElementValue: Serialize,
+        CiphertextSpaceValue: Serialize,
+        EncryptionSchemePublicParameters: Transcribeable + Clone,
+    >
+    ProtocolPublicParameters<
+        ScalarPublicParameters,
+        GroupPublicParameters,
+        GroupElementValue,
+        CiphertextSpaceValue,
+        EncryptionSchemePublicParameters,
+    >
+{
+    // This function generates a commitment that is used to ensure
+    // that future protocols correctly reference the
+    // intended one-time DKG instance for the distributed party. Since different
+    // protocols may depend on different DKG outputs, this mapping prevents
+    // accidental mismatches. For example, when using  pre-sign output on must use the
+    // correct DKG output they were derived from.
+    //
+    // This sanity is merely an extra safeguard makes it much harder
+    // to accidentally reference the wrong DKG output.
+    fn global_decentralized_party_output_commitment(&self) -> Result<CommitmentSizedNumber> {
+        let mut transcript = Transcript::new(b"key share parts commitment");
+
+        transcript.transcribe(
+            b"$\\textsf{TAHE}.\\textsf{pk}$",
+            self.encryption_scheme_public_parameters.clone(),
+        )?;
+
+        transcript.serialize_to_transcript_as_json(
+            b"$X_{\\DistributedParty}^{0}$",
+            &self.decentralized_party_public_key_share_first_part,
+        )?;
+        transcript.serialize_to_transcript_as_json(
+            b"$X_{\\DistributedParty}^{1}$",
+            &self.decentralized_party_public_key_share_second_part,
+        )?;
+
+        transcript.serialize_to_transcript_as_json(
+            b"$\\textsf{ct}_{\\textsf{key}}^{0}$",
+            &self.encryption_of_decentralized_party_secret_key_share_first_part,
+        )?;
+        transcript.serialize_to_transcript_as_json(
+            b"$\\textsf{ct}_{\\textsf{key}}^{1}$",
+            &self.encryption_of_decentralized_party_secret_key_share_second_part,
+        )?;
+
+        let commitment = transcript.challenge(b"commitment");
+
+        Ok(commitment)
+    }
+}
+
+impl<
+        ScalarPublicParameters,
+        GroupPublicParameters,
+        GroupElementValue,
+        CiphertextSpaceValue,
+        EncryptionSchemePublicParameters,
+    >
     AsRef<
         ProtocolPublicParameters<
             ScalarPublicParameters,
             GroupPublicParameters,
+            GroupElementValue,
+            CiphertextSpaceValue,
             EncryptionSchemePublicParameters,
         >,
     >
     for ProtocolPublicParameters<
         ScalarPublicParameters,
         GroupPublicParameters,
+        GroupElementValue,
+        CiphertextSpaceValue,
         EncryptionSchemePublicParameters,
     >
 {
@@ -175,13 +280,14 @@ impl<ScalarPublicParameters, GroupPublicParameters, EncryptionSchemePublicParame
     ) -> &ProtocolPublicParameters<
         ScalarPublicParameters,
         GroupPublicParameters,
+        GroupElementValue,
+        CiphertextSpaceValue,
         EncryptionSchemePublicParameters,
     > {
         self
     }
 }
 
-#[cfg(feature = "class_groups")]
 pub mod class_groups {
     use std::fmt::Debug;
     use std::marker::PhantomData;
@@ -197,12 +303,15 @@ pub mod class_groups {
         equivalence_class, CiphertextSpacePublicParameters, RandomnessSpaceGroupElement,
         RandomnessSpacePublicParameters,
     };
+    use class_groups::CiphertextSpaceValue;
     use group::PrimeGroupElement;
     use homomorphic_encryption::AdditivelyHomomorphicEncryptionKey;
     use maurer::{encryption_of_discrete_log, encryption_of_tuple, scaling_of_discrete_log};
 
-    use crate::dkg;
-    use crate::languages::KnowledgeOfDiscreteLogUCProof;
+    use crate::dkg::centralized_party::SecretKeyShare;
+    use crate::languages::class_groups::EncryptionOfDiscreteLogProof;
+    use crate::languages::{KnowledgeOfDiscreteLogProof, KnowledgeOfDiscreteLogUCProof};
+    use crate::{dkg, ProtocolContext};
 
     pub type PublicParameters<
         const SCALAR_LIMBS: usize,
@@ -224,6 +333,8 @@ pub mod class_groups {
     > = crate::ProtocolPublicParameters<
         group::PublicParameters<group::Scalar<SCALAR_LIMBS, GroupElement>>,
         group::PublicParameters<GroupElement>,
+        group::Value<GroupElement>,
+        CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
         homomorphic_encryption::PublicParameters<
             SCALAR_LIMBS,
             EncryptionKey<
@@ -235,10 +346,18 @@ pub mod class_groups {
         >,
     >;
 
-    impl<ScalarPublicParameters, GroupPublicParameters, EncryptionSchemePublicParameters>
+    impl<
+            ScalarPublicParameters,
+            GroupPublicParameters,
+            GroupElementValue,
+            CiphertextSpaceValue,
+            EncryptionSchemePublicParameters,
+        >
         super::ProtocolPublicParameters<
             ScalarPublicParameters,
             GroupPublicParameters,
+            GroupElementValue,
+            CiphertextSpaceValue,
             EncryptionSchemePublicParameters,
         >
     {
@@ -248,11 +367,18 @@ pub mod class_groups {
             const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
             GroupElement,
         >(
+            decentralized_party_public_key_share_first_part: GroupElement::Value,
+            decentralized_party_public_key_share_second_part: GroupElement::Value,
+            encryption_of_decentralized_party_secret_key_share_first_part: CiphertextSpaceValue,
+            encryption_of_decentralized_party_secret_key_share_second_part: CiphertextSpaceValue,
             encryption_scheme_public_parameters: EncryptionSchemePublicParameters,
         ) -> Self
         where
             GroupElement: PrimeGroupElement<SCALAR_LIMBS>
-                + group::GroupElement<PublicParameters = GroupPublicParameters>,
+                + group::GroupElement<
+                    PublicParameters = GroupPublicParameters,
+                    Value = GroupElementValue,
+                >,
             GroupElement::Scalar: group::GroupElement<PublicParameters = ScalarPublicParameters>,
             EncryptionKey<
                 SCALAR_LIMBS,
@@ -310,6 +436,8 @@ pub mod class_groups {
                     CiphertextSpacePublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
                 >,
             >,
+            CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>:
+                group::GroupElement<Value = CiphertextSpaceValue>,
         {
             let scalar_group_public_parameters =
                 group::PublicParameters::<GroupElement::Scalar>::default();
@@ -317,6 +445,10 @@ pub mod class_groups {
             let group_public_parameters = GroupElement::PublicParameters::default();
 
             Self {
+                decentralized_party_public_key_share_first_part,
+                decentralized_party_public_key_share_second_part,
+                encryption_of_decentralized_party_secret_key_share_first_part,
+                encryption_of_decentralized_party_secret_key_share_second_part,
                 scalar_group_public_parameters,
                 group_public_parameters,
                 encryption_scheme_public_parameters,
@@ -347,7 +479,10 @@ pub mod class_groups {
     >;
 
     pub type DKGCentralizedPartyOutput<const SCALAR_LIMBS: usize, GroupElement> =
-        crate::dkg::centralized_party::PublicOutput<group::Value<GroupElement>>;
+        crate::dkg::centralized_party::Output<group::Value<GroupElement>>;
+
+    pub type DKGCentralizedPartyVersionedOutput<const SCALAR_LIMBS: usize, GroupElement> =
+        crate::dkg::centralized_party::VersionedOutput<SCALAR_LIMBS, group::Value<GroupElement>>;
 
     pub type DKGDecentralizedPartyOutput<
         const SCALAR_LIMBS: usize,
@@ -359,12 +494,13 @@ pub mod class_groups {
         group::Value<CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
     >;
 
-    pub type Presign<
+    pub type DKGDecentralizedPartyVersionedOutput<
         const SCALAR_LIMBS: usize,
         const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         GroupElement,
-    > = crate::presign::Presign<
+    > = crate::dkg::decentralized_party::VersionedOutput<
+        SCALAR_LIMBS,
         group::Value<GroupElement>,
         group::Value<CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
     >;
@@ -388,25 +524,86 @@ pub mod class_groups {
         >,
     >;
 
-    pub type EncryptionOfSecretKeyShareRoundAsyncParty<
+    pub type EncryptionOfSecretKeyShareParty<
         const SCALAR_LIMBS: usize,
         const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         GroupElement,
-    > = dkg::decentralized_party::encryption_of_secret_key_share_round::class_groups::asynchronous::Party<
+    > = dkg::encryption_of_secret_key_share::class_groups::asynchronous::Party<
         SCALAR_LIMBS,
-        FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
         GroupElement,
     >;
 
-    pub type ProofVerificationRoundPublicInput<
+    pub type CentralizedPartyKeyShareVerification<
         const SCALAR_LIMBS: usize,
         const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         GroupElement,
-    > = dkg::decentralized_party::proof_verification_round::PublicInput<
+    > = crate::dkg::CentralizedPartyKeyShareVerification<
+        SecretKeyShare<group::Value<group::Scalar<SCALAR_LIMBS, GroupElement>>>,
+        CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+        (
+            EncryptionOfDiscreteLogProof<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+                PhantomData<()>,
+            >,
+            CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+        ),
+    >;
+
+    pub type TrustedDealerDKGDecentralizedParty<
+        const SCALAR_LIMBS: usize,
+        const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+        const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+        GroupElement,
+    > = crate::dkg::decentralized_party::trusted_dealer::Party<
+        SCALAR_LIMBS,
+        SCALAR_LIMBS,
+        GroupElement,
+        EncryptionKey<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >,
+        crate::dkg::centralized_party::trusted_dealer::class_groups::Message<
+            KnowledgeOfDiscreteLogProof<SCALAR_LIMBS, GroupElement>,
+            EncryptionOfDiscreteLogProof<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+                ProtocolContext,
+            >,
+            group::Value<GroupElement>,
+            CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+        >,
+        ProtocolPublicParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >,
+        CentralizedPartyKeyShareVerification<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >,
+    >;
+
+    pub type DKGDecentralizedPartyPublicInput<
+        const SCALAR_LIMBS: usize,
+        const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+        const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+        GroupElement,
+    > = dkg::decentralized_party::PublicInput<
         group::Value<GroupElement>,
-        group::Value<CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
         KnowledgeOfDiscreteLogUCProof<SCALAR_LIMBS, GroupElement>,
         ProtocolPublicParameters<
             SCALAR_LIMBS,
@@ -414,13 +611,19 @@ pub mod class_groups {
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             GroupElement,
         >,
+        CentralizedPartyKeyShareVerification<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >,
     >;
-    pub type ProofVerificationRoundParty<
+    pub type DKGDecentralizedParty<
         const SCALAR_LIMBS: usize,
         const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         GroupElement,
-    > = dkg::decentralized_party::proof_verification_round::Party<
+    > = dkg::decentralized_party::Party<
         SCALAR_LIMBS,
         SCALAR_LIMBS,
         GroupElement,
@@ -431,6 +634,12 @@ pub mod class_groups {
             GroupElement,
         >,
         ProtocolPublicParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >,
+        CentralizedPartyKeyShareVerification<
             SCALAR_LIMBS,
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -460,473 +669,276 @@ pub mod class_groups {
         >,
     >;
 
-    pub type PresignAsyncParty<
-        const SCALAR_LIMBS: usize,
-        const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
-        const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
-        const MESSAGE_LIMBS: usize,
-        GroupElement,
-    > = crate::presign::decentralized_party::class_groups::asynchronous::Party<
-        SCALAR_LIMBS,
-        FUNDAMENTAL_DISCRIMINANT_LIMBS,
-        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-        MESSAGE_LIMBS,
-        GroupElement,
-    >;
-
-    pub type EncryptionOfMaskAndMaskedKey<
-        const SCALAR_LIMBS: usize,
-        const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
-        const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
-        GroupElement,
-    > = group::Value<
-        encryption_of_tuple::StatementSpaceGroupElement<
-            SCALAR_LIMBS,
-            SCALAR_LIMBS,
-            EncryptionKey<
-                SCALAR_LIMBS,
-                FUNDAMENTAL_DISCRIMINANT_LIMBS,
-                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-                GroupElement,
-            >,
-        >,
-    >;
-
-    pub type NoncePublicShareAndEncryptionOfMaskedNonceShare<
-        const SCALAR_LIMBS: usize,
-        const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
-        const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
-        GroupElement,
-    > = group::Value<
-        scaling_of_discrete_log::StatementSpaceGroupElement<
-            SCALAR_LIMBS,
-            SCALAR_LIMBS,
-            GroupElement,
-            EncryptionKey<
-                SCALAR_LIMBS,
-                FUNDAMENTAL_DISCRIMINANT_LIMBS,
-                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-                GroupElement,
-            >,
-        >,
-    >;
-
-    pub mod asynchronous {
+    pub mod schnorr {
         use super::*;
 
-        #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-        pub struct Protocol<
+        pub type Presign<
+            const SCALAR_LIMBS: usize,
+            const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            GroupElement,
+        > = crate::schnorr::presign::Presign<
+            group::Value<GroupElement>,
+            group::Value<CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+        >;
+
+        pub mod asynchronous {
+            use super::*;
+
+            #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+            pub struct Protocol<
+                const SCALAR_LIMBS: usize,
+                const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+                const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+                const MESSAGE_LIMBS: usize,
+                GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+            >(PhantomData<GroupElement>)
+            where
+                Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+                Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+                Uint<SCALAR_LIMBS>: Encoding,
+                Uint<MESSAGE_LIMBS>: Encoding;
+        }
+    }
+
+    pub mod ecdsa {
+        use super::*;
+        use crate::ecdsa::sign::centralized_party::message::class_groups::Message as SignMessage;
+        use maurer::extended_encryption_of_tuple;
+
+        pub type Presign<
+            const SCALAR_LIMBS: usize,
+            const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            GroupElement,
+        > = crate::ecdsa::presign::Presign<
+            group::Value<GroupElement>,
+            group::Value<CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+        >;
+
+        pub type UniversalPresign<
+            const SCALAR_LIMBS: usize,
+            const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            GroupElement,
+        > = crate::ecdsa::presign::UniversalPresign<
+            group::Value<GroupElement>,
+            group::Value<CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+        >;
+
+        pub type VersionedPresign<
+            const SCALAR_LIMBS: usize,
+            const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            GroupElement,
+        > = crate::ecdsa::presign::VersionedPresign<
+            group::Value<GroupElement>,
+            group::Value<CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+        >;
+
+        pub type PresignAsyncECDSAParty<
             const SCALAR_LIMBS: usize,
             const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
             const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
             const MESSAGE_LIMBS: usize,
-            GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
-        >(PhantomData<GroupElement>)
-        where
-            Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
-            Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
-            Uint<SCALAR_LIMBS>: Encoding,
-            Uint<MESSAGE_LIMBS>: Encoding;
-    }
-}
-
-#[cfg(feature = "paillier")]
-pub mod paillier {
-    use group::self_product;
-    use maurer::{encryption_of_discrete_log, encryption_of_tuple, scaling_of_discrete_log};
-
-    use crate::dkg;
-    use crate::languages::KnowledgeOfDiscreteLogUCProof;
-    use crate::paillier::bulletproofs::PaillierProtocolPublicParameters;
-
-    pub const PLAINTEXT_SPACE_SCALAR_LIMBS: usize = tiresias::PLAINTEXT_SPACE_SCALAR_LIMBS;
-    pub type EncryptionKey = tiresias::EncryptionKey;
-    pub type DecryptionKeyShare = tiresias::DecryptionKeyShare;
-    pub type PartialDecryptionProof = tiresias::proofs::ProofOfEqualityOfDiscreteLogs;
-    pub type DecryptionShare = tiresias::PaillierModulusSizedNumber;
-    pub type PublicParameters = tiresias::encryption_key::PublicParameters;
-
-    pub type UnboundedEncDLWitness = tiresias::RandomnessSpaceGroupElement;
-    pub type UnboundedScaleDLWitness = tiresias::RandomnessSpaceGroupElement;
-    pub type UnboundedEncDHWitness =
-        self_product::GroupElement<2, tiresias::RandomnessSpaceGroupElement>;
-
-    pub type PlaintextSpaceGroupElement = tiresias::PlaintextSpaceGroupElement;
-    pub type RandomnessSpaceGroupElement = tiresias::RandomnessSpaceGroupElement;
-    pub type CiphertextSpaceGroupElement = tiresias::CiphertextSpaceGroupElement;
-
-    pub mod asynchronous {
-        use std::marker::PhantomData;
-
-        use serde::{Deserialize, Serialize};
-
-        #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-        pub struct Protocol<
-            const RANGE_CLAIMS_PER_SCALAR: usize,
-            const RANGE_CLAIMS_PER_MASK: usize,
-            const NUM_RANGE_CLAIMS: usize,
-            const SCALAR_LIMBS: usize,
             GroupElement,
-        >(PhantomData<GroupElement>);
-    }
+        > = crate::ecdsa::presign::decentralized_party::class_groups::asynchronous::Party<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MESSAGE_LIMBS,
+            GroupElement,
+        >;
 
-    pub type DKGCentralizedPartyOutput<const SCALAR_LIMBS: usize, GroupElement> =
-        crate::dkg::centralized_party::PublicOutput<group::Value<GroupElement>>;
+        pub type PresignAsyncSchnorrParty<
+            const SCALAR_LIMBS: usize,
+            const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            GroupElement,
+        > = crate::schnorr::presign::decentralized_party::encryption_of_nonce_share_round::class_groups::asynchronous::Party<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >;
 
-    pub type DKGDecentralizedPartyOutput<GroupElement> = crate::dkg::decentralized_party::Output<
-        group::Value<GroupElement>,
-        group::Value<CiphertextSpaceGroupElement>,
-    >;
+        pub type EncryptionOfMaskAndMaskedKeyShare<
+            const SCALAR_LIMBS: usize,
+            const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            GroupElement,
+        > = group::Value<
+            encryption_of_tuple::StatementSpaceGroupElement<
+                SCALAR_LIMBS,
+                SCALAR_LIMBS,
+                EncryptionKey<
+                    SCALAR_LIMBS,
+                    FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    GroupElement,
+                >,
+            >,
+        >;
 
-    pub type EncryptionOfSecretKeyShareAndPublicKeyShare<const SCALAR_LIMBS: usize, GroupElement> =
-        group::Value<
-            encryption_of_discrete_log::StatementSpaceGroupElement<
-                PLAINTEXT_SPACE_SCALAR_LIMBS,
+        pub type EncryptionOfMaskAndMaskedKeyShareParts<
+            const SCALAR_LIMBS: usize,
+            const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            GroupElement,
+        > = group::Value<
+            extended_encryption_of_tuple::StatementSpaceGroupElement<
+                2,
+                SCALAR_LIMBS,
+                SCALAR_LIMBS,
+                EncryptionKey<
+                    SCALAR_LIMBS,
+                    FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    GroupElement,
+                >,
+            >,
+        >;
+
+        pub type NoncePublicShareAndEncryptionOfMaskedNonceShare<
+            const SCALAR_LIMBS: usize,
+            const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            GroupElement,
+        > = group::Value<
+            scaling_of_discrete_log::StatementSpaceGroupElement<
+                SCALAR_LIMBS,
                 SCALAR_LIMBS,
                 GroupElement,
-                EncryptionKey,
-            >,
-        >;
-
-    pub type ProofVerificationRoundPublicInput<
-        const SCALAR_LIMBS: usize,
-        const RANGE_CLAIMS_PER_SCALAR: usize,
-        const NUM_RANGE_CLAIMS: usize,
-        GroupElement,
-    > = dkg::decentralized_party::proof_verification_round::PublicInput<
-        group::Value<GroupElement>,
-        group::Value<CiphertextSpaceGroupElement>,
-        KnowledgeOfDiscreteLogUCProof<SCALAR_LIMBS, GroupElement>,
-        PaillierProtocolPublicParameters<
-            SCALAR_LIMBS,
-            RANGE_CLAIMS_PER_SCALAR,
-            NUM_RANGE_CLAIMS,
-            group::PublicParameters<group::Scalar<SCALAR_LIMBS, GroupElement>>,
-            group::PublicParameters<GroupElement>,
-        >,
-    >;
-
-    pub type ProofVerificationRoundParty<
-        const SCALAR_LIMBS: usize,
-        const RANGE_CLAIMS_PER_SCALAR: usize,
-        const NUM_RANGE_CLAIMS: usize,
-        GroupElement,
-    > = dkg::decentralized_party::proof_verification_round::Party<
-        SCALAR_LIMBS,
-        PLAINTEXT_SPACE_SCALAR_LIMBS,
-        GroupElement,
-        EncryptionKey,
-        PaillierProtocolPublicParameters<
-            SCALAR_LIMBS,
-            RANGE_CLAIMS_PER_SCALAR,
-            NUM_RANGE_CLAIMS,
-            group::PublicParameters<group::Scalar<SCALAR_LIMBS, GroupElement>>,
-            group::PublicParameters<GroupElement>,
-        >,
-    >;
-
-    pub type DKGCentralizedParty<
-        const SCALAR_LIMBS: usize,
-        const RANGE_CLAIMS_PER_SCALAR: usize,
-        const NUM_RANGE_CLAIMS: usize,
-        GroupElement,
-    > = dkg::centralized_party::Party<
-        SCALAR_LIMBS,
-        PLAINTEXT_SPACE_SCALAR_LIMBS,
-        GroupElement,
-        EncryptionKey,
-        PaillierProtocolPublicParameters<
-            SCALAR_LIMBS,
-            RANGE_CLAIMS_PER_SCALAR,
-            NUM_RANGE_CLAIMS,
-            group::PublicParameters<group::Scalar<SCALAR_LIMBS, GroupElement>>,
-            group::PublicParameters<GroupElement>,
-        >,
-    >;
-
-    pub type EncryptionOfSecretKeyShareRoundAsyncParty<
-        const SCALAR_LIMBS: usize,
-        const RANGE_CLAIMS_PER_SCALAR: usize,
-        const NUM_RANGE_CLAIMS: usize,
-        GroupElement,
-    > = dkg::decentralized_party::encryption_of_secret_key_share_round::paillier::asynchronous::Party<RANGE_CLAIMS_PER_SCALAR, NUM_RANGE_CLAIMS, SCALAR_LIMBS, GroupElement>;
-
-    pub type PresignAsyncParty<
-        const SCALAR_LIMBS: usize,
-        const RANGE_CLAIMS_PER_SCALAR: usize,
-        const NUM_RANGE_CLAIMS: usize,
-        GroupElement,
-    > = crate::presign::decentralized_party::paillier::asynchronous::Party<
-        RANGE_CLAIMS_PER_SCALAR,
-        NUM_RANGE_CLAIMS,
-        SCALAR_LIMBS,
-        GroupElement,
-    >;
-
-    pub type EncryptionOfMaskAndMaskedKey<const SCALAR_LIMBS: usize> = group::Value<
-        encryption_of_tuple::StatementSpaceGroupElement<
-            PLAINTEXT_SPACE_SCALAR_LIMBS,
-            SCALAR_LIMBS,
-            EncryptionKey,
-        >,
-    >;
-
-    pub type NoncePublicShareAndEncryptionOfMaskedNonceShare<
-        const SCALAR_LIMBS: usize,
-        GroupElement,
-    > = group::Value<
-        scaling_of_discrete_log::StatementSpaceGroupElement<
-            PLAINTEXT_SPACE_SCALAR_LIMBS,
-            SCALAR_LIMBS,
-            GroupElement,
-            EncryptionKey,
-        >,
-    >;
-
-    pub type Presign<GroupElement> = crate::presign::Presign<
-        group::Value<GroupElement>,
-        group::Value<CiphertextSpaceGroupElement>,
-    >;
-
-    #[cfg(feature = "bulletproofs")]
-    pub mod bulletproofs {
-        use serde::{Deserialize, Serialize};
-
-        use group::{direct_product, PrimeGroupElement};
-        use homomorphic_encryption::GroupsPublicParametersAccessors;
-        use tiresias::{LargeBiPrimeSizedNumber, RandomnessSpacePublicParameters};
-
-        use crate::bulletproofs::*;
-        use crate::languages::DIMENSION;
-        use crate::ProtocolPublicParameters;
-
-        use super::*;
-
-        pub type UnboundedDComEvalWitness<const SCALAR_LIMBS: usize, GroupElement> =
-            direct_product::GroupElement<
-                self_product::GroupElement<DIMENSION, group::Scalar<SCALAR_LIMBS, GroupElement>>,
-                tiresias::RandomnessSpaceGroupElement,
-            >;
-
-        #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-        pub struct PaillierProtocolPublicParameters<
-            const SCALAR_LIMBS: usize,
-            const RANGE_CLAIMS_PER_SCALAR: usize,
-            const NUM_RANGE_CLAIMS: usize,
-            ScalarPublicParameters,
-            GroupPublicParameters,
-        > {
-            pub protocol_public_parameters: ProtocolPublicParameters<
-                ScalarPublicParameters,
-                GroupPublicParameters,
-                super::PublicParameters,
-            >,
-            pub unbounded_encdl_witness_public_parameters:
-                group::PublicParameters<UnboundedEncDLWitness>,
-            pub unbounded_encdh_witness_public_parameters:
-                group::PublicParameters<UnboundedEncDHWitness>,
-            pub unbounded_dcom_eval_witness_public_parameters: direct_product::PublicParameters<
-                self_product::PublicParameters<DIMENSION, ScalarPublicParameters>,
-                RandomnessSpacePublicParameters,
-            >,
-            pub range_proof_enc_dl_public_parameters:
-                crate::bulletproofs::PublicParameters<RANGE_CLAIMS_PER_SCALAR>,
-            pub range_proof_dcom_eval_public_parameters:
-                crate::bulletproofs::PublicParameters<NUM_RANGE_CLAIMS>,
-        }
-
-        impl<
-                const SCALAR_LIMBS: usize,
-                const RANGE_CLAIMS_PER_SCALAR: usize,
-                const NUM_RANGE_CLAIMS: usize,
-                ScalarPublicParameters,
-                GroupPublicParameters,
-            >
-            AsRef<
-                ProtocolPublicParameters<
-                    ScalarPublicParameters,
-                    GroupPublicParameters,
-                    super::PublicParameters,
+                EncryptionKey<
+                    SCALAR_LIMBS,
+                    FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    GroupElement,
                 >,
-            >
-            for PaillierProtocolPublicParameters<
-                SCALAR_LIMBS,
-                RANGE_CLAIMS_PER_SCALAR,
-                NUM_RANGE_CLAIMS,
-                ScalarPublicParameters,
-                GroupPublicParameters,
-            >
-        {
-            fn as_ref(
-                &self,
-            ) -> &ProtocolPublicParameters<
-                ScalarPublicParameters,
-                GroupPublicParameters,
-                super::PublicParameters,
-            > {
-                &self.protocol_public_parameters
-            }
-        }
-
-        impl<
-                const SCALAR_LIMBS: usize,
-                const RANGE_CLAIMS_PER_SCALAR: usize,
-                const NUM_RANGE_CLAIMS: usize,
-                ScalarPublicParameters,
-                GroupPublicParameters,
-            >
-            PaillierProtocolPublicParameters<
-                SCALAR_LIMBS,
-                RANGE_CLAIMS_PER_SCALAR,
-                NUM_RANGE_CLAIMS,
-                ScalarPublicParameters,
-                GroupPublicParameters,
-            >
-        where
-            ScalarPublicParameters: Default + Clone,
-            GroupPublicParameters: Default,
-        {
-            pub fn new<GroupElement>(paillier_associated_bi_prime: LargeBiPrimeSizedNumber) -> Self
-            where
-                GroupElement: PrimeGroupElement<SCALAR_LIMBS>
-                    + group::GroupElement<PublicParameters = GroupPublicParameters>,
-                GroupElement::Scalar:
-                    group::GroupElement<PublicParameters = ScalarPublicParameters>,
-            {
-                let scalar_group_public_parameters =
-                    group::PublicParameters::<GroupElement::Scalar>::default();
-
-                let group_public_parameters = GroupElement::PublicParameters::default();
-
-                let range_proof_enc_dl_public_parameters =
-                    proof::range::bulletproofs::PublicParameters::<RANGE_CLAIMS_PER_SCALAR>::default();
-
-                let range_proof_dcom_eval_public_parameters =
-                    proof::range::bulletproofs::PublicParameters::<NUM_RANGE_CLAIMS>::default();
-
-                let encryption_scheme_public_parameters =
-                    tiresias::encryption_key::PublicParameters::new(paillier_associated_bi_prime)
-                        .unwrap();
-
-                let unbounded_encdl_witness_public_parameters = encryption_scheme_public_parameters
-                    .randomness_space_public_parameters()
-                    .clone();
-
-                let unbounded_encdh_witness_public_parameters = self_product::PublicParameters::new(
-                    encryption_scheme_public_parameters
-                        .randomness_space_public_parameters()
-                        .clone(),
-                );
-
-                let unbounded_dcom_eval_witness_public_parameters =
-                    direct_product::PublicParameters(
-                        self_product::PublicParameters::new(scalar_group_public_parameters.clone()),
-                        encryption_scheme_public_parameters
-                            .randomness_space_public_parameters()
-                            .clone(),
-                    );
-
-                Self {
-                    protocol_public_parameters: ProtocolPublicParameters {
-                        scalar_group_public_parameters,
-                        group_public_parameters,
-                        encryption_scheme_public_parameters,
-                    },
-                    range_proof_enc_dl_public_parameters,
-                    range_proof_dcom_eval_public_parameters,
-                    unbounded_encdl_witness_public_parameters,
-                    unbounded_encdh_witness_public_parameters,
-                    unbounded_dcom_eval_witness_public_parameters,
-                }
-            }
-        }
-
-        pub type SignMessage<
-            const SCALAR_LIMBS: usize,
-            const RANGE_CLAIMS_PER_SCALAR: usize,
-            const RANGE_CLAIMS_PER_MASK: usize,
-            const NUM_RANGE_CLAIMS: usize,
-            GroupElement,
-        > = crate::sign::centralized_party::message::paillier::Message<
-            SCALAR_LIMBS,
-            RANGE_CLAIMS_PER_SCALAR,
-            RANGE_CLAIMS_PER_MASK,
-            COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
-            NUM_RANGE_CLAIMS,
-            PLAINTEXT_SPACE_SCALAR_LIMBS,
-            GroupElement,
-            EncryptionKey,
-            RangeProof,
-            UnboundedDComEvalWitness<SCALAR_LIMBS, GroupElement>,
+            >,
         >;
+
+        pub type SignPartyPublicInput<
+            const SCALAR_LIMBS: usize,
+            const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            const MESSAGE_LIMBS: usize,
+            GroupElement,
+        > = crate::ecdsa::sign::decentralized_party::PublicInput<
+            DKGDecentralizedPartyVersionedOutput<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+            VersionedPresign<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+            SignMessage<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                MESSAGE_LIMBS,
+                GroupElement,
+            >,
+            DecryptionKeySharePublicParameters<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+            crate::class_groups::ProtocolPublicParameters<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+        >;
+
+        pub type DKGSignPartyPublicInput<
+            const SCALAR_LIMBS: usize,
+            const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            const MESSAGE_LIMBS: usize,
+            GroupElement,
+        > = crate::ecdsa::sign::decentralized_party::DKGSignPublicInput<
+            DKGDecentralizedPartyPublicInput<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+            VersionedPresign<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+            SignMessage<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                MESSAGE_LIMBS,
+                GroupElement,
+            >,
+            DecryptionKeySharePublicParameters<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+            crate::class_groups::ProtocolPublicParameters<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+        >;
+
+        pub mod asynchronous {
+            use super::*;
+
+            #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+            pub struct Protocol<
+                const SCALAR_LIMBS: usize,
+                const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+                const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+                const MESSAGE_LIMBS: usize,
+                GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+            >(PhantomData<GroupElement>)
+            where
+                Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+                Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+                Uint<SCALAR_LIMBS>: Encoding,
+                Uint<MESSAGE_LIMBS>: Encoding;
+        }
     }
 }
 
-#[cfg(feature = "bulletproofs")]
-pub mod bulletproofs {
-    use group::ristretto;
-    use proof::{range, range::bulletproofs};
+pub mod secp256r1 {
+    pub use ::class_groups::RISTRETTO_MESSAGE_LIMBS as MESSAGE_LIMBS;
+    use group::secp256r1;
 
-    pub const COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS: usize = ristretto::SCALAR_LIMBS;
-    pub type RangeProof = bulletproofs::RangeProof;
+    pub const SCALAR_LIMBS: usize = secp256r1::SCALAR_LIMBS;
+    pub type GroupElement = secp256r1::GroupElement;
+    pub type Scalar = secp256r1::Scalar;
 
-    pub type MessageSpaceGroupElement<const NUM_RANGE_CLAIMS: usize> =
-        range::CommitmentSchemeMessageSpaceGroupElement<
-            COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
-            NUM_RANGE_CLAIMS,
-            RangeProof,
-        >;
-
-    pub type RandomnessSpaceGroupElement<const NUM_RANGE_CLAIMS: usize> =
-        range::CommitmentSchemeRandomnessSpaceGroupElement<
-            COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
-            NUM_RANGE_CLAIMS,
-            RangeProof,
-        >;
-
-    pub type CommitmentSpaceGroupElement<const NUM_RANGE_CLAIMS: usize> =
-        range::CommitmentSchemeCommitmentSpaceGroupElement<
-            COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
-            NUM_RANGE_CLAIMS,
-            RangeProof,
-        >;
-
-    pub type PublicParameters<const NUM_RANGE_CLAIMS: usize> =
-        range::bulletproofs::PublicParameters<NUM_RANGE_CLAIMS>;
-}
-
-#[cfg(feature = "secp256k1")]
-pub mod secp256k1 {
-    pub use ::class_groups::SECP256K1_MESSAGE_LIMBS as MESSAGE_LIMBS;
-    use group::secp256k1;
-
-    pub const SCALAR_LIMBS: usize = secp256k1::SCALAR_LIMBS;
-    pub type GroupElement = secp256k1::GroupElement;
-    pub type Scalar = secp256k1::Scalar;
-
-    #[cfg(feature = "class_groups")]
     pub mod class_groups {
         use crate::{languages, ProtocolContext};
+        use ::class_groups::{Secp256r1DecryptionKey, Secp256r1EncryptionKey};
 
         use super::*;
 
         pub const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize =
-            ::class_groups::SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS;
+            ::class_groups::RISTRETTO_FUNDAMENTAL_DISCRIMINANT_LIMBS;
         pub const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize =
-            ::class_groups::SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS;
+            ::class_groups::RISTRETTO_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS;
 
-        pub type EncryptionKey = ::class_groups::EncryptionKey<
-            SCALAR_LIMBS,
-            FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            secp256k1::GroupElement,
-        >;
-        pub type DecryptionKey = ::class_groups::DecryptionKey<
-            SCALAR_LIMBS,
-            FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            secp256k1::GroupElement,
-        >;
+        pub type EncryptionKey = Secp256r1EncryptionKey;
+        pub type DecryptionKey = Secp256r1DecryptionKey;
         pub type ProtocolPublicParameters = crate::class_groups::ProtocolPublicParameters<
             SCALAR_LIMBS,
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -934,13 +946,15 @@ pub mod secp256k1 {
             GroupElement,
         >;
 
-        pub type AsyncProtocol = crate::class_groups::asynchronous::Protocol<
+        pub type ECDSAProtocol = crate::class_groups::ecdsa::asynchronous::Protocol<
             SCALAR_LIMBS,
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             MESSAGE_LIMBS,
             GroupElement,
         >;
+
+        pub type DKGProtocol = ECDSAProtocol;
 
         pub type EncryptionOfDiscreteLogProof =
             languages::class_groups::EncryptionOfDiscreteLogProof<
@@ -951,135 +965,463 @@ pub mod secp256k1 {
                 ProtocolContext,
             >;
 
-        pub type EncryptionOfSecretKeyShareRoundAsyncParty =
-            crate::class_groups::EncryptionOfSecretKeyShareRoundAsyncParty<
+        pub type EncryptionOfSecretKeyShareParty =
+            crate::class_groups::EncryptionOfSecretKeyShareParty<
                 SCALAR_LIMBS,
                 FUNDAMENTAL_DISCRIMINANT_LIMBS,
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
                 GroupElement,
             >;
     }
+}
 
-    #[cfg(feature = "paillier")]
-    pub mod paillier {
-        #[cfg(feature = "bulletproofs")]
-        pub mod bulletproofs {
-            use crate::{languages, ProtocolContext};
+pub mod curve25519 {
+    pub use ::class_groups::CURVE25519_MESSAGE_LIMBS as MESSAGE_LIMBS;
+    use group::curve25519;
 
-            use super::super::bulletproofs::*;
-            use super::super::*;
+    pub const SCALAR_LIMBS: usize = curve25519::SCALAR_LIMBS;
+    pub type GroupElement = curve25519::GroupElement;
+    pub type Scalar = curve25519::Scalar;
 
-            pub type PaillierProtocolPublicParameters =
-                crate::paillier::bulletproofs::PaillierProtocolPublicParameters<
-                    SCALAR_LIMBS,
-                    RANGE_CLAIMS_PER_SCALAR,
-                    NUM_RANGE_CLAIMS,
-                    secp256k1::scalar::PublicParameters,
-                    secp256k1::group_element::PublicParameters,
-                >;
+    pub mod class_groups {
+        use crate::{languages, ProtocolContext};
+        use ::class_groups::{Curve25519DecryptionKey, Curve25519EncryptionKey};
 
-            pub type AsyncProtocol = crate::paillier::asynchronous::Protocol<
-                RANGE_CLAIMS_PER_SCALAR,
-                RANGE_CLAIMS_PER_MASK,
-                NUM_RANGE_CLAIMS,
+        use super::*;
+
+        pub const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize =
+            ::class_groups::CURVE25519_FUNDAMENTAL_DISCRIMINANT_LIMBS;
+        pub const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize =
+            ::class_groups::CURVE25519_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS;
+
+        pub type EncryptionKey = Curve25519EncryptionKey;
+        pub type DecryptionKey = Curve25519DecryptionKey;
+        pub type ProtocolPublicParameters = crate::class_groups::ProtocolPublicParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >;
+
+        pub type EdDSAProtocol = crate::class_groups::schnorr::asynchronous::Protocol<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MESSAGE_LIMBS,
+            GroupElement,
+        >;
+
+        pub type DKGProtocol = EdDSAProtocol;
+
+        pub type EncryptionOfDiscreteLogProof =
+            languages::class_groups::EncryptionOfDiscreteLogProof<
                 SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
                 GroupElement,
+                ProtocolContext,
             >;
 
-            pub type EncryptionOfDiscreteLogProof =
-                languages::paillier::EncryptionOfDiscreteLogProof<
-                    SCALAR_LIMBS,
-                    RANGE_CLAIMS_PER_SCALAR,
-                    GroupElement,
-                    ProtocolContext,
-                >;
-
-            pub type EncryptionOfSecretKeyShareRoundAsyncParty =
-                crate::paillier::EncryptionOfSecretKeyShareRoundAsyncParty<
-                    SCALAR_LIMBS,
-                    RANGE_CLAIMS_PER_SCALAR,
-                    NUM_RANGE_CLAIMS,
-                    GroupElement,
-                >;
-        }
+        pub type EncryptionOfSecretKeyShareParty =
+            crate::class_groups::EncryptionOfSecretKeyShareParty<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >;
     }
+}
 
-    #[cfg(feature = "bulletproofs")]
-    pub mod bulletproofs {
-        use crypto_bigint::{Uint, U64};
+pub mod ristretto {
+    pub use ::class_groups::RISTRETTO_MESSAGE_LIMBS as MESSAGE_LIMBS;
+    use group::ristretto;
 
-        use group::StatisticalSecuritySizedNumber;
-        use proof::range::bulletproofs::RANGE_CLAIM_BITS;
+    pub const SCALAR_LIMBS: usize = ristretto::SCALAR_LIMBS;
+    pub type GroupElement = ristretto::GroupElement;
+    pub type Scalar = ristretto::Scalar;
 
-        use crate::languages::DIMENSION;
+    pub mod class_groups {
+        use crate::{languages, ProtocolContext};
+        use ::class_groups::{RistrettoDecryptionKey, RistrettoEncryptionKey};
 
-        use super::SCALAR_LIMBS;
+        use super::*;
 
-        pub const RANGE_CLAIMS_PER_SCALAR: usize =
-            Uint::<SCALAR_LIMBS>::BITS as usize / RANGE_CLAIM_BITS;
-        pub const MASK_LIMBS: usize =
-            SCALAR_LIMBS + StatisticalSecuritySizedNumber::LIMBS + U64::LIMBS;
+        pub const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize =
+            ::class_groups::RISTRETTO_FUNDAMENTAL_DISCRIMINANT_LIMBS;
+        pub const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize =
+            ::class_groups::RISTRETTO_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS;
 
-        pub const RANGE_CLAIMS_PER_MASK: usize =
-            Uint::<MASK_LIMBS>::BITS as usize / RANGE_CLAIM_BITS;
+        pub type EncryptionKey = RistrettoEncryptionKey;
+        pub type DecryptionKey = RistrettoDecryptionKey;
+        pub type ProtocolPublicParameters = crate::class_groups::ProtocolPublicParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >;
 
-        pub const NUM_RANGE_CLAIMS: usize =
-            DIMENSION * RANGE_CLAIMS_PER_SCALAR + RANGE_CLAIMS_PER_MASK;
+        pub type SchnorrkelSubstrateProtocol = crate::class_groups::schnorr::asynchronous::Protocol<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MESSAGE_LIMBS,
+            GroupElement,
+        >;
+
+        pub type DKGProtocol = SchnorrkelSubstrateProtocol;
+
+        pub type EncryptionOfDiscreteLogProof =
+            languages::class_groups::EncryptionOfDiscreteLogProof<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+                ProtocolContext,
+            >;
+
+        pub type EncryptionOfSecretKeyShareParty =
+            crate::class_groups::EncryptionOfSecretKeyShareParty<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >;
+    }
+}
+
+pub mod secp256k1 {
+    pub use ::class_groups::SECP256K1_MESSAGE_LIMBS as MESSAGE_LIMBS;
+    use group::secp256k1;
+
+    pub const SCALAR_LIMBS: usize = secp256k1::SCALAR_LIMBS;
+    pub type GroupElement = secp256k1::GroupElement;
+    pub type Scalar = secp256k1::Scalar;
+
+    pub mod class_groups {
+        use crate::{languages, ProtocolContext};
+        use ::class_groups::{Secp256k1DecryptionKey, Secp256k1EncryptionKey};
+
+        use super::*;
+
+        pub const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize =
+            ::class_groups::SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS;
+        pub const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize =
+            ::class_groups::SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS;
+
+        pub type EncryptionKey = Secp256k1EncryptionKey;
+        pub type DecryptionKey = Secp256k1DecryptionKey;
+        pub type ProtocolPublicParameters = crate::class_groups::ProtocolPublicParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >;
+
+        pub type ECDSAProtocol = crate::class_groups::ecdsa::asynchronous::Protocol<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MESSAGE_LIMBS,
+            GroupElement,
+        >;
+
+        pub type TaprootProtocol = crate::class_groups::schnorr::asynchronous::Protocol<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MESSAGE_LIMBS,
+            GroupElement,
+        >;
+
+        pub type DKGProtocol = ECDSAProtocol;
+
+        pub type EncryptionOfDiscreteLogProof =
+            languages::class_groups::EncryptionOfDiscreteLogProof<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+                ProtocolContext,
+            >;
+
+        pub type EncryptionOfSecretKeyShareParty =
+            crate::class_groups::EncryptionOfSecretKeyShareParty<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >;
     }
 }
 #[cfg(any(test, feature = "test_helpers"))]
 pub mod test_helpers {
-    use class_groups::test_helpers::get_setup_parameters_secp256k1_112_bits_deterministic;
-    use class_groups::Secp256k1DecryptionKey;
-    use group::{secp256k1, OsCsRng};
-    use homomorphic_encryption::AdditivelyHomomorphicDecryptionKey;
-    #[cfg(all(feature = "paillier", feature = "bulletproofs",))]
-    use tiresias::test_helpers::{N, SECRET_KEY};
-
-    #[cfg(all(feature = "paillier", feature = "bulletproofs",))]
-    use crate::secp256k1::paillier::bulletproofs::PaillierProtocolPublicParameters;
     use crate::ProtocolPublicParameters;
+    use class_groups::test_helpers::{
+        get_setup_parameters_curve25519_112_bits_deterministic,
+        get_setup_parameters_ristretto_112_bits_deterministic,
+        get_setup_parameters_secp256k1_112_bits_deterministic,
+        get_setup_parameters_secp256r1_112_bits_deterministic,
+    };
+    use class_groups::{
+        Curve25519DecryptionKey, Curve25519EncryptionKey, RistrettoDecryptionKey,
+        RistrettoEncryptionKey, Secp256k1DecryptionKey, Secp256k1EncryptionKey,
+        Secp256r1DecryptionKey, Secp256r1EncryptionKey,
+    };
+    use crypto_bigint::Uint;
+    use group::{
+        curve25519, ristretto, secp256k1, secp256r1, GroupElement, OsCsRng, PrimeGroupElement,
+        Samplable,
+    };
+    use homomorphic_encryption::{
+        AdditivelyHomomorphicEncryptionKey, GroupsPublicParametersAccessors,
+    };
 
-    #[cfg(feature = "class_groups")]
+    pub(crate) fn mock_decentralized_party_dkg<
+        const SCALAR_LIMBS: usize,
+        const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+        EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
+    >(
+        group_public_parameters: group::PublicParameters<GroupElement>,
+        scalar_group_public_parameters: group::PublicParameters<GroupElement::Scalar>,
+        encryption_scheme_public_parameters: &EncryptionKey::PublicParameters,
+    ) -> (
+        GroupElement::Value,
+        GroupElement::Value,
+        group::Value<EncryptionKey::CiphertextSpaceGroupElement>,
+        group::Value<EncryptionKey::CiphertextSpaceGroupElement>,
+    ) {
+        let encryption_key = EncryptionKey::new(encryption_scheme_public_parameters).unwrap();
+
+        let generator =
+            GroupElement::generator_from_public_parameters(&group_public_parameters).unwrap();
+
+        let decentralized_party_secret_key_share_first_part =
+            GroupElement::Scalar::sample(&scalar_group_public_parameters, &mut OsCsRng).unwrap();
+
+        let decentralized_party_secret_key_share_first_part_value: Uint<SCALAR_LIMBS> =
+            decentralized_party_secret_key_share_first_part.into();
+        let decentralized_party_secret_key_share_first_part_value =
+            Uint::<PLAINTEXT_SPACE_SCALAR_LIMBS>::from(
+                &decentralized_party_secret_key_share_first_part_value,
+            );
+        let decentralized_party_secret_key_share_first_part_plaintext =
+            EncryptionKey::PlaintextSpaceGroupElement::new(
+                decentralized_party_secret_key_share_first_part_value.into(),
+                encryption_scheme_public_parameters.plaintext_space_public_parameters(),
+            )
+            .unwrap();
+        let (_, encryption_of_decentralized_party_secret_key_share_first_part) = encryption_key
+            .encrypt(
+                &decentralized_party_secret_key_share_first_part_plaintext,
+                encryption_scheme_public_parameters,
+                true,
+                &mut OsCsRng,
+            )
+            .unwrap();
+
+        let decentralized_party_secret_key_share_second_part =
+            GroupElement::Scalar::sample(&scalar_group_public_parameters, &mut OsCsRng).unwrap();
+
+        let decentralized_party_secret_key_share_second_part_value: Uint<SCALAR_LIMBS> =
+            decentralized_party_secret_key_share_second_part.into();
+        let decentralized_party_secret_key_share_second_part_value =
+            Uint::<PLAINTEXT_SPACE_SCALAR_LIMBS>::from(
+                &decentralized_party_secret_key_share_second_part_value,
+            );
+        let decentralized_party_secret_key_share_second_part_plaintext =
+            EncryptionKey::PlaintextSpaceGroupElement::new(
+                decentralized_party_secret_key_share_second_part_value.into(),
+                encryption_scheme_public_parameters.plaintext_space_public_parameters(),
+            )
+            .unwrap();
+        let (_, encryption_of_decentralized_party_secret_key_share_second_part) = encryption_key
+            .encrypt(
+                &decentralized_party_secret_key_share_second_part_plaintext,
+                encryption_scheme_public_parameters,
+                true,
+                &mut OsCsRng,
+            )
+            .unwrap();
+
+        let decentralized_party_public_key_share_first_part =
+            decentralized_party_secret_key_share_first_part * generator;
+        let decentralized_party_public_key_share_second_part =
+            decentralized_party_secret_key_share_second_part * generator;
+
+        (
+            decentralized_party_public_key_share_first_part.value(),
+            decentralized_party_public_key_share_second_part.value(),
+            encryption_of_decentralized_party_secret_key_share_first_part.value(),
+            encryption_of_decentralized_party_secret_key_share_second_part.value(),
+        )
+    }
+
+    #[allow(dead_code)]
+    pub fn setup_class_groups_secp256r1() -> (
+        crate::secp256r1::class_groups::ProtocolPublicParameters,
+        crate::secp256r1::class_groups::DecryptionKey,
+    ) {
+        let setup_parameters = get_setup_parameters_secp256r1_112_bits_deterministic();
+        let (encryption_scheme_public_parameters, decryption_key) =
+            Secp256r1DecryptionKey::generate_with_setup_parameters(setup_parameters, &mut OsCsRng)
+                .unwrap();
+
+        let (
+            decentralized_party_public_key_share_first_part,
+            decentralized_party_public_key_share_second_part,
+            encryption_of_decentralized_party_secret_key_share_first_part,
+            encryption_of_decentralized_party_secret_key_share_second_part,
+        ) = mock_decentralized_party_dkg::<
+            { secp256r1::SCALAR_LIMBS },
+            { secp256r1::SCALAR_LIMBS },
+            secp256r1::GroupElement,
+            Secp256r1EncryptionKey,
+        >(
+            secp256r1::group_element::PublicParameters::default(),
+            secp256r1::scalar::PublicParameters::default(),
+            &encryption_scheme_public_parameters,
+        );
+
+        let protocol_public_parameters = ProtocolPublicParameters::new::<
+            { secp256r1::SCALAR_LIMBS },
+            { crate::secp256r1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            { crate::secp256r1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            secp256r1::GroupElement,
+        >(
+            decentralized_party_public_key_share_first_part,
+            decentralized_party_public_key_share_second_part,
+            encryption_of_decentralized_party_secret_key_share_first_part,
+            encryption_of_decentralized_party_secret_key_share_second_part,
+            encryption_scheme_public_parameters.clone(),
+        );
+
+        (protocol_public_parameters, decryption_key)
+    }
+
     #[allow(dead_code)]
     pub fn setup_class_groups_secp256k1() -> (
-        crate::class_groups::ProtocolPublicParameters<
-            { secp256k1::SCALAR_LIMBS },
-            { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
-            { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
-            secp256k1::GroupElement,
-        >,
+        crate::secp256k1::class_groups::ProtocolPublicParameters,
         crate::secp256k1::class_groups::DecryptionKey,
     ) {
         let setup_parameters = get_setup_parameters_secp256k1_112_bits_deterministic();
         let (encryption_scheme_public_parameters, decryption_key) =
-            Secp256k1DecryptionKey::generate(setup_parameters, &mut OsCsRng).unwrap();
+            Secp256k1DecryptionKey::generate_with_setup_parameters(setup_parameters, &mut OsCsRng)
+                .unwrap();
+
+        let (
+            decentralized_party_public_key_share_first_part,
+            decentralized_party_public_key_share_second_part,
+            encryption_of_decentralized_party_secret_key_share_first_part,
+            encryption_of_decentralized_party_secret_key_share_second_part,
+        ) = mock_decentralized_party_dkg::<
+            { secp256k1::SCALAR_LIMBS },
+            { secp256k1::SCALAR_LIMBS },
+            secp256k1::GroupElement,
+            Secp256k1EncryptionKey,
+        >(
+            secp256k1::group_element::PublicParameters::default(),
+            secp256k1::scalar::PublicParameters::default(),
+            &encryption_scheme_public_parameters,
+        );
 
         let protocol_public_parameters = ProtocolPublicParameters::new::<
             { secp256k1::SCALAR_LIMBS },
             { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
             { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
             secp256k1::GroupElement,
-        >(encryption_scheme_public_parameters.clone());
+        >(
+            decentralized_party_public_key_share_first_part,
+            decentralized_party_public_key_share_second_part,
+            encryption_of_decentralized_party_secret_key_share_first_part,
+            encryption_of_decentralized_party_secret_key_share_second_part,
+            encryption_scheme_public_parameters.clone(),
+        );
 
         (protocol_public_parameters, decryption_key)
     }
 
-    #[cfg(all(feature = "paillier", feature = "bulletproofs",))]
     #[allow(dead_code)]
-    pub fn setup_paillier_secp256k1() -> (PaillierProtocolPublicParameters, tiresias::DecryptionKey)
-    {
-        let paillier_protocol_public_parameters =
-            PaillierProtocolPublicParameters::new::<secp256k1::GroupElement>(N);
+    pub fn setup_class_groups_ristretto() -> (
+        crate::ristretto::class_groups::ProtocolPublicParameters,
+        crate::ristretto::class_groups::DecryptionKey,
+    ) {
+        let setup_parameters = get_setup_parameters_ristretto_112_bits_deterministic();
+        let (encryption_scheme_public_parameters, decryption_key) =
+            RistrettoDecryptionKey::generate_with_setup_parameters(setup_parameters, &mut OsCsRng)
+                .unwrap();
 
-        let decryption_key = tiresias::DecryptionKey::new(
-            SECRET_KEY,
-            &paillier_protocol_public_parameters
-                .protocol_public_parameters
-                .encryption_scheme_public_parameters,
-        )
-        .unwrap();
+        let (
+            decentralized_party_public_key_share_first_part,
+            decentralized_party_public_key_share_second_part,
+            encryption_of_decentralized_party_secret_key_share_first_part,
+            encryption_of_decentralized_party_secret_key_share_second_part,
+        ) = mock_decentralized_party_dkg::<
+            { ristretto::SCALAR_LIMBS },
+            { ristretto::SCALAR_LIMBS },
+            ristretto::GroupElement,
+            RistrettoEncryptionKey,
+        >(
+            ristretto::group_element::PublicParameters::default(),
+            ristretto::scalar::PublicParameters::default(),
+            &encryption_scheme_public_parameters,
+        );
 
-        (paillier_protocol_public_parameters, decryption_key)
+        let protocol_public_parameters = ProtocolPublicParameters::new::<
+            { ristretto::SCALAR_LIMBS },
+            { crate::ristretto::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            { crate::ristretto::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            ristretto::GroupElement,
+        >(
+            decentralized_party_public_key_share_first_part,
+            decentralized_party_public_key_share_second_part,
+            encryption_of_decentralized_party_secret_key_share_first_part,
+            encryption_of_decentralized_party_secret_key_share_second_part,
+            encryption_scheme_public_parameters.clone(),
+        );
+
+        (protocol_public_parameters, decryption_key)
+    }
+
+    #[allow(dead_code)]
+    pub fn setup_class_groups_curve25519() -> (
+        crate::curve25519::class_groups::ProtocolPublicParameters,
+        crate::curve25519::class_groups::DecryptionKey,
+    ) {
+        let setup_parameters = get_setup_parameters_curve25519_112_bits_deterministic();
+        let (encryption_scheme_public_parameters, decryption_key) =
+            Curve25519DecryptionKey::generate_with_setup_parameters(setup_parameters, &mut OsCsRng)
+                .unwrap();
+
+        let (
+            decentralized_party_public_key_share_first_part,
+            decentralized_party_public_key_share_second_part,
+            encryption_of_decentralized_party_secret_key_share_first_part,
+            encryption_of_decentralized_party_secret_key_share_second_part,
+        ) = mock_decentralized_party_dkg::<
+            { curve25519::SCALAR_LIMBS },
+            { curve25519::SCALAR_LIMBS },
+            curve25519::GroupElement,
+            Curve25519EncryptionKey,
+        >(
+            curve25519::PublicParameters::default(),
+            curve25519::scalar::PublicParameters::default(),
+            &encryption_scheme_public_parameters,
+        );
+
+        let protocol_public_parameters = ProtocolPublicParameters::new::<
+            { curve25519::SCALAR_LIMBS },
+            { crate::curve25519::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            { crate::curve25519::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            curve25519::GroupElement,
+        >(
+            decentralized_party_public_key_share_first_part,
+            decentralized_party_public_key_share_second_part,
+            encryption_of_decentralized_party_secret_key_share_first_part,
+            encryption_of_decentralized_party_secret_key_share_second_part,
+            encryption_scheme_public_parameters.clone(),
+        );
+
+        (protocol_public_parameters, decryption_key)
     }
 }

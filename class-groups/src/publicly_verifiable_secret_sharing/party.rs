@@ -326,7 +326,7 @@ where
 
     /// Calculate $\bar{C}_{i}=\Pi_{\ell\in[t]}C_{\ell}^{j^{\ell}}$ via Horner's method.
     /// Assumes the vector is of size `t`, and implicitly that it is non-empty.
-    fn reconstruct_commitment_to_share_in_the_exponent(
+    pub fn reconstruct_commitment_to_share_in_the_exponent(
         participating_parties_n_factorial: FactorialSizedNumber,
         participating_party_id: PartyID, // $j$
         coefficients_contribution_commitments: Vec<

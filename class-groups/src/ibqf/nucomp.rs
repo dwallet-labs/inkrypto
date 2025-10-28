@@ -6,10 +6,10 @@ use std::ops::Mul;
 
 use crypto_bigint::subtle::{ConditionallySelectable, ConstantTimeLess, CtOption};
 use crypto_bigint::{
-    CheckedMul, CheckedSub, Concat, ConstChoice, Encoding, Int, NonZero, Split, Uint, I128,
+    CheckedMul, CheckedSub, Concat, ConstChoice, Encoding, Int, IntXgcdOutput, NonZero,
+    NonZeroUintXgcdOutput, Split, Uint, I128,
 };
 
-use crate::helpers::binxgcd::{BinXgcd, IntBinxgcdOutput, NonZeroUintBinxgcdOutput};
 use crate::helpers::partial_xgcd::PartialXGCD;
 use crate::helpers::vartime_div::{FullVartimeDiv, FullVartimeFlooredDiv};
 use crate::helpers::vartime_mul::{CheckedMulVartime, ConcatenatingMulVartime};
@@ -139,15 +139,15 @@ where
         let m = b2.checked_sub(&s).expect("no overflow; b < a < |Δ|/2");
 
         // a1 * u + a2 * v = gcd(a1, a2);
-        let NonZeroUintBinxgcdOutput {
+        let NonZeroUintXgcdOutput {
             gcd: gcd_a1_a2,
             x: u,
             y: v,
             lhs_on_gcd: a1_div_gcd_a1_a2,
             rhs_on_gcd: a2_div_gcd_a1_a2,
-        } = a1.binxgcd(&a2);
+        } = a1.xgcd(&a2);
 
-        let IntBinxgcdOutput {
+        let IntXgcdOutput {
             gcd: gcd_a1_a2_s,
             x: Y,
             lhs_on_gcd: s_div_gcd_a1_a2_s,
@@ -161,16 +161,16 @@ where
             let gcd_a1_a2_ = gcd_a1_a2.resize::<{ I128::LIMBS }>();
 
             // Compute xgcd(s mod gcd, gcd)
-            let IntBinxgcdOutput {
+            let IntXgcdOutput {
                 gcd,
                 x,
                 lhs_on_gcd,
                 rhs_on_gcd,
                 ..
-            } = s_mod_gcd_.binxgcd(gcd_a1_a2_.as_int());
+            } = s_mod_gcd_.xgcd(gcd_a1_a2_.as_int());
 
             // Reconstruct xgcd(s, gcd) from xgcd(s mod gcd, gcd)
-            IntBinxgcdOutput {
+            IntXgcdOutput {
                 // > gcd is correct; gcd(a, b) = gcd(a mod b, b) = G
                 gcd: gcd.resize::<HALF>(),
                 // > x is correct: (a - qb)·x + b·y = a·x + b·(y-qx) = G
@@ -186,7 +186,7 @@ where
                 rhs_on_gcd: rhs_on_gcd.resize::<HALF>(),
             }
         } else {
-            s.binxgcd(gcd_a1_a2.as_int())
+            s.xgcd(gcd_a1_a2.as_int())
         };
 
         let w = gcd_a1_a2_div_gcd_a1_a2_s
@@ -504,12 +504,12 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crypto_bigint::I128;
-
+    use crate::discriminant::Discriminant;
     use crate::ibqf::test_helpers::{
         get_deterministic_secp256k1_form, get_deterministic_secp256k1_forms, Ibqf128,
     };
     use crate::ibqf::Ibqf;
+    use crypto_bigint::I128;
 
     #[test]
     fn test_nucomp_forms_with_prime_discriminant_maintains_discriminant() {
@@ -518,21 +518,21 @@ mod tests {
         //  ∆ = 1 mod 4, and
         // -∆ = 503 (prime, and thus square free)
 
-        let discriminant = -503;
+        let discriminant = (503, 0, 1);
         let f1 = Ibqf::new_reduced_64(9, 17, discriminant).unwrap();
         let f2 = Ibqf::new_reduced_64(4, 5, discriminant).unwrap();
 
-        let discriminant = I128::from(discriminant);
-        assert_eq!(f1.discriminant().unwrap(), discriminant);
-        assert_eq!(f2.discriminant().unwrap(), discriminant);
+        let discriminant = Discriminant::<{ I128::LIMBS }>::new_u64(503, 0, 1).unwrap();
+        assert_eq!(f1.discriminant().unwrap(), discriminant.get());
+        assert_eq!(f2.discriminant().unwrap(), discriminant.get());
 
         let f3 = f1.nucomp(f2);
-        assert_eq!(f3.discriminant().unwrap(), discriminant);
+        assert_eq!(f3.discriminant().unwrap(), discriminant.get());
     }
 
     #[test]
     fn test_nucompinv_is_inverse_of_nucomp() {
-        let discriminant = -2219;
+        let discriminant = (7, 0, 317);
         let f1 = Ibqf128::new_reduced_64(23, 9, discriminant).unwrap();
         let f2 = Ibqf128::new_reduced_64(3, 13, discriminant).unwrap();
 
@@ -592,16 +592,16 @@ mod tests {
         //  ∆ = 1 mod 4, and
         // -∆ = 2 * 317 (and thus square free)
 
-        let discriminant = -2219;
+        let discriminant = (7, 0, 317);
         let f1 = Ibqf::new_reduced_64(23, 9, discriminant).unwrap();
         let f2 = Ibqf::new_reduced_64(3, 13, discriminant).unwrap();
 
-        let discriminant = I128::from(discriminant);
-        assert_eq!(f1.discriminant().unwrap(), discriminant);
-        assert_eq!(f2.discriminant().unwrap(), discriminant);
+        let discriminant = Discriminant::<{ I128::LIMBS }>::new_u64(7, 0, 317).unwrap();
+        assert_eq!(f2.discriminant().unwrap(), discriminant.get());
+        assert_eq!(f1.discriminant().unwrap(), discriminant.get());
 
         let f3 = f1.nucomp(f2);
-        assert_eq!(f3.discriminant().unwrap(), discriminant);
+        assert_eq!(f3.discriminant().unwrap(), discriminant.get());
     }
 
     #[test]
@@ -612,27 +612,27 @@ mod tests {
         //  ∆/4 = 3 mod 4, and
         // -∆ = 3 * 239 (and thus square free)
 
-        let discriminant = -2868;
+        let discriminant = (239, 0, 12);
         let f1 = Ibqf::new_reduced_64(11, 16, discriminant).unwrap();
         let f2 = Ibqf::new_reduced_64(7, 4, discriminant).unwrap();
 
-        let discriminant = I128::from(discriminant);
-        assert_eq!(f1.discriminant().unwrap(), discriminant);
-        assert_eq!(f2.discriminant().unwrap(), discriminant);
+        let discriminant = Discriminant::<{ I128::LIMBS }>::new_u64(239, 0, 12).unwrap();
+        assert_eq!(f1.discriminant().unwrap(), discriminant.get());
+        assert_eq!(f2.discriminant().unwrap(), discriminant.get());
 
         let f3 = f1.nucomp(f2);
-        assert_eq!(f3.discriminant().unwrap(), discriminant);
+        assert_eq!(f3.discriminant().unwrap(), discriminant.get());
     }
 
     #[test]
     fn test_nucomp_reduces() {
-        let discriminant = -2868;
+        let discriminant = (239, 0, 12);
         let f1 = Ibqf::new_reduced_64(11, 16, discriminant).unwrap();
         let f2 = Ibqf::new_reduced_64(7, 4, discriminant).unwrap();
 
-        let discriminant = I128::from(discriminant);
-        assert_eq!(f1.discriminant().unwrap(), discriminant);
-        assert_eq!(f2.discriminant().unwrap(), discriminant);
+        let discriminant = Discriminant::<{ I128::LIMBS }>::new_u64(239, 0, 12).unwrap();
+        assert_eq!(f1.discriminant().unwrap(), discriminant.get());
+        assert_eq!(f2.discriminant().unwrap(), discriminant.get());
 
         let f3 = f1.nucomp(f2);
         let target = Ibqf::from_64(21, -18, 38);
@@ -688,7 +688,7 @@ pub(crate) mod benches {
     ) where
         Int<LIMBS>: Encoding,
         Uint<HALF>: Concat<Output = Uint<LIMBS>>,
-        Uint<LIMBS>: Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
+        Uint<LIMBS>: Encoding + Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
         Uint<DOUBLE>: Split<Output = Uint<LIMBS>>,
     {
         let form = *form.representative();

@@ -20,6 +20,7 @@ use crate::ibqf::{compact::CompactIbqf, Ibqf};
 impl<const DISCRIMINANT_LIMBS: usize> Neg for EquivalenceClass<DISCRIMINANT_LIMBS>
 where
     Int<DISCRIMINANT_LIMBS>: Encoding,
+    Uint<DISCRIMINANT_LIMBS>: Encoding,
 {
     type Output = Self;
 
@@ -36,7 +37,7 @@ impl<const HALF: usize, const DISCRIMINANT_LIMBS: usize, const DOUBLE: usize> Ad
 where
     Int<DISCRIMINANT_LIMBS>: Encoding,
     Uint<HALF>: Concat<Output = Uint<DISCRIMINANT_LIMBS>>,
-    Uint<DISCRIMINANT_LIMBS>: Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
+    Uint<DISCRIMINANT_LIMBS>: Encoding + Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
     Uint<DOUBLE>: Split<Output = Uint<DISCRIMINANT_LIMBS>>,
 {
     type Output = Self;
@@ -51,7 +52,7 @@ impl<'r, const HALF: usize, const DISCRIMINANT_LIMBS: usize, const DOUBLE: usize
 where
     Int<DISCRIMINANT_LIMBS>: Encoding,
     Uint<HALF>: Concat<Output = Uint<DISCRIMINANT_LIMBS>>,
-    Uint<DISCRIMINANT_LIMBS>: Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
+    Uint<DISCRIMINANT_LIMBS>: Encoding + Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
     Uint<DOUBLE>: Split<Output = Uint<DISCRIMINANT_LIMBS>>,
 {
     type Output = Self;
@@ -67,7 +68,7 @@ impl<const HALF: usize, const DISCRIMINANT_LIMBS: usize, const DOUBLE: usize> Su
 where
     Int<DISCRIMINANT_LIMBS>: Encoding,
     Uint<HALF>: Concat<Output = Uint<DISCRIMINANT_LIMBS>>,
-    Uint<DISCRIMINANT_LIMBS>: Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
+    Uint<DISCRIMINANT_LIMBS>: Encoding + Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
     Uint<DOUBLE>: Split<Output = Uint<DISCRIMINANT_LIMBS>>,
 {
     type Output = Self;
@@ -82,7 +83,7 @@ impl<'r, const HALF: usize, const DISCRIMINANT_LIMBS: usize, const DOUBLE: usize
 where
     Int<DISCRIMINANT_LIMBS>: Encoding,
     Uint<HALF>: Concat<Output = Uint<DISCRIMINANT_LIMBS>>,
-    Uint<DISCRIMINANT_LIMBS>: Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
+    Uint<DISCRIMINANT_LIMBS>: Encoding + Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
     Uint<DOUBLE>: Split<Output = Uint<DISCRIMINANT_LIMBS>>,
 {
     type Output = Self;
@@ -98,7 +99,7 @@ impl<const HALF: usize, const DISCRIMINANT_LIMBS: usize, const DOUBLE: usize> Ad
 where
     Int<DISCRIMINANT_LIMBS>: Encoding,
     Uint<HALF>: Concat<Output = Uint<DISCRIMINANT_LIMBS>>,
-    Uint<DISCRIMINANT_LIMBS>: Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
+    Uint<DISCRIMINANT_LIMBS>: Encoding + Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
     Uint<DOUBLE>: Split<Output = Uint<DISCRIMINANT_LIMBS>>,
 {
     fn add_assign(&mut self, rhs: Self) {
@@ -111,7 +112,7 @@ impl<'r, const HALF: usize, const DISCRIMINANT_LIMBS: usize, const DOUBLE: usize
 where
     Int<DISCRIMINANT_LIMBS>: Encoding,
     Uint<HALF>: Concat<Output = Uint<DISCRIMINANT_LIMBS>>,
-    Uint<DISCRIMINANT_LIMBS>: Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
+    Uint<DISCRIMINANT_LIMBS>: Encoding + Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
     Uint<DOUBLE>: Split<Output = Uint<DISCRIMINANT_LIMBS>>,
 {
     fn add_assign(&mut self, rhs: &'r Self) {
@@ -124,7 +125,7 @@ impl<const HALF: usize, const DISCRIMINANT_LIMBS: usize, const DOUBLE: usize> Su
 where
     Int<DISCRIMINANT_LIMBS>: Encoding,
     Uint<HALF>: Concat<Output = Uint<DISCRIMINANT_LIMBS>>,
-    Uint<DISCRIMINANT_LIMBS>: Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
+    Uint<DISCRIMINANT_LIMBS>: Encoding + Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
     Uint<DOUBLE>: Split<Output = Uint<DISCRIMINANT_LIMBS>>,
 {
     fn sub_assign(&mut self, rhs: Self) {
@@ -137,7 +138,7 @@ impl<'r, const HALF: usize, const DISCRIMINANT_LIMBS: usize, const DOUBLE: usize
 where
     Int<DISCRIMINANT_LIMBS>: Encoding,
     Uint<HALF>: Concat<Output = Uint<DISCRIMINANT_LIMBS>>,
-    Uint<DISCRIMINANT_LIMBS>: Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
+    Uint<DISCRIMINANT_LIMBS>: Encoding + Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
     Uint<DOUBLE>: Split<Output = Uint<DISCRIMINANT_LIMBS>>,
 {
     fn sub_assign(&mut self, rhs: &'r Self) {
@@ -219,6 +220,16 @@ where
     fn add_vartime(self, other: &Self) -> Self {
         // TODO(#35): get rid of unwrap
         self.mul_vartime(other).unwrap()
+    }
+
+    fn sub_randomized(self, other: &Self) -> Self {
+        // TODO(#35): get rid of unwrap
+        self.div(other).unwrap()
+    }
+
+    fn sub_vartime(self, other: &Self) -> Self {
+        // TODO(#35): get rid of unwrap
+        self.div_vartime(other).unwrap()
     }
 
     fn double(&self) -> Self {
@@ -418,6 +429,7 @@ impl<const DISCRIMINANT_LIMBS: usize, const LIMBS: usize> Scale<Int<LIMBS>>
     for EquivalenceClass<DISCRIMINANT_LIMBS>
 where
     Int<DISCRIMINANT_LIMBS>: Encoding,
+    Uint<DISCRIMINANT_LIMBS>: Encoding,
 
     Self: GroupElement<PublicParameters = PublicParameters<DISCRIMINANT_LIMBS>>
         + EquivalenceClassOps<
@@ -508,21 +520,18 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crypto_bigint::{I128, U128};
+    use crypto_bigint::U128;
 
     use group::GroupElement;
 
+    use crate::discriminant::Discriminant;
     use crate::equivalence_class::PublicParameters;
     use crate::ibqf::Ibqf;
     use crate::{CompactIbqf, EquivalenceClass};
 
     #[test]
     fn test_ec_new() {
-        let disc = I128::from_i64(-3372547i64)
-            .to_nz()
-            .unwrap()
-            .try_into()
-            .unwrap();
+        let disc = Discriminant::<{ U128::LIMBS }>::new_u64(3372547, 0, 1).unwrap();
         let public_parameters = PublicParameters::new_unaccelerated(disc);
 
         // This CompactIbqf is malicious since it points to an unreduced form.

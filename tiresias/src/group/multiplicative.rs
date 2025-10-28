@@ -2,10 +2,9 @@
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 use std::ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign};
 
-use crypto_bigint::modular::SafeGcdInverter;
 use crypto_bigint::{
     modular::{MontyForm, MontyParams},
-    Concat, Encoding, Int, NonZero, Odd, PrecomputeInverter, RandomMod, Split, Uint,
+    Concat, Encoding, Int, NonZero, Odd, RandomMod, Split, Uint,
 };
 use serde::{de::Error, Deserialize, Deserializer, Serialize, Serializer};
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
@@ -22,13 +21,10 @@ use group::{
 #[derive(PartialEq, Eq, Clone, Debug, Copy)]
 pub struct GroupElement<const LIMBS: usize>(pub(crate) MontyForm<LIMBS>);
 
-impl<const LIMBS: usize, const WIDE_LIMBS: usize, const UNSAT_LIMBS: usize> Samplable
-    for GroupElement<LIMBS>
+impl<const LIMBS: usize, const WIDE_LIMBS: usize> Samplable for GroupElement<LIMBS>
 where
     Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
     Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
 {
     fn sample(
         public_parameters: &Self::PublicParameters,
@@ -141,13 +137,10 @@ where
     }
 }
 
-impl<'de, const LIMBS: usize, const WIDE_LIMBS: usize, const UNSAT_LIMBS: usize> Deserialize<'de>
-    for PublicParameters<LIMBS>
+impl<'de, const LIMBS: usize, const WIDE_LIMBS: usize> Deserialize<'de> for PublicParameters<LIMBS>
 where
     Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
     Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -159,23 +152,18 @@ where
     }
 }
 
-impl<const LIMBS: usize, const WIDE_LIMBS: usize, const UNSAT_LIMBS: usize> Transcribeable
-    for PublicParameters<LIMBS>
+impl<const LIMBS: usize, const WIDE_LIMBS: usize> Transcribeable for PublicParameters<LIMBS>
 where
     Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
     Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
 {
     type CanonicalRepresentation = Self;
 }
 
-impl<const LIMBS: usize, const WIDE_LIMBS: usize, const UNSAT_LIMBS: usize> PublicParameters<LIMBS>
+impl<const LIMBS: usize, const WIDE_LIMBS: usize> PublicParameters<LIMBS>
 where
     Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
     Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
 {
     pub fn new(modulus: Uint<LIMBS>) -> group::Result<Self> {
         #[allow(deprecated)]
@@ -189,13 +177,10 @@ where
     }
 }
 
-impl<const LIMBS: usize, const WIDE_LIMBS: usize, const UNSAT_LIMBS: usize> LinearlyCombinable
-    for GroupElement<LIMBS>
+impl<const LIMBS: usize, const WIDE_LIMBS: usize> LinearlyCombinable for GroupElement<LIMBS>
 where
     Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
     Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
 {
     fn linearly_combine_bounded<const RHS_LIMBS: usize>(
         bases_and_multiplicands: Vec<(Self, Uint<RHS_LIMBS>)>,
@@ -212,13 +197,10 @@ where
     }
 }
 
-impl<const LIMBS: usize, const WIDE_LIMBS: usize, const UNSAT_LIMBS: usize> group::GroupElement
-    for GroupElement<LIMBS>
+impl<const LIMBS: usize, const WIDE_LIMBS: usize> group::GroupElement for GroupElement<LIMBS>
 where
     Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
     Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
 {
     type Value = Value<LIMBS>;
     type PublicParameters = PublicParameters<LIMBS>;
@@ -299,6 +281,14 @@ where
     fn add_randomized(self, other: &Self) -> Self {
         self + other
     }
+
+    fn sub_randomized(self, other: &Self) -> Self {
+        self - other
+    }
+
+    fn sub_vartime(self, other: &Self) -> Self {
+        self - other
+    }
 }
 
 impl<const LIMBS: usize> From<GroupElement<LIMBS>> for PublicParameters<LIMBS>
@@ -312,15 +302,10 @@ where
     }
 }
 
-impl<const LIMBS: usize, const WIDE_LIMBS: usize, const UNSAT_LIMBS: usize> Neg
-    for GroupElement<LIMBS>
+impl<const LIMBS: usize, const WIDE_LIMBS: usize> Neg for GroupElement<LIMBS>
 where
     Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
     Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
 {
     type Output = Self;
 
@@ -333,15 +318,10 @@ where
     }
 }
 
-impl<const LIMBS: usize, const WIDE_LIMBS: usize, const UNSAT_LIMBS: usize> Neg
-    for &GroupElement<LIMBS>
+impl<const LIMBS: usize, const WIDE_LIMBS: usize> Neg for &GroupElement<LIMBS>
 where
     Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
     Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
 {
     type Output = GroupElement<LIMBS>;
 
@@ -372,15 +352,10 @@ impl<'r, const LIMBS: usize> Add<&'r Self> for GroupElement<LIMBS> {
     }
 }
 
-impl<const LIMBS: usize, const WIDE_LIMBS: usize, const UNSAT_LIMBS: usize> Sub<Self>
-    for GroupElement<LIMBS>
+impl<const LIMBS: usize, const WIDE_LIMBS: usize> Sub<Self> for GroupElement<LIMBS>
 where
     Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
     Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
 {
     type Output = Self;
 
@@ -392,15 +367,10 @@ where
     }
 }
 
-impl<'r, const LIMBS: usize, const WIDE_LIMBS: usize, const UNSAT_LIMBS: usize> Sub<&'r Self>
-    for GroupElement<LIMBS>
+impl<'r, const LIMBS: usize, const WIDE_LIMBS: usize> Sub<&'r Self> for GroupElement<LIMBS>
 where
     Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
     Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
 {
     type Output = Self;
 
@@ -423,15 +393,10 @@ impl<'r, const LIMBS: usize> AddAssign<&'r Self> for GroupElement<LIMBS> {
     }
 }
 
-impl<const LIMBS: usize, const WIDE_LIMBS: usize, const UNSAT_LIMBS: usize> SubAssign<Self>
-    for GroupElement<LIMBS>
+impl<const LIMBS: usize, const WIDE_LIMBS: usize> SubAssign<Self> for GroupElement<LIMBS>
 where
     Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
     Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
 {
     #[allow(clippy::suspicious_arithmetic_impl)]
     fn sub_assign(&mut self, rhs: Self) {
@@ -439,15 +404,10 @@ where
     }
 }
 
-impl<'r, const LIMBS: usize, const WIDE_LIMBS: usize, const UNSAT_LIMBS: usize> SubAssign<&'r Self>
-    for GroupElement<LIMBS>
+impl<'r, const LIMBS: usize, const WIDE_LIMBS: usize> SubAssign<&'r Self> for GroupElement<LIMBS>
 where
     Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
     Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
 {
     #[allow(clippy::suspicious_arithmetic_impl)]
     fn sub_assign(&mut self, rhs: &'r Self) {
@@ -455,99 +415,62 @@ where
     }
 }
 
-impl<
-        const LIMBS: usize,
-        const WIDE_LIMBS: usize,
-        const UNSAT_LIMBS: usize,
-        const RHS_LIMBS: usize,
-    > Mul<Uint<RHS_LIMBS>> for GroupElement<LIMBS>
-where
-    Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
-    Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
-{
-    type Output = GroupElement<LIMBS>;
-
-    fn mul(self, rhs: Uint<RHS_LIMBS>) -> Self::Output {
-        self.scale(&rhs)
-    }
-}
-
-impl<
-        const LIMBS: usize,
-        const WIDE_LIMBS: usize,
-        const UNSAT_LIMBS: usize,
-        const RHS_LIMBS: usize,
-    > Mul<&Uint<RHS_LIMBS>> for GroupElement<LIMBS>
-where
-    Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
-    Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
-{
-    type Output = GroupElement<LIMBS>;
-
-    fn mul(self, rhs: &Uint<RHS_LIMBS>) -> Self::Output {
-        self.scale(rhs)
-    }
-}
-
-impl<
-        const LIMBS: usize,
-        const WIDE_LIMBS: usize,
-        const UNSAT_LIMBS: usize,
-        const RHS_LIMBS: usize,
-    > Mul<Uint<RHS_LIMBS>> for &GroupElement<LIMBS>
-where
-    Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
-    Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
-{
-    type Output = GroupElement<LIMBS>;
-
-    fn mul(self, rhs: Uint<RHS_LIMBS>) -> Self::Output {
-        self.scale(&rhs)
-    }
-}
-
-impl<
-        const LIMBS: usize,
-        const WIDE_LIMBS: usize,
-        const UNSAT_LIMBS: usize,
-        const RHS_LIMBS: usize,
-    > Mul<&Uint<RHS_LIMBS>> for &GroupElement<LIMBS>
-where
-    Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
-    Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
-{
-    type Output = GroupElement<LIMBS>;
-
-    fn mul(self, rhs: &Uint<RHS_LIMBS>) -> Self::Output {
-        self.scale(rhs)
-    }
-}
-
-impl<const LIMBS: usize, const WIDE_LIMBS: usize, const UNSAT_LIMBS: usize> Mul<GroupElement<LIMBS>>
+impl<const LIMBS: usize, const WIDE_LIMBS: usize, const RHS_LIMBS: usize> Mul<Uint<RHS_LIMBS>>
     for GroupElement<LIMBS>
 where
     Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
     Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
+{
+    type Output = GroupElement<LIMBS>;
+
+    fn mul(self, rhs: Uint<RHS_LIMBS>) -> Self::Output {
+        self.scale(&rhs)
+    }
+}
+
+impl<const LIMBS: usize, const WIDE_LIMBS: usize, const RHS_LIMBS: usize> Mul<&Uint<RHS_LIMBS>>
+    for GroupElement<LIMBS>
+where
+    Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
+    Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
+{
+    type Output = GroupElement<LIMBS>;
+
+    fn mul(self, rhs: &Uint<RHS_LIMBS>) -> Self::Output {
+        self.scale(rhs)
+    }
+}
+
+impl<const LIMBS: usize, const WIDE_LIMBS: usize, const RHS_LIMBS: usize> Mul<Uint<RHS_LIMBS>>
+    for &GroupElement<LIMBS>
+where
+    Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
+    Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
+{
+    type Output = GroupElement<LIMBS>;
+
+    fn mul(self, rhs: Uint<RHS_LIMBS>) -> Self::Output {
+        self.scale(&rhs)
+    }
+}
+
+impl<const LIMBS: usize, const WIDE_LIMBS: usize, const RHS_LIMBS: usize> Mul<&Uint<RHS_LIMBS>>
+    for &GroupElement<LIMBS>
+where
+    Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
+    Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
+{
+    type Output = GroupElement<LIMBS>;
+
+    fn mul(self, rhs: &Uint<RHS_LIMBS>) -> Self::Output {
+        self.scale(rhs)
+    }
+}
+
+impl<const LIMBS: usize, const WIDE_LIMBS: usize> Mul<GroupElement<LIMBS>> for GroupElement<LIMBS>
+where
+    Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
+    Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
 {
     type Output = GroupElement<LIMBS>;
 
@@ -556,15 +479,10 @@ where
     }
 }
 
-impl<const LIMBS: usize, const WIDE_LIMBS: usize, const UNSAT_LIMBS: usize>
-    Mul<&GroupElement<LIMBS>> for GroupElement<LIMBS>
+impl<const LIMBS: usize, const WIDE_LIMBS: usize> Mul<&GroupElement<LIMBS>> for GroupElement<LIMBS>
 where
     Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
     Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
 {
     type Output = GroupElement<LIMBS>;
 
@@ -573,15 +491,10 @@ where
     }
 }
 
-impl<const LIMBS: usize, const WIDE_LIMBS: usize, const UNSAT_LIMBS: usize> Mul<GroupElement<LIMBS>>
-    for &GroupElement<LIMBS>
+impl<const LIMBS: usize, const WIDE_LIMBS: usize> Mul<GroupElement<LIMBS>> for &GroupElement<LIMBS>
 where
     Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
     Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
 {
     type Output = GroupElement<LIMBS>;
 
@@ -590,15 +503,10 @@ where
     }
 }
 
-impl<const LIMBS: usize, const WIDE_LIMBS: usize, const UNSAT_LIMBS: usize>
-    Mul<&GroupElement<LIMBS>> for &GroupElement<LIMBS>
+impl<const LIMBS: usize, const WIDE_LIMBS: usize> Mul<&GroupElement<LIMBS>> for &GroupElement<LIMBS>
 where
     Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
     Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
 {
     type Output = GroupElement<LIMBS>;
 
@@ -619,30 +527,20 @@ impl<'r, const LIMBS: usize> From<&'r GroupElement<LIMBS>> for Uint<LIMBS> {
     }
 }
 
-impl<const LIMBS: usize, const WIDE_LIMBS: usize, const UNSAT_LIMBS: usize>
-    From<GroupElement<LIMBS>> for Value<LIMBS>
+impl<const LIMBS: usize, const WIDE_LIMBS: usize> From<GroupElement<LIMBS>> for Value<LIMBS>
 where
     Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
     Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
 {
     fn from(value: GroupElement<LIMBS>) -> Self {
         value.value()
     }
 }
 
-impl<'r, const LIMBS: usize, const WIDE_LIMBS: usize, const UNSAT_LIMBS: usize>
-    From<&'r GroupElement<LIMBS>> for Value<LIMBS>
+impl<'r, const LIMBS: usize, const WIDE_LIMBS: usize> From<&'r GroupElement<LIMBS>> for Value<LIMBS>
 where
     Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
     Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
 {
     fn from(value: &'r GroupElement<LIMBS>) -> Self {
         value.value()
@@ -685,30 +583,21 @@ where
     }
 }
 
-impl<const LIMBS: usize, const WIDE_LIMBS: usize, const UNSAT_LIMBS: usize>
-    BoundedGroupElement<LIMBS> for GroupElement<LIMBS>
+impl<const LIMBS: usize, const WIDE_LIMBS: usize> BoundedGroupElement<LIMBS> for GroupElement<LIMBS>
 where
     Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
     Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
 {
     fn lower_bound(public_parameters: &Self::PublicParameters) -> Uint<LIMBS> {
         (**public_parameters.params.modulus()) / NonZero::new(Uint::<LIMBS>::from(2u8)).unwrap()
     }
 }
 
-impl<
-        const LIMBS: usize,
-        const WIDE_LIMBS: usize,
-        const UNSAT_LIMBS: usize,
-        const SCALAR_LIMBS: usize,
-    > Scale<Uint<SCALAR_LIMBS>> for GroupElement<LIMBS>
+impl<const LIMBS: usize, const WIDE_LIMBS: usize, const SCALAR_LIMBS: usize>
+    Scale<Uint<SCALAR_LIMBS>> for GroupElement<LIMBS>
 where
     Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
     Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
 {
     fn scale_randomized_accelerated(
         &self,
@@ -745,17 +634,11 @@ where
     }
 }
 
-impl<
-        const LIMBS: usize,
-        const WIDE_LIMBS: usize,
-        const UNSAT_LIMBS: usize,
-        const SCALAR_LIMBS: usize,
-    > Scale<Int<SCALAR_LIMBS>> for GroupElement<LIMBS>
+impl<const LIMBS: usize, const WIDE_LIMBS: usize, const SCALAR_LIMBS: usize>
+    Scale<Int<SCALAR_LIMBS>> for GroupElement<LIMBS>
 where
     Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
     Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-    Odd<Uint<LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>, Output = Uint<LIMBS>>,
 {
     fn scale_randomized_accelerated(
         &self,

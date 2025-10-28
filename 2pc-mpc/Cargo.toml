@@ -5,6 +5,7 @@ edition = "2021"
 license = "CC-BY-NC-ND-4.0"
 
 [dependencies]
+itertools = { workspace = true }
 thiserror = { workspace = true }
 crypto-bigint = { workspace = true, features = ["serde"], default-features = false }
 merlin = { workspace = true, default-features = false }
@@ -16,17 +17,22 @@ mpc = { path = "../mpc" }
 homomorphic_encryption = { path = "../homomorphic-encryption" }
 commitment = { path = "../commitment" }
 maurer = { path = "../maurer" }
-enhanced_maurer = { path = "../enhanced-maurer", optional = true }
+sha2 = { workspace = true }
+sha3 = { workspace = true }
 
-tiresias = { path = "../tiresias", optional = true }
-class_groups = { path = "../class-groups", features = ["threshold"], optional = true }
+class_groups = { path = "../class-groups", features = ["threshold"] }
 
 # For Benchmarks.
 criterion = { workspace = true, default-features = false, features = ["html_reports", "cargo_bench_support", "rayon"], optional = true }
 rand = { workspace = true, default-features = false, optional = true }
 rstest = { workspace = true, optional = true }
-ecdsa = { workspace = true, features = ["verifying"], optional = true }
-k256 = { workspace = true, features = ["arithmetic", "critical-section", "precomputed-tables", "serde", "ecdsa", "hash2curve", "alloc"], default-features = false, optional = true }
+ecdsa = { workspace = true, features = ["verifying"], default-features = false }
+k256 = { workspace = true, features = ["arithmetic", "critical-section", "precomputed-tables", "serde", "ecdsa", "hash2curve", "alloc", "schnorr"], default-features = false }
+p256 = { workspace = true, features = ["arithmetic", "serde", "ecdsa", "hash2curve", "alloc"], default-features = false }
+ed25519 = { workspace = true, default-features = false }
+ed25519-dalek = { workspace = true, default-features = false }
+curve25519-dalek = { workspace = true, features = ["serde", "digest", "group"], default-features = false }
+schnorrkel = { workspace = true, default-features = false }
 
 [dev-dependencies]
 group = { path = "../group", features = ["os_rng"] }
@@ -36,15 +42,13 @@ proof = { path = "../proof", features = ["test_helpers"] }
 maurer = { path = "../maurer", features = ["test_helpers"] }
 class_groups = { path = "../class-groups", features = ["threshold", "test_helpers", "randomized_decryption"] }
 ecdsa = { workspace = true, features = ["verifying"] }
-k256 = { workspace = true, features = ["arithmetic", "critical-section", "precomputed-tables", "serde", "ecdsa", "hash2curve", "alloc"], default-features = false }
+k256 = { workspace = true, features = ["arithmetic", "critical-section", "precomputed-tables", "schnorr", "serde", "ecdsa", "hash2curve", "alloc"], default-features = false }
+p256 = { workspace = true, features = ["arithmetic", "serde", "ecdsa", "hash2curve", "alloc"], default-features = false }
 tiny-keccak = { version = "2.0.2", features = ["keccak"] }
+rand = { workspace = true, default-features = false }
 
 [features]
-secp256k1 = []
-bulletproofs = ["proof/bulletproofs"]
-paillier = ["dep:tiresias", "bulletproofs", "dep:enhanced_maurer"]
-class_groups = ["dep:class_groups"]
 
-parallel = ["group/parallel", "mpc/parallel", "proof/parallel", "maurer/parallel", "tiresias/parallel", "class_groups/parallel"]
-test_helpers = ["group/os_rng","dep:criterion", "dep:rstest", "dep:ecdsa", "dep:k256", "secp256k1", "paillier", "class_groups", "mpc/parallel", "proof/test_helpers", "tiresias/test_helpers", "class_groups/test_helpers", "class_groups/randomized_decryption", "dep:rand"]
+parallel = ["group/parallel", "mpc/parallel", "proof/parallel", "maurer/parallel", "class_groups/parallel"]
+test_helpers = ["dep:rand","group/os_rng","dep:criterion", "dep:rstest", "mpc/parallel", "proof/test_helpers", "class_groups/test_helpers", "class_groups/randomized_decryption", "dep:rand"]
 benchmarking = ["test_helpers"]

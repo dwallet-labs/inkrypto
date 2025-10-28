@@ -29,6 +29,7 @@ use crate::{EquivalenceClass, Error, RandomnessSpacePublicParameters};
 pub(crate) struct ScalingRandomizer<const LIMBS: usize>
 where
     Int<LIMBS>: Encoding,
+    Uint<LIMBS>: Encoding,
 {
     pub(crate) m1: EquivalenceClass<LIMBS>,
     pub(crate) m2: EquivalenceClass<LIMBS>,
@@ -39,6 +40,7 @@ where
 impl<const DISCRIMINANT_LIMBS: usize> ScalingRandomizer<DISCRIMINANT_LIMBS>
 where
     Int<DISCRIMINANT_LIMBS>: Encoding,
+    Uint<DISCRIMINANT_LIMBS>: Encoding,
 {
     /// Read-only access to this randomizer's discriminant.
     #[allow(dead_code)]
@@ -53,7 +55,7 @@ where
     Int<DISCRIMINANT_LIMBS>: Encoding,
 
     Uint<HALF>: Concat<Output = Uint<DISCRIMINANT_LIMBS>>,
-    Uint<DISCRIMINANT_LIMBS>: Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
+    Uint<DISCRIMINANT_LIMBS>: Encoding + Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
     Uint<DOUBLE>: Split<Output = Uint<DISCRIMINANT_LIMBS>>,
 {
     /// Construct a new masking triple `(m1, m2, m3)` where `m1` and `m2` are random forms,
@@ -163,6 +165,7 @@ where
 pub(crate) struct ScalingBase<const LIMBS: usize>
 where
     Int<LIMBS>: Encoding,
+    Uint<LIMBS>: Encoding,
 {
     pub(crate) m1: EquivalenceClass<LIMBS>,
     pub(crate) m2: EquivalenceClass<LIMBS>,
@@ -177,7 +180,8 @@ impl<
 where
     Int<DISCRIMINANT_LIMBS>: Encoding,
     Uint<HALF_DISCRIMINANT_LIMBS>: Concat<Output = Uint<DISCRIMINANT_LIMBS>>,
-    Uint<DISCRIMINANT_LIMBS>: Concat<Output = Uint<DOUBLE_DISCRIMINANT_LIMBS>>
+    Uint<DISCRIMINANT_LIMBS>: Encoding
+        + Concat<Output = Uint<DOUBLE_DISCRIMINANT_LIMBS>>
         + Split<Output = Uint<HALF_DISCRIMINANT_LIMBS>>,
     Uint<DOUBLE_DISCRIMINANT_LIMBS>: Split<Output = Uint<DISCRIMINANT_LIMBS>>,
 {
@@ -207,6 +211,7 @@ where
 pub(crate) struct ExponentWithFormMask<const DISCRIMINANT_LIMBS: usize, const EXPONENT_LIMBS: usize>
 where
     Int<DISCRIMINANT_LIMBS>: Encoding,
+    Uint<DISCRIMINANT_LIMBS>: Encoding,
 {
     pub(crate) m1: EquivalenceClass<DISCRIMINANT_LIMBS>,
     pub(crate) m2: EquivalenceClass<DISCRIMINANT_LIMBS>,
@@ -219,6 +224,7 @@ impl<const DISCRIMINANT_LIMBS: usize, const EXPONENT_LIMBS: usize>
     ExponentWithFormMask<DISCRIMINANT_LIMBS, EXPONENT_LIMBS>
 where
     Int<DISCRIMINANT_LIMBS>: Encoding,
+    Uint<DISCRIMINANT_LIMBS>: Encoding,
 {
     /// Read-only access to this randomizer's discriminant.
     #[allow(dead_code)]
@@ -236,7 +242,7 @@ impl<
 where
     Int<DISCRIMINANT_LIMBS>: Encoding,
     Uint<HALF>: Concat<Output = Uint<DISCRIMINANT_LIMBS>>,
-    Uint<DISCRIMINANT_LIMBS>: Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
+    Uint<DISCRIMINANT_LIMBS>: Encoding + Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
     Uint<DOUBLE>: Split<Output = Uint<DISCRIMINANT_LIMBS>>,
 {
     #[allow(dead_code)]
@@ -293,7 +299,7 @@ fn random_element<
 where
     Int<DISCRIMINANT_LIMBS>: Encoding,
     Uint<HALF>: Concat<Output = Uint<DISCRIMINANT_LIMBS>>,
-    Uint<DISCRIMINANT_LIMBS>: Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
+    Uint<DISCRIMINANT_LIMBS>: Encoding + Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
     Uint<DOUBLE>: Split<Output = Uint<DISCRIMINANT_LIMBS>>,
 {
     let valid_bit_size = randomness_bits.ct_gt(&Uint::<RANDOMNESS_LIMBS>::BITS).not();

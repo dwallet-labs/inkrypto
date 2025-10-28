@@ -4,13 +4,13 @@
 use crypto_bigint::{Int, Limb, Uint, U1536, U2048, U64};
 
 pub use accelerator::MultiFoldNupowAccelerator;
-pub use decryption_key::{DecryptionKey, DiscreteLogInF};
+pub use decryption_key::{DecryptionKey, DiscreteLogInF, SecretKey};
 #[cfg(feature = "threshold")]
 pub use decryption_key_share::DecryptionKeyShare;
 pub use encryption_key::EncryptionKey;
 pub use equivalence_class::EquivalenceClass;
 use group::bounded_natural_numbers_group::MAURER_PROOFS_DIFF_UPPER_BOUND_BITS;
-use group::{ristretto, secp256k1, PartyID, StatisticalSecuritySizedNumber};
+use group::{curve25519, ristretto, secp256k1, secp256r1, PartyID, StatisticalSecuritySizedNumber};
 pub use ibqf::compact::CompactIbqf;
 use mpc::secret_sharing::shamir::over_the_integers::{
     computation_decryption_key_shares_interpolation_upper_bound, find_closest_crypto_bigint_size,
@@ -74,9 +74,69 @@ pub const DECRYPTION_KEY_BITS_128BIT_SECURITY: u32 =
 const DEFAULT_ACCELERATOR_FOLDING_DEGREE: u32 = 9;
 
 /// Highest number of parts a [MultiFoldNupowAccelerator] will cut an exponent into.
-const HIGHEST_ACCELERATOR_FOLDING_DEGREE: u32 = 12;
+pub const HIGHEST_ACCELERATOR_FOLDING_DEGREE: u32 = 12;
 
-pub const RISTRETTO_SCALAR_LIMBS: usize = group::ristretto::SCALAR_LIMBS;
+pub const SECP256R1_SCALAR_LIMBS: usize = secp256r1::SCALAR_LIMBS;
+pub const SECP256R1_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize = U1536::LIMBS;
+pub const SECP256R1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize = U2048::LIMBS;
+
+/// A bound on the size of a coefficient during secure evaluation.
+/// The coefficients are largest when they are randomized for secure evaluation when the ciphertexts aren't trusted because no ZK-proof verified their validity of construction.
+/// The largest witness is of the form $s=(\alpha+rq)$ where q is the plaintext space, $\alpha\leq q$ and $r$ is an encryption randomizers.
+/// Thus, the bound on the witness is: `SECP256R1_SCALAR_LIMBS + SECP256R1_FUNDAMENTAL_DISCRIMINANT_LIMBS + U64`.
+///
+/// When computing the response during a Maurer proof, we mask the witness multiplied by the challenge
+/// and thus have to add `MAURER_PROOFS_DELTA_UPPER_BOUND_BITS`.
+pub const SECP256R1_MESSAGE_LIMBS: usize = find_closest_crypto_bigint_size(
+    ((SECP256R1_SCALAR_LIMBS + SECP256R1_FUNDAMENTAL_DISCRIMINANT_LIMBS + U64::LIMBS)
+        * Limb::BITS as usize)
+        + (MAURER_PROOFS_DIFF_UPPER_BOUND_BITS as usize),
+) / Limb::BITS as usize;
+
+pub type Secp256r1SetupParameters = SetupParameters<
+    SECP256R1_SCALAR_LIMBS,
+    SECP256R1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    SECP256R1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    secp256r1::scalar::PublicParameters,
+>;
+
+pub type Secp256r1EncryptionSchemePublicParameters = encryption_key::PublicParameters<
+    SECP256R1_SCALAR_LIMBS,
+    SECP256R1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    SECP256R1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    secp256r1::scalar::PublicParameters,
+>;
+pub type Secp256r1EncryptionKey = EncryptionKey<
+    SECP256R1_SCALAR_LIMBS,
+    SECP256R1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    SECP256R1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    secp256r1::GroupElement,
+>;
+pub type Secp256r1DecryptionKey = DecryptionKey<
+    SECP256R1_SCALAR_LIMBS,
+    SECP256R1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    SECP256R1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    secp256r1::GroupElement,
+>;
+#[cfg(feature = "threshold")]
+pub type Secp256r1DecryptionKeyShare = DecryptionKeyShare<
+    SECP256R1_SCALAR_LIMBS,
+    SECP256R1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    SECP256R1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    secp256r1::GroupElement,
+>;
+#[cfg(feature = "threshold")]
+pub type Secp256r1DecryptionKeySharePublicParameters = decryption_key_share::PublicParameters<
+    SECP256R1_SCALAR_LIMBS,
+    SECP256R1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    SECP256R1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    secp256r1::scalar::PublicParameters,
+>;
+#[cfg(feature = "threshold")]
+pub type Secp256r1PartialDecryptionProof =
+    PartialDecryptionProof<SECP256R1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>;
+
+pub const RISTRETTO_SCALAR_LIMBS: usize = ristretto::SCALAR_LIMBS;
 pub const RISTRETTO_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize = U1536::LIMBS;
 pub const RISTRETTO_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize = U2048::LIMBS;
 
@@ -93,58 +153,12 @@ pub const RISTRETTO_MESSAGE_LIMBS: usize = find_closest_crypto_bigint_size(
         + (MAURER_PROOFS_DIFF_UPPER_BOUND_BITS as usize),
 ) / Limb::BITS as usize;
 
-pub const SECP256K1_SCALAR_LIMBS: usize = group::secp256k1::SCALAR_LIMBS;
-pub const SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize = U1536::LIMBS;
-pub const SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize = U2048::LIMBS;
-
-/// A bound on the size of a coefficient during secure evaluation.
-/// The coefficients are largest when they are randomized for secure evaluation when the ciphertexts aren't trusted because no ZK-proof verified their validity of construction.
-/// The largest witness is of the form $s=(\alpha+rq)$ where q is the plaintext space, $\alpha\leq q$ and $r$ is an encryption randomizers.
-/// Thus, the bound on the witness is: `SECP256K1_SCALAR_LIMBS + SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS + U64`.
-///
-/// When computing the response during a Maurer proof, we mask the witness multiplied by the challenge
-/// and thus have to add `MAURER_PROOFS_DELTA_UPPER_BOUND_BITS`.
-pub const SECP256K1_MESSAGE_LIMBS: usize = find_closest_crypto_bigint_size(
-    ((SECP256K1_SCALAR_LIMBS + SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS + U64::LIMBS)
-        * Limb::BITS as usize)
-        + (MAURER_PROOFS_DIFF_UPPER_BOUND_BITS as usize),
-) / Limb::BITS as usize;
-
-pub type Secp256k1EncryptionSchemePublicParameters = encryption_key::PublicParameters<
-    SECP256K1_SCALAR_LIMBS,
-    SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-    SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-    secp256k1::scalar::PublicParameters,
+pub type RistrettoSetupParameters = SetupParameters<
+    RISTRETTO_SCALAR_LIMBS,
+    RISTRETTO_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    RISTRETTO_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    ristretto::scalar::PublicParameters,
 >;
-pub type Secp256k1EncryptionKey = EncryptionKey<
-    SECP256K1_SCALAR_LIMBS,
-    SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-    SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-    secp256k1::GroupElement,
->;
-pub type Secp256k1DecryptionKey = DecryptionKey<
-    SECP256K1_SCALAR_LIMBS,
-    SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-    SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-    secp256k1::GroupElement,
->;
-#[cfg(feature = "threshold")]
-pub type Secp256k1DecryptionKeyShare = DecryptionKeyShare<
-    SECP256K1_SCALAR_LIMBS,
-    SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-    SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-    secp256k1::GroupElement,
->;
-#[cfg(feature = "threshold")]
-pub type Secp256k1DecryptionKeySharePublicParameters = decryption_key_share::PublicParameters<
-    SECP256K1_SCALAR_LIMBS,
-    SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-    SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-    secp256k1::scalar::PublicParameters,
->;
-#[cfg(feature = "threshold")]
-pub type Secp256k1PartialDecryptionProof =
-    PartialDecryptionProof<SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>;
 
 pub type RistrettoEncryptionSchemePublicParameters = encryption_key::PublicParameters<
     RISTRETTO_SCALAR_LIMBS,
@@ -181,6 +195,101 @@ pub type RistrettoDecryptionKeySharePublicParameters = decryption_key_share::Pub
 #[cfg(feature = "threshold")]
 pub type RistrettoPartialDecryptionProof =
     PartialDecryptionProof<RISTRETTO_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>;
+
+/* Curve25519 and Ristretto operate over the same scalar field and thus, from class-group perspective, they are the same */
+pub const CURVE25519_SCALAR_LIMBS: usize = RISTRETTO_SCALAR_LIMBS;
+pub const CURVE25519_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize =
+    RISTRETTO_FUNDAMENTAL_DISCRIMINANT_LIMBS;
+pub const CURVE25519_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize =
+    RISTRETTO_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS;
+
+pub const CURVE25519_MESSAGE_LIMBS: usize = RISTRETTO_MESSAGE_LIMBS;
+
+pub type Curve25519SetupParameters = RistrettoSetupParameters;
+pub type Curve25519EncryptionSchemePublicParameters = RistrettoEncryptionSchemePublicParameters;
+pub type Curve25519EncryptionKey = EncryptionKey<
+    CURVE25519_SCALAR_LIMBS,
+    CURVE25519_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    CURVE25519_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    curve25519::GroupElement,
+>;
+pub type Curve25519DecryptionKey = DecryptionKey<
+    CURVE25519_SCALAR_LIMBS,
+    CURVE25519_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    CURVE25519_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    curve25519::GroupElement,
+>;
+#[cfg(feature = "threshold")]
+pub type Curve25519DecryptionKeyShare = DecryptionKeyShare<
+    CURVE25519_SCALAR_LIMBS,
+    CURVE25519_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    CURVE25519_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    curve25519::GroupElement,
+>;
+#[cfg(feature = "threshold")]
+pub type Curve25519DecryptionKeySharePublicParameters = RistrettoDecryptionKeySharePublicParameters;
+#[cfg(feature = "threshold")]
+pub type Curve25519PartialDecryptionProof = RistrettoPartialDecryptionProof;
+
+pub const SECP256K1_SCALAR_LIMBS: usize = group::secp256k1::SCALAR_LIMBS;
+pub const SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize = U1536::LIMBS;
+pub const SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize = U2048::LIMBS;
+
+/// A bound on the size of a coefficient during secure evaluation.
+/// The coefficients are largest when they are randomized for secure evaluation when the ciphertexts aren't trusted because no ZK-proof verified their validity of construction.
+/// The largest witness is of the form $s=(\alpha+rq)$ where q is the plaintext space, $\alpha\leq q$ and $r$ is an encryption randomizers.
+/// Thus, the bound on the witness is: `SECP256K1_SCALAR_LIMBS + SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS + U64`.
+///
+/// When computing the response during a Maurer proof, we mask the witness multiplied by the challenge
+/// and thus have to add `MAURER_PROOFS_DELTA_UPPER_BOUND_BITS`.
+pub const SECP256K1_MESSAGE_LIMBS: usize = find_closest_crypto_bigint_size(
+    ((SECP256K1_SCALAR_LIMBS + SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS + U64::LIMBS)
+        * Limb::BITS as usize)
+        + (MAURER_PROOFS_DIFF_UPPER_BOUND_BITS as usize),
+) / Limb::BITS as usize;
+
+pub type Secp256k1SetupParameters = SetupParameters<
+    SECP256K1_SCALAR_LIMBS,
+    SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    secp256k1::scalar::PublicParameters,
+>;
+
+pub type Secp256k1EncryptionSchemePublicParameters = encryption_key::PublicParameters<
+    SECP256K1_SCALAR_LIMBS,
+    SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    secp256k1::scalar::PublicParameters,
+>;
+pub type Secp256k1EncryptionKey = EncryptionKey<
+    SECP256K1_SCALAR_LIMBS,
+    SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    secp256k1::GroupElement,
+>;
+pub type Secp256k1DecryptionKey = DecryptionKey<
+    SECP256K1_SCALAR_LIMBS,
+    SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    secp256k1::GroupElement,
+>;
+#[cfg(feature = "threshold")]
+pub type Secp256k1DecryptionKeyShare = DecryptionKeyShare<
+    SECP256K1_SCALAR_LIMBS,
+    SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    secp256k1::GroupElement,
+>;
+#[cfg(feature = "threshold")]
+pub type Secp256k1DecryptionKeySharePublicParameters = decryption_key_share::PublicParameters<
+    SECP256K1_SCALAR_LIMBS,
+    SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    secp256k1::scalar::PublicParameters,
+>;
+#[cfg(feature = "threshold")]
+pub type Secp256k1PartialDecryptionProof =
+    PartialDecryptionProof<SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>;
 
 pub type CiphertextSpaceGroupElement<const DISCRIMINANT_LIMBS: usize> =
     group::self_product::GroupElement<2, EquivalenceClass<DISCRIMINANT_LIMBS>>;

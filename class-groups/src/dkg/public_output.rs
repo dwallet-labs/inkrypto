@@ -56,17 +56,16 @@ pub struct PublicOutput<
     Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
     Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
 {
-    pub(crate) encryption_key: CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    pub(crate) threshold_encryption_key_per_crt_prime:
-        [CompactIbqf<CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>;
-            NUM_ENCRYPTION_OF_DECRYPTION_KEY_PRIMES],
-    pub(crate) public_verification_keys:
-        HashMap<PartyID, CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
-    pub(crate) encryptions_of_shares_per_crt_prime: HashMap<
+    pub encryption_key: CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+    pub threshold_encryption_key_per_crt_prime: [CompactIbqf<
+        CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    >; NUM_ENCRYPTION_OF_DECRYPTION_KEY_PRIMES],
+    pub public_verification_keys: HashMap<PartyID, CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+    pub encryptions_of_shares_per_crt_prime: HashMap<
         PartyID,
         [CiphertextSpaceValue<CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>; NUM_SECRET_SHARE_PRIMES],
     >,
-    pub(crate) threshold_encryption_of_decryption_key_per_crt_prime:
+    pub threshold_encryption_of_decryption_key_per_crt_prime:
         [CiphertextSpaceValue<CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>;
             NUM_ENCRYPTION_OF_DECRYPTION_KEY_PRIMES],
 }
@@ -105,7 +104,7 @@ where
     pub fn new<GroupElement: PrimeGroupElement<PLAINTEXT_SPACE_SCALAR_LIMBS>>(
         access_structure: &WeightedThresholdAccessStructure,
         setup_parameters_per_crt_prime: [SecretKeyShareCRTPrimeSetupParameters; MAX_PRIMES],
-        malicious_decryption_key_contribution_dealers: HashSet<PartyID>,
+        malicious_decryption_key_contribution_dealers: Vec<PartyID>,
         interpolation_subset: HashSet<PartyID>,
         adjusted_lagrange_coefficients: HashMap<PartyID, AdjustedLagrangeCoefficientSizedNumber>,
         parties_that_were_dealt_shares: HashSet<PartyID>,
@@ -159,23 +158,29 @@ where
         )?
         .normalize_const_generic_values();
 
-        // The elliptic curve Class-Group encryption key $\textsf{pk}_{q}$
-        let encryption_key = coefficients_contribution_commitments
+        let decryption_key_contribution_commitments = coefficients_contribution_commitments
             .into_iter()
             .filter(|(dealer_party_id, _)| {
                 !malicious_decryption_key_contribution_dealers.contains(dealer_party_id)
             })
-            .map(|(_, deal_decryption_key_contribution_message)| {
-                // Safe to unwrap by construction.
-                let coefficients_contribution_commitments =
-                    deal_decryption_key_contribution_message.get(&None).unwrap();
+            .map(
+                |(dealer_party_id, deal_decryption_key_contribution_message)| {
+                    // Safe to unwrap by construction.
+                    let coefficients_contribution_commitments =
+                        deal_decryption_key_contribution_message.get(&None).unwrap();
 
-                // Safe to unwrap - we validated this vector is of size `t`, which is non-zero.
-                *coefficients_contribution_commitments.first().unwrap()
-            })
-            .reduce(|a, b| a + b)
-            .ok_or(Error::InvalidParameters)?
-            .value();
+                    // Safe to unwrap - we validated this vector is of size `t`, which is non-zero.
+                    let decryption_key_contribution_commitment =
+                        *coefficients_contribution_commitments.first().unwrap();
+
+                    (dealer_party_id, decryption_key_contribution_commitment)
+                },
+            )
+            .collect();
+
+        // The elliptic curve Class-Group encryption key $\textsf{pk}_{q}$
+        let encryption_key =
+            Self::compute_encryption_key(decryption_key_contribution_commitments)?.value();
 
         // Prepare for interpolation: keep just encryptions, only from the parties in the interpolation subset.
         let encryptions_of_decryption_key_shares: HashMap<_, _> =
@@ -277,6 +282,20 @@ where
         })
     }
 
+    /// Compute the elliptic curve Class-Group encryption key $\textsf{pk}_{q}$
+    /// `decryption_key_contribution_commitments` must be pre-filtered and only contain honest commitments.
+    pub fn compute_encryption_key(
+        decryption_key_contribution_commitments: HashMap<
+            PartyID,
+            EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+        >,
+    ) -> Result<EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>> {
+        decryption_key_contribution_commitments
+            .into_values()
+            .reduce(|a, b| a + b)
+            .ok_or(Error::InvalidParameters)
+    }
+
     /// This function filters out the malicious parties
     /// and sums the encryption of decryption key contribution shares
     /// yielding the encryption of decryption key share for each party.
@@ -285,7 +304,7 @@ where
         GroupElement: PrimeGroupElement<PLAINTEXT_SPACE_SCALAR_LIMBS>,
     >(
         access_structure: &WeightedThresholdAccessStructure,
-        malicious_decryption_key_contribution_dealers: HashSet<PartyID>,
+        malicious_decryption_key_contribution_dealers: Vec<PartyID>,
         parties_that_were_dealt_shares: HashSet<PartyID>,
         encryptions_of_shares_and_proofs: HashMap<
             PartyID,
@@ -340,7 +359,7 @@ where
     }
 
     pub(crate) fn compute_threshold_encryption_keys(
-        malicious_decryption_key_contribution_dealers: HashSet<PartyID>,
+        malicious_decryption_key_contribution_dealers: Vec<PartyID>,
         threshold_encryption_key_shares_and_proofs: HashMap<
             PartyID,
             ProveEqualityOfDiscreteLog<
@@ -628,13 +647,34 @@ where
     where
         GroupElement::Scalar: Default,
     {
+        Self::decrypt_decryption_key_shares_internal::<GroupElement>(
+            tangible_party_id,
+            access_structure,
+            decryption_key_per_crt_prime,
+            self.encryptions_of_shares_per_crt_prime.clone(),
+        )
+    }
+
+    pub fn decrypt_decryption_key_shares_internal<
+        GroupElement: PrimeGroupElement<PLAINTEXT_SPACE_SCALAR_LIMBS>,
+    >(
+        tangible_party_id: PartyID,
+        access_structure: &WeightedThresholdAccessStructure,
+        decryption_key_per_crt_prime: [Uint<CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS>; MAX_PRIMES],
+        encryptions_of_shares_per_crt_prime: HashMap<
+            PartyID,
+            [CiphertextSpaceValue<CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>; NUM_SECRET_SHARE_PRIMES],
+        >,
+    ) -> Result<HashMap<PartyID, SecretKeyShareSizedInteger>>
+    where
+        GroupElement::Scalar: Default,
+    {
         let setup_parameters_per_crt_prime =
             construct_setup_parameters_per_crt_prime(DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER)?;
 
         let virtual_subset = access_structure.virtual_subset(HashSet::from([tangible_party_id]))?;
 
-        let encryptions_of_shares_per_crt_prime = self
-            .encryptions_of_shares_per_crt_prime
+        let encryptions_of_shares_per_crt_prime = encryptions_of_shares_per_crt_prime
             .clone()
             .into_iter()
             .filter(|(virtual_party_id, _)| virtual_subset.contains(virtual_party_id))
@@ -673,7 +713,7 @@ where
     /// * `reconstructed_commitments_to_sharing` is keyed by *virtual* participant party id.
     pub(crate) fn compute_public_verification_keys(
         access_structure: &WeightedThresholdAccessStructure,
-        malicious_decryption_key_contribution_dealers: HashSet<PartyID>,
+        malicious_decryption_key_contribution_dealers: Vec<PartyID>,
         reconstructed_commitments_to_sharing: HashMap<
             PartyID,
             HashMap<

@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 use crypto_bigint::subtle::CtOption;
-use crypto_bigint::{CheckedMul, CheckedSub, Concat, ConstChoice, Encoding, Int, Split, Uint};
+use crypto_bigint::{
+    CheckedMul, CheckedSub, Concat, ConstChoice, Encoding, Int, IntXgcdOutput, Split, Uint,
+};
 
-use crate::helpers::binxgcd::{BinXgcd, IntBinxgcdOutput};
 use crate::helpers::partial_xgcd::PartialXGCD;
 use crate::helpers::vartime_mul::{CheckedMulVartime, ConcatenatingMulVartime};
 use crate::ibqf::unreduced::UnreducedIbqf;
@@ -74,13 +75,13 @@ where
         let b = self.b.resize::<HALF>();
         let c = *self.c.as_uint();
 
-        let IntBinxgcdOutput {
+        let IntXgcdOutput {
             gcd: gcd_a_b,
             x: u,
             y: v,
             lhs_on_gcd: a_div_gcd,
             rhs_on_gcd: b_div_gcd,
-        } = a.binxgcd(&b);
+        } = a.xgcd(&b);
 
         // [ Ax; Ay ] = [ gcd(a,b); 0 ]
         let Ax = gcd_a_b;
@@ -291,12 +292,12 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crypto_bigint::{I1024, I128, I2048};
-
+    use crate::discriminant::Discriminant;
     use crate::ibqf::test_helpers::{
         get_deterministic_secp256k1_form, get_deterministic_secp256k1_forms,
     };
     use crate::ibqf::Ibqf;
+    use crypto_bigint::{I1024, I128, I2048};
 
     #[test]
     fn test_nudupl() {
@@ -318,22 +319,23 @@ mod tests {
 
     #[test]
     fn test_nudupl_maintains_discriminant() {
-        let discriminant = -2868;
+        let discriminant = (239, 0, 12);
         let f = Ibqf::new_reduced_64(11, 16, discriminant).unwrap();
 
-        let discriminant = I128::from(discriminant);
-        assert_eq!(f.discriminant().unwrap(), discriminant);
+        let discriminant = Discriminant::<{ I128::LIMBS }>::new_u64(239, 0, 12).unwrap();
+        assert_eq!(f.discriminant().unwrap(), discriminant.get());
 
         let f2 = f.nudupl();
-        assert_eq!(f2.discriminant().unwrap(), discriminant);
+        assert_eq!(f2.discriminant().unwrap(), discriminant.get());
     }
 
     #[test]
     fn test_nudupl_equals_nucomp_with_self() {
-        let discriminant = -2868;
+        let discriminant = (239, 0, 12);
         let f = Ibqf::new_reduced_64(11, 16, discriminant).unwrap();
 
-        assert_eq!(f.discriminant().unwrap(), I128::from(discriminant));
+        let discriminant = Discriminant::<{ I128::LIMBS }>::new_u64(239, 0, 12).unwrap();
+        assert_eq!(f.discriminant().unwrap(), discriminant.get());
 
         let f2 = f.nucomp(f);
         let f2p = f.nudupl();
@@ -435,7 +437,7 @@ pub(crate) mod benches {
     ) where
         Int<LIMBS>: Encoding,
         Uint<HALF>: Concat<Output = Uint<LIMBS>>,
-        Uint<LIMBS>: Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
+        Uint<LIMBS>: Encoding + Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
         Uint<DOUBLE>: Split<Output = Uint<LIMBS>>,
     {
         let form = *form.representative();

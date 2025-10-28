@@ -3,10 +3,10 @@
 
 use std::ops::BitAnd;
 
-use crypto_bigint::{CheckedAdd, CheckedMul, NonZero, Odd, RandomMod, Uint};
+use crypto_bigint::{CheckedAdd, NonZero, Odd, RandomMod, Uint};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use subtle::{Choice, ConstantTimeLess};
+use subtle::{Choice, ConstantTimeLess, CtOption};
 
 use group::{
     CsRng, GroupElement, KnownOrderGroupElement, StatisticalSecuritySizedNumber, Transcribeable,
@@ -49,7 +49,6 @@ impl AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS> for Encryp
     ) -> Self::CiphertextSpaceGroupElement {
         // Validity checks are performed in public parameter instantiation, given correct public
         // parameters Paillier encryption is a bijection and thus always succeeds, so `.unwrap()`s
-
         // are safe here $ c1 = (m*N + 1) * $
         let ciphertext_first_part = plaintext
             .value()
@@ -133,9 +132,12 @@ impl AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS> for Encryp
             )
             .ok_or(Error::SecureFunctionEvaluation)?;
 
-        let mask_upper_bound = upper_bounds_sum.checked_mul(
-            &(Uint::<PLAINTEXT_SPACE_SCALAR_LIMBS>::ONE << StatisticalSecuritySizedNumber::BITS),
-        );
+        let mask_upper_bound: CtOption<_> = upper_bounds_sum
+            .checked_mul(
+                &(Uint::<PLAINTEXT_SPACE_SCALAR_LIMBS>::ONE
+                    << StatisticalSecuritySizedNumber::BITS),
+            )
+            .into();
 
         let mask_upper_bound = Option::<NonZero<_>>::from(mask_upper_bound.and_then(NonZero::new))
             .ok_or(Error::SecureFunctionEvaluation)?;
@@ -190,7 +192,9 @@ impl AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS> for Encryp
                 .iter()
                 .map(|(_, upper_bound)| Uint::<PLAINTEXT_SPACE_SCALAR_LIMBS>::from(upper_bound))
                 .zip(coefficients.iter())
-                .map(|(upper_bound, coefficient)| upper_bound.checked_mul(coefficient))
+                .map(|(upper_bound, coefficient)| {
+                    CtOption::from(upper_bound.checked_mul(coefficient))
+                })
                 .reduce(|a, b| a.and_then(|a| b.and_then(|b| a.checked_add(&b))))
                 .and_then(|evaluation_upper_bound| evaluation_upper_bound.into())
                 .ok_or(Error::SecureFunctionEvaluation)?;
@@ -198,8 +202,7 @@ impl AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS> for Encryp
         // And then adding the mask by modulus $ \omega q $, to result with the secure
         // evaluation upper bound $\textsf{pt}_{\sf eval}$:
         let secure_evaluation_upper_bound = Option::<Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>>::from(
-            mask.value()
-                .checked_mul(modulus)
+            CtOption::from(mask.value().checked_mul(modulus))
                 .and_then(|mask_by_modulus| evaluation_upper_bound.checked_add(&mask_by_modulus)),
         )
         .ok_or(Error::SecureFunctionEvaluation)?;

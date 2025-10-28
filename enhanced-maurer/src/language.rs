@@ -3,7 +3,8 @@
 
 use core::{array, marker::PhantomData};
 
-use crypto_bigint::{CheckedMul, Uint, U64};
+use crypto_bigint::subtle::CtOption;
+use crypto_bigint::{Uint, U64};
 use serde::Serialize;
 
 use commitment::{GroupsPublicParametersAccessors as _, HomomorphicCommitmentScheme};
@@ -298,21 +299,20 @@ pub(crate) fn commitment_message_space_lower_bound<
         U64::from(u64::try_from(NUM_RANGE_CLAIMS).map_err(|_| Error::InvalidPublicParameters)?);
 
     Option::from(
-        delta_hat
-            .checked_mul(&number_of_range_claims)
+        CtOption::from(delta_hat.checked_mul(&number_of_range_claims))
             .and_then(|bound| {
-                bound.checked_mul(
+                CtOption::from(bound.checked_mul(
                     &(Uint::<SCALAR_LIMBS>::ONE << ComputationalSecuritySizedNumber::BITS),
-                )
+                ))
             })
             .and_then(|bound| {
-                bound.checked_mul(
+                CtOption::from(bound.checked_mul(
                     &(Uint::<SCALAR_LIMBS>::ONE << StatisticalSecuritySizedNumber::BITS),
-                )
+                ))
             })
             .and_then(|bound| {
                 // Account for the $$ +1 $$ in $$ 2^{\kappa+s+1} $$.
-                bound.checked_mul(&Uint::<SCALAR_LIMBS>::from(2u8))
+                CtOption::from(bound.checked_mul(&Uint::<SCALAR_LIMBS>::from(2u8)))
             }),
     )
     .ok_or(Error::InvalidPublicParameters)

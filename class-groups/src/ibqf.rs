@@ -46,7 +46,7 @@ where
 impl<const LIMBS: usize, const DOUBLE: usize> Ibqf<LIMBS>
 where
     Int<LIMBS>: Encoding,
-    Uint<LIMBS>: Concat<Output = Uint<DOUBLE>>,
+    Uint<LIMBS>: Encoding + Concat<Output = Uint<DOUBLE>>,
     Uint<DOUBLE>: Split<Output = Uint<LIMBS>>,
 {
     /// Construct a new reduced form `(a, b, c)`, given `(a, b)` and discriminant `∆`.
@@ -73,16 +73,19 @@ where
     ///
     /// Assumes the result will be reduced; returns `None` otherwise.
     ///
+    /// Executes in variable time w.r.t `discriminant`.
+    ///
     /// Upon success, this form has the following properties:
     /// - it has a negative discriminant,
     /// - it is primitive,
     /// - it is reduced.
-    pub fn new_is_reduced(
+    pub fn new_is_reduced_vartime_discriminant(
         a: NonZeroUint<HALF>,
         b: Int<HALF>,
         discriminant: &Discriminant<LIMBS>,
     ) -> CtOption<Self> {
-        UnreducedIbqf::new_compact(a, b, discriminant).and_then(|form| form.try_into_reduced())
+        UnreducedIbqf::new_compact_vartime_discriminant(a, b, discriminant)
+            .and_then(|form| form.try_into_reduced())
     }
 }
 
@@ -230,6 +233,8 @@ where
 
 #[cfg(any(test, feature = "test_helpers"))]
 pub(crate) mod test_helpers {
+    use crate::discriminant::test_helpers::get_secp256k1_discriminant;
+    use crate::discriminant::Discriminant;
     use crate::ibqf::Ibqf;
     use crate::SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS;
     use crypto_bigint::subtle::CtOption;
@@ -245,22 +250,9 @@ pub(crate) mod test_helpers {
         Ibqf<SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
         Ibqf<SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
     ) {
-        let d = Int::from_be_hex(concat![
-            "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF2D44E0C3A2360AE0C",
-            "7C8A9162FB9BB8B255D571CF917270922C2F8D26C847A7CE6D5A27C8209481B8",
-            "708D45DA94DBC15852918B309D3274658AC97D067D8C0F4D8850A0F819F83DCB",
-            "AB0ABC6DC7063BFB548785683E475F4B4E5419AF943EACFD9B3E6EEFF5F196D2",
-            "F4D4A8F137B2FBDA33613916691E86619D25D3C5A3F12D03632EA35FBEB7187D",
-            "7186635FFEB09C8532E3B8B241A0DCEA27FA4CA9EC16F2B101459F57BC00A7B1",
-            "CE307AEE6408D644D4ECEDC13CE364890AB7BCF1DFDCE1CA89B0F084BC2D67F0",
-            "422B8321EFF19C1A8851B61CF9F5B01BCF69ECBF1769893A77E8D1A68172DEE1"
-        ])
-        .to_nz()
-        .unwrap()
-        .try_into()
-        .unwrap();
+        let d = get_secp256k1_discriminant();
 
-        let f = Ibqf::new_is_reduced(
+        let f = Ibqf::new_is_reduced_vartime_discriminant(
             U1024::from_be_hex(concat![
                 "0000000000000000000000008DD9CF7C0EE35D25EAC6A3B35341F51865E1C9A9",
                 "F0DBDDF82FB32AC6BD69D96FB3F6A24D51D8A3693D8CF5D15911F39FD3BF4840",
@@ -280,7 +272,7 @@ pub(crate) mod test_helpers {
             &d,
         )
         .unwrap();
-        let f2 = Ibqf::new_is_reduced(
+        let f2 = Ibqf::new_is_reduced_vartime_discriminant(
             U1024::from_be_hex(concat![
                 "0000000000000000000000010EE5C52B88259F12CD076271C155DFA6A86D84CE",
                 "92D2BCDC4BC66C2CF592A8086BE80987FFF4006908559E7F7204A29A28340A92",
@@ -300,7 +292,7 @@ pub(crate) mod test_helpers {
             &d,
         )
         .unwrap();
-        let f3 = Ibqf::new_is_reduced(
+        let f3 = Ibqf::new_is_reduced_vartime_discriminant(
             U1024::from_be_hex(concat![
                 "0000000000000000000000014B556BDB7744E95861C2539305C74179D7D85403",
                 "B8FD7DE9DCC966B85F4611201134A555361215409C5D13147C31F534885DD551",
@@ -349,14 +341,16 @@ pub(crate) mod test_helpers {
         }
 
         /// Variation to [`Ibqf::new`] that accepts `u64/i64`s
-        pub(crate) fn new_reduced_64(a: u64, b: i64, discriminant: i64) -> CtOption<Self> {
+        pub(crate) fn new_reduced_64(
+            a: u64,
+            b: i64,
+            discriminant: (u64, u32, u64),
+        ) -> CtOption<Self> {
             let a = Uint::from(a).to_nz().unwrap();
             let b = Int::from(b);
-            let discriminant = Int::from_i64(discriminant)
-                .to_nz()
-                .unwrap()
-                .try_into()
-                .unwrap();
+
+            let (q, k, p) = discriminant;
+            let discriminant = Discriminant::new_u64(q, k, p).unwrap();
             Self::new(a, b, &discriminant)
         }
     }
@@ -368,16 +362,18 @@ pub(crate) mod test_helpers {
         Uint<LIMBS>: Encoding + Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
         Uint<DOUBLE>: Split<Output = Uint<LIMBS>>,
     {
-        /// Variation to [`Ibqf::new_is_reduced`] that accepts `u64/i64`s
-        pub(crate) fn new_is_reduced_64(a: u64, b: i64, discriminant: i64) -> CtOption<Self> {
+        /// Variation to [`Ibqf::new_is_reduced_vartime_discriminant`] that accepts `u64/i64`s
+        pub(crate) fn new_is_reduced_64(
+            a: u64,
+            b: i64,
+            discriminant: (u64, u32, u64),
+        ) -> CtOption<Self> {
             let a = Uint::from(a).to_nz().unwrap();
             let b = Int::from(b);
-            let discriminant = Int::from_i64(discriminant)
-                .to_nz()
-                .unwrap()
-                .try_into()
-                .unwrap();
-            Self::new_is_reduced(a, b, &discriminant)
+
+            let (q, k, p) = discriminant;
+            let discriminant = Discriminant::new_u64(q, k, p).unwrap();
+            Self::new_is_reduced_vartime_discriminant(a, b, &discriminant)
         }
     }
 
@@ -406,24 +402,24 @@ mod tests {
 
     #[test]
     fn test_new_normalizes() {
-        let form = Ibqf128::new_reduced_64(6, 7, -215).unwrap();
+        let form = Ibqf128::new_reduced_64(6, 7, (5, 0, 43)).unwrap();
         let target = Ibqf::from_64(6, -5, 10);
         assert_eq!(form, target);
     }
 
     #[test]
     fn test_new_reduces() {
-        let form = Ibqf128::new_reduced_64(8, 9, -15).unwrap();
+        let form = Ibqf128::new_reduced_64(8, 9, (3, 0, 5)).unwrap();
         let target = Ibqf::from_64(2, 1, 2);
         assert_eq!(form, target);
     }
 
     #[test]
     fn test_new_is_reduced() {
-        let not_reduced = Ibqf128::new_is_reduced_64(8, 9, -15);
+        let not_reduced = Ibqf128::new_is_reduced_64(8, 9, (3, 0, 5));
         assert!(bool::from(not_reduced.is_none()));
 
-        let reduced = Ibqf128::new_is_reduced_64(2, 1, -15);
+        let reduced = Ibqf128::new_is_reduced_64(2, 1, (3, 0, 5));
         assert!(bool::from(reduced.is_some()));
     }
 
@@ -431,13 +427,13 @@ mod tests {
     fn test_new_c_exceeding_limb_size() {
         // The `c` for this form would have to be 59113636363636464486958711564593, which does not
         // fit in an I64.
-        let form = Ibqf64::new_reduced_64(11, 51000000000000043, -51426183308840243i64);
+        let form = Ibqf64::new_reduced_64(11, 51000000000000043, (51426183308840243, 0, 1));
         assert!(bool::from(form.is_none()));
     }
 
     #[test]
     fn test_new_requires_primitive() {
-        let discriminant = 5 * 5 * -19;
+        let discriminant = (19, 0, 5 * 5);
         let primitive = Ibqf128::new_reduced_64(7, 13, discriminant);
         assert!(bool::from(primitive.is_some()));
 
@@ -447,7 +443,7 @@ mod tests {
 
     #[test]
     fn test_new_reduced_requires_primitive() {
-        let discriminant = -7 * 7 * 23;
+        let discriminant = (23, 0, 7 * 7);
         let primitive = Ibqf128::new_reduced_64(13, 15, discriminant);
         assert!(bool::from(primitive.is_some()));
 
@@ -469,13 +465,14 @@ mod tests {
 
     #[test]
     fn test_inverse_is_valid() {
-        let f = Ibqf128::new_reduced_64(23, 9, -2219).unwrap();
-        let target = Ibqf128::new_reduced_64(23, -9, -2219).unwrap();
+        let d = (7, 0, 317);
+        let f = Ibqf128::new_reduced_64(23, 9, d).unwrap();
+        let target = Ibqf128::new_reduced_64(23, -9, d).unwrap();
         let inv_f = f.inverse();
         assert_eq!(inv_f, target);
 
         let unit = f.nucomp(inv_f);
-        let target = Ibqf128::new_reduced_64(1, 1, -2219).unwrap();
+        let target = Ibqf128::new_reduced_64(1, 1, d).unwrap();
         assert_eq!(unit, target);
 
         // test with unit element
@@ -485,7 +482,7 @@ mod tests {
 
     #[test]
     fn test_unit() {
-        let f = Ibqf128::new_reduced_64(11, 15, -2899).unwrap();
+        let f = Ibqf128::new_reduced_64(11, 15, (13, 0, 223)).unwrap();
         let unit = f.unit();
         assert_eq!(unit.nucomp(f), f);
         assert_eq!(unit.nudupl(), unit);
@@ -516,7 +513,7 @@ pub(crate) mod benches {
     use crate::ibqf::nucomp::benches::benchmark_nucomp;
     use crate::ibqf::nudupl::benches::benchmark_nudupl;
     use crate::ibqf::nupow::benches::benchmark_nupow;
-    use crate::ibqf::unreduced::benches::benchmark_reduce;
+    use crate::ibqf::unreduced::benches::{benchmark_new_compact, benchmark_reduce};
     use crate::ibqf::{math, Ibqf};
     use crate::test_helpers::get_setup_parameters_secp256k1_112_bits_deterministic;
     use crate::EquivalenceClass;
@@ -527,7 +524,7 @@ pub(crate) mod benches {
     ) where
         Int<LIMBS>: Encoding,
         Uint<HALF>: Concat<Output = Uint<LIMBS>>,
-        Uint<LIMBS>: Concat<Output = Uint<DOUBLE_LIMBS>> + Split<Output = Uint<HALF>>,
+        Uint<LIMBS>: Encoding + Concat<Output = Uint<DOUBLE_LIMBS>> + Split<Output = Uint<HALF>>,
         Uint<DOUBLE_LIMBS>: Split<Output = Uint<LIMBS>>,
     {
         let form = *form.representative();
@@ -556,6 +553,10 @@ pub(crate) mod benches {
             let unreduced_form = form
                 .nucomp_unreduced_vartime(form.nudupl_vartime())
                 .unwrap();
+            benchmark_new_compact(
+                &mut group,
+                &setup_parameters.class_group_parameters.delta_qk,
+            );
             benchmark_reduce(&mut group, unreduced_form);
             benchmark_nucomp(&mut group, ec);
             benchmark_nudupl(&mut group, ec);

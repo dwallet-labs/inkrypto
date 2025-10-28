@@ -20,10 +20,9 @@ pub type PrimePublicParameters<const LIMBS: usize> = private::PublicParameters<L
 mod private {
     use std::ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign};
 
-    use crypto_bigint::modular::SafeGcdInverter;
     use crypto_bigint::{
         modular::{MontyForm, MontyParams},
-        Concat, Encoding, NonZero, Odd, PrecomputeInverter, RandomMod, Split, Uint,
+        Concat, Encoding, NonZero, Odd, RandomMod, Split, Uint,
     };
     use serde::{Deserialize, Serialize};
     use subtle::ConditionallySelectable;
@@ -193,6 +192,14 @@ mod private {
 
         fn add_vartime(self, other: &Self) -> Self {
             self + other
+        }
+
+        fn sub_randomized(self, other: &Self) -> Self {
+            self - other
+        }
+
+        fn sub_vartime(self, other: &Self) -> Self {
+            self - other
         }
 
         fn double(&self) -> Self {
@@ -472,19 +479,11 @@ mod private {
         }
     }
 
-    impl<
-            const LIMBS: usize,
-            const WIDE_LIMBS: usize,
-            const UNSAT_LIMBS: usize,
-            const IS_PRIME: usize,
-        > Invert for GroupElement<LIMBS, IS_PRIME>
+    impl<const LIMBS: usize, const WIDE_LIMBS: usize, const IS_PRIME: usize> Invert
+        for GroupElement<LIMBS, IS_PRIME>
     where
         Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
         Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-        Odd<Uint<LIMBS>>: PrecomputeInverter<
-            Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>,
-            Output = Uint<LIMBS>,
-        >,
     {
         fn invert(&self) -> CtOption<Self> {
             let inv = <MontyForm<LIMBS> as crypto_bigint::Invert>::invert(&self.0);
@@ -494,19 +493,11 @@ mod private {
         }
     }
 
-    impl<
-            const LIMBS: usize,
-            const WIDE_LIMBS: usize,
-            const UNSAT_LIMBS: usize,
-            const IS_PRIME: usize,
-        > Scale<Self> for GroupElement<LIMBS, IS_PRIME>
+    impl<const LIMBS: usize, const WIDE_LIMBS: usize, const IS_PRIME: usize> Scale<Self>
+        for GroupElement<LIMBS, IS_PRIME>
     where
         Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
         Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-        Odd<Uint<LIMBS>>: PrecomputeInverter<
-            Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>,
-            Output = Uint<LIMBS>,
-        >,
     {
         fn scale_randomized_accelerated(
             &self,
@@ -543,19 +534,11 @@ mod private {
         }
     }
 
-    impl<
-            const LIMBS: usize,
-            const WIDE_LIMBS: usize,
-            const UNSAT_LIMBS: usize,
-            const IS_PRIME: usize,
-        > Scale<Uint<LIMBS>> for GroupElement<LIMBS, IS_PRIME>
+    impl<const LIMBS: usize, const WIDE_LIMBS: usize, const IS_PRIME: usize> Scale<Uint<LIMBS>>
+        for GroupElement<LIMBS, IS_PRIME>
     where
         Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
         Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-        Odd<Uint<LIMBS>>: PrecomputeInverter<
-            Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>,
-            Output = Uint<LIMBS>,
-        >,
     {
         fn scale_randomized_accelerated(
             &self,
@@ -592,35 +575,19 @@ mod private {
         }
     }
 
-    impl<
-            const LIMBS: usize,
-            const WIDE_LIMBS: usize,
-            const UNSAT_LIMBS: usize,
-            const IS_PRIME: usize,
-        > KnownOrderScalar<LIMBS> for GroupElement<LIMBS, IS_PRIME>
+    impl<const LIMBS: usize, const WIDE_LIMBS: usize, const IS_PRIME: usize> KnownOrderScalar<LIMBS>
+        for GroupElement<LIMBS, IS_PRIME>
     where
         Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
         Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-        Odd<Uint<LIMBS>>: PrecomputeInverter<
-            Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>,
-            Output = Uint<LIMBS>,
-        >,
     {
     }
 
-    impl<
-            const LIMBS: usize,
-            const WIDE_LIMBS: usize,
-            const UNSAT_LIMBS: usize,
-            const IS_PRIME: usize,
-        > KnownOrderGroupElement<LIMBS> for GroupElement<LIMBS, IS_PRIME>
+    impl<const LIMBS: usize, const WIDE_LIMBS: usize, const IS_PRIME: usize>
+        KnownOrderGroupElement<LIMBS> for GroupElement<LIMBS, IS_PRIME>
     where
         Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
         Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-        Odd<Uint<LIMBS>>: PrecomputeInverter<
-            Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>,
-            Output = Uint<LIMBS>,
-        >,
     {
         type Scalar = Self;
 
@@ -647,15 +614,11 @@ mod private {
         }
     }
 
-    impl<const LIMBS: usize, const WIDE_LIMBS: usize, const UNSAT_LIMBS: usize>
-        PrimeGroupElement<LIMBS> for GroupElement<LIMBS, 1>
+    impl<const LIMBS: usize, const WIDE_LIMBS: usize> PrimeGroupElement<LIMBS>
+        for GroupElement<LIMBS, 1>
     where
         Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
         Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-        Odd<Uint<LIMBS>>: PrecomputeInverter<
-            Inverter = SafeGcdInverter<LIMBS, UNSAT_LIMBS>,
-            Output = Uint<LIMBS>,
-        >,
     {
     }
 }

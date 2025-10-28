@@ -23,11 +23,11 @@ use group::{CsRng, GroupElement as _};
 use homomorphic_encryption::AdditivelyHomomorphicEncryptionKey;
 use homomorphic_encryption::GroupsPublicParametersAccessors;
 use maurer::committed_linear_evaluation::StatementAccessors;
-use maurer::SOUND_PROOFS_REPETITIONS;
 use maurer::{
     committed_linear_evaluation, encryption_of_discrete_log, encryption_of_tuple,
     scaling_of_discrete_log,
 };
+use maurer::{extended_encryption_of_tuple, SOUND_PROOFS_REPETITIONS};
 
 use crate::languages::DIMENSION;
 use crate::{Error, ProtocolContext, Result};
@@ -327,6 +327,96 @@ pub type EncryptionOfTupleProof<
 > = maurer::Proof<
     SOUND_PROOFS_REPETITIONS,
     EncryptionOfTupleLanguage<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        MESSAGE_LIMBS,
+        GroupElement,
+    >,
+    ProtocolContext,
+>;
+
+/// Encryption of Tuple Language $L_{\textsf{EncDH}}$.
+pub type ExtendedEncryptionOfTupleLanguage<
+    const N: usize,
+    const SCALAR_LIMBS: usize,
+    const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    const MESSAGE_LIMBS: usize,
+    GroupElement,
+> = super::ExtendedEncryptionOfTupleLanguage<
+    N,
+    SCALAR_LIMBS,
+    SCALAR_LIMBS,
+    MESSAGE_LIMBS,
+    GroupElement,
+    EncryptionKey<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        GroupElement,
+    >,
+>;
+
+/// Encryption of Tuple Witness.
+pub type ExtendedEncryptionOfTupleWitness<
+    const N: usize,
+    const SCALAR_LIMBS: usize,
+    const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    const MESSAGE_LIMBS: usize,
+    GroupElement,
+> = extended_encryption_of_tuple::WitnessSpaceGroupElement<
+    N,
+    SCALAR_LIMBS,
+    MESSAGE_LIMBS,
+    EncryptionKey<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        GroupElement,
+    >,
+>;
+
+/// The Public Parameters of the Encryption of Tuple
+/// Language $L_{\textsf{EncDH}}$.
+pub type ExtendedEncryptionOfTuplePublicParameters<
+    const N: usize,
+    const SCALAR_LIMBS: usize,
+    const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    const MESSAGE_LIMBS: usize,
+    GroupElement,
+> = extended_encryption_of_tuple::PublicParameters<
+    N,
+    SCALAR_LIMBS,
+    SCALAR_LIMBS,
+    MESSAGE_LIMBS,
+    GroupElement,
+    EncryptionKey<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        GroupElement,
+    >,
+>;
+
+/// An Encryption of Tuple Proof
+/// $\Pi_{\textsf{zk}}^L_{\sf EncDH}[\textsf{pk}, \textsf{ct}_x] = \{ (\textsf{ct}_y, \textsf{ct}_z; y, \eta_y,
+/// \eta_z) \mid  \textsf{ct}_y=\textsf{AHE}.\textsf{Enc}(\textsf{pk}, y; \eta_y) \wedge \textsf{ct}_z = {\sf
+/// AHE}.\textsf{Eval}(\textsf{pk}, f, \textsf{ct}_x; 0, \eta_z) ~\text{s.t.}~ f(x)=y\cdot x \mod q \wedge y\in
+/// [0,q)\}$
+pub type ExtendedEncryptionOfTupleProof<
+    const N: usize,
+    const SCALAR_LIMBS: usize,
+    const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    const MESSAGE_LIMBS: usize,
+    GroupElement,
+> = maurer::Proof<
+    SOUND_PROOFS_REPETITIONS,
+    ExtendedEncryptionOfTupleLanguage<
+        N,
         SCALAR_LIMBS,
         FUNDAMENTAL_DISCRIMINANT_LIMBS,
         NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -1416,6 +1506,133 @@ where
         scalar_group_public_parameters,
         encryption_scheme_public_parameters,
         ciphertext,
+        upper_bound,
+    )?)
+}
+
+/// Construct $L_{\textsf{EncDL}}$ language parameters.
+pub fn construct_extended_encryption_of_tuple_public_parameters<
+    const N: usize,
+    const SCALAR_LIMBS: usize,
+    const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    const MESSAGE_LIMBS: usize,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+>(
+    ciphertexts: [homomorphic_encryption::CiphertextSpaceValue<
+        SCALAR_LIMBS,
+        EncryptionKey<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >,
+    >; N],
+    scalar_group_public_parameters: group::PublicParameters<GroupElement::Scalar>,
+    encryption_scheme_public_parameters: homomorphic_encryption::PublicParameters<
+        SCALAR_LIMBS,
+        EncryptionKey<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >,
+    >,
+) -> Result<
+    ExtendedEncryptionOfTuplePublicParameters<
+        N,
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        MESSAGE_LIMBS,
+        GroupElement,
+    >,
+>
+where
+    Int<SCALAR_LIMBS>: Encoding,
+    Uint<SCALAR_LIMBS>: Encoding,
+    Int<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
+    EncryptionKey<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        GroupElement,
+    >: AdditivelyHomomorphicEncryptionKey<
+        SCALAR_LIMBS,
+        PublicParameters = encryption_key::PublicParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >,
+        PlaintextSpaceGroupElement = GroupElement::Scalar,
+        RandomnessSpaceGroupElement = RandomnessSpaceGroupElement<FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+        CiphertextSpaceGroupElement = CiphertextSpaceGroupElement<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        >,
+    >,
+    encryption_key::PublicParameters<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<GroupElement::Scalar>,
+    >: AsRef<
+        homomorphic_encryption::GroupsPublicParameters<
+            group::PublicParameters<GroupElement::Scalar>,
+            RandomnessSpacePublicParameters<FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            CiphertextSpacePublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+        >,
+    >,
+    Uint<MESSAGE_LIMBS>: Encoding,
+{
+    let plaintext_space_order = <GroupElement::Scalar as KnownOrderGroupElement<SCALAR_LIMBS>>::order_from_public_parameters(encryption_scheme_public_parameters.plaintext_space_public_parameters());
+    let scalar_group_order = <GroupElement::Scalar as KnownOrderGroupElement<SCALAR_LIMBS>>::order_from_public_parameters(&scalar_group_public_parameters);
+
+    if plaintext_space_order != scalar_group_order {
+        Err(Error::InvalidPublicParameters)?;
+    }
+
+    let upper_bound = scalar_group_order.wrapping_sub(&Uint::ONE);
+
+    Ok(extended_encryption_of_tuple::PublicParameters::<
+        N,
+        SCALAR_LIMBS,
+        SCALAR_LIMBS,
+        MESSAGE_LIMBS,
+        GroupElement,
+        EncryptionKey<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >,
+    >::new::<
+        SCALAR_LIMBS,
+        GroupElement,
+        EncryptionKey<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >,
+    >(
+        scalar_group_public_parameters,
+        encryption_scheme_public_parameters,
+        ciphertexts,
         upper_bound,
     )?)
 }

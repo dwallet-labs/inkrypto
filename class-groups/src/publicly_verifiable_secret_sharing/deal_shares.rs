@@ -83,11 +83,10 @@ where
         &self,
         dealer_virtual_party_id: Option<PartyID>,
         secret: Int<SECRET_LIMBS>,
-        preverified_parties: HashSet<PartyID>,
-        verify_non_pre_verified: bool,
         rng: &mut impl CsRng,
     ) -> Result<(
         Vec<PartyID>,
+        Vec<bounded_integers_group::GroupElement<SECRET_SHARE_LIMBS>>,
         DealSecretMessage<
             NUM_PRIMES,
             DISCRETE_LOG_WITNESS_LIMBS,
@@ -105,9 +104,7 @@ where
         let (participating_malicious_parties, encryption_keys_per_crt_prime) =
             verify_knowledge_of_decryption_key_proofs(
                 language_public_parameters_per_crt_prime,
-                preverified_parties,
                 self.parties_without_valid_encryption_keys.clone(),
-                verify_non_pre_verified,
                 self.encryption_keys_and_proofs_per_crt_prime.clone(),
             )?;
 
@@ -121,20 +118,18 @@ where
             .map_err(|_| Error::InternalError)?;
 
         // ($\bar{C}_{i}=\bar{g}_{q'}^{f(i)}$, $[s]_{{i}}=f(i)$)
-        let (coefficients_contribution_commitments, secret_shares) = deal_shares::<
-            SECRET_SHARE_LIMBS,
-            EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        >(
-            self.participating_parties_access_structure.threshold,
-            self.participating_parties_access_structure
-                .number_of_virtual_parties(),
-            self.participating_parties_n_factorial,
-            Int::<SECRET_SHARE_LIMBS>::from(&secret),
-            self.public_verification_key_base,
-            &self.equivalence_class_public_parameters,
-            self.secret_bits,
-            rng,
-        )?;
+        let (coefficients_contribution_commitments, coefficients_for_commitments, secret_shares) =
+            deal_shares::<SECRET_SHARE_LIMBS, EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>(
+                self.participating_parties_access_structure.threshold,
+                self.participating_parties_access_structure
+                    .number_of_virtual_parties(),
+                self.participating_parties_n_factorial,
+                Int::<SECRET_SHARE_LIMBS>::from(&secret),
+                self.public_verification_key_base,
+                &self.equivalence_class_public_parameters,
+                self.secret_bits,
+                rng,
+            )?;
 
         let coefficients_contribution_commitments = coefficients_contribution_commitments
             .iter()
@@ -219,6 +214,7 @@ where
 
         Ok((
             malicious_parties,
+            coefficients_for_commitments,
             DealSecretMessage {
                 coefficients_contribution_commitments,
                 encryptions_of_secret_shares_and_proofs: encryptions_of_secret_shares_and_proofs

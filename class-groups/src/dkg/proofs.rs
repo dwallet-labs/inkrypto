@@ -42,7 +42,7 @@ use crate::{
     EquivalenceClass, Error, RandomnessSpaceGroupElement, Result,
 };
 
-/// A proof of equality of descrete logs $(g_1,g_1^x), $g_2,g_2^x)$ under different hidden order groups $g_1\in G_1, g_2 \in G_2$.
+/// A proof of equality of discrete logs $(g_1,g_1^x), (g_2,g_2^x)$ under different hidden order groups $g_1\in G_1, g_2 \in G_2$.
 /// In a hidden order we group, we can use a knowledge of discrete log proof to prove the equality of discrete logs of two bases:
 /// Let $G_{1}$ and $G_{2}$ be groups of unknown order containing elements $g_{1},g_{2}$ respectively.
 /// The prover shows it knows a number $s \in \mathbb{Z}$ such that $v_{1}=g_{1}^s,v_{2}=g_{2}^s$.
@@ -65,7 +65,7 @@ pub type EqualityOfDiscreteLogsInHiddenOrderGroupProof<
 /// In a hidden order we group, we can use a knowledge of discrete log proof to prove the equality of discrete logs of two bases:
 /// Let $G_{1}$ and $G_{2}$ be groups of unknown order containing elements $g_{1},g_{2}$ respectively.
 /// The prover shows it knows a number $s \in \mathbb{Z}$ such that $v_{1}=g_{1}^s,v_{2}=g_{2}^s$.
-pub type KnowledgeOfDiscreteLogPublicParameters<
+pub type EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters<
     const DISCRETE_LOG_WITNESS_LIMBS: usize,
     const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
 > = knowledge_of_discrete_log::PublicParameters<
@@ -101,7 +101,7 @@ fn construct_equality_of_discrete_log_public_parameters<
         DISCRETE_LOG_WITNESS_LIMBS,
     >,
     crt_prime_index: usize,
-) -> KnowledgeOfDiscreteLogPublicParameters<
+) -> EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters<
     DISCRETE_LOG_WITNESS_LIMBS,
     NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
 >
@@ -146,7 +146,7 @@ where
         .into();
 
     let upper_bound_bits = Some(discrete_log_group_public_parameters.sample_bits);
-    KnowledgeOfDiscreteLogPublicParameters::new::<
+    EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters::new::<
         bounded_integers_group::GroupElement<DISCRETE_LOG_WITNESS_LIMBS>,
         direct_product::GroupElement<
             EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
@@ -172,7 +172,7 @@ pub(crate) fn prove_equality_of_discrete_log<
     dealer_tangible_party_id: PartyID,
     dealer_virtual_party_id: Option<PartyID>,
     session_id: CommitmentSizedNumber,
-    knowledge_of_discrete_log_base_protocol_context: BaseProtocolContext,
+    equality_of_discrete_log_in_hidden_order_group_base_protocol_context: BaseProtocolContext,
     discrete_log_group_public_parameters: bounded_integers_group::PublicParameters<
         DISCRETE_LOG_WITNESS_LIMBS,
     >,
@@ -242,7 +242,8 @@ where
             session_id,
             crt_prime_index: i as u8,
             secret_bits,
-            base_protocol_context: knowledge_of_discrete_log_base_protocol_context.clone(),
+            base_protocol_context:
+                equality_of_discrete_log_in_hidden_order_group_base_protocol_context.clone(),
         };
 
         let (proof, statement) = EqualityOfDiscreteLogsInHiddenOrderGroupProof::prove(
@@ -271,7 +272,7 @@ pub(crate) fn verify_equality_of_discrete_log_proofs<
 >(
     session_id: CommitmentSizedNumber,
     access_structure: &WeightedThresholdAccessStructure,
-    knowledge_of_discrete_log_base_protocol_context: BaseProtocolContext,
+    equality_of_discrete_log_in_hidden_order_group_base_protocol_context: BaseProtocolContext,
     discrete_log_group_public_parameters: bounded_integers_group::PublicParameters<
         DISCRETE_LOG_WITNESS_LIMBS,
     >,
@@ -367,7 +368,7 @@ where
                                             crt_prime_index: i as u8,
                                             secret_bits,
                                             base_protocol_context:
-                                                knowledge_of_discrete_log_base_protocol_context
+                                                equality_of_discrete_log_in_hidden_order_group_base_protocol_context
                                                     .clone(),
                                         };
 

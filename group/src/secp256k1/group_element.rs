@@ -4,15 +4,11 @@
 use std::ops::{Add, AddAssign, Neg, Sub, SubAssign};
 
 use crypto_bigint::{Int, Uint, U256};
-use hash2curve::{ExpandMsgXof, GroupDigest};
+use hash2curve::ExpandMsgXof;
 use k256::{
-    elliptic_curve::{
-        group::prime::PrimeCurveAffine, ops::Reduce, point::AffineCoordinates, BatchNormalize as _,
-        Group,
-    },
+    elliptic_curve::{group::prime::PrimeCurveAffine, BatchNormalize as _, Group},
     AffinePoint, ProjectivePoint, Secp256k1,
 };
-
 use serde::{Deserialize, Serialize};
 use sha3::Shake256;
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
@@ -20,7 +16,7 @@ use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 use crate::linear_combination::linearly_combine_bounded_or_scale;
 use crate::{
     secp256k1::{scalar::Scalar, CURVE_EQUATION_A, CURVE_EQUATION_B, MODULUS, ORDER},
-    AffineXCoordinate, BoundedGroupElement, CyclicGroupElement, GroupElement as _, HashToGroup,
+    BoundedGroupElement, CyclicGroupElement, GroupElement as _, HashToGroup,
     KnownOrderGroupElement, LinearlyCombinable, MulByGenerator, PrimeGroupElement, Scale,
     Transcribeable,
 };
@@ -185,6 +181,14 @@ impl crate::GroupElement for GroupElement {
 
     fn add_vartime(self, other: &Self) -> Self {
         self + other
+    }
+
+    fn sub_randomized(self, other: &Self) -> Self {
+        self - other
+    }
+
+    fn sub_vartime(self, other: &Self) -> Self {
+        self - other
     }
 
     fn double(&self) -> Self {
@@ -438,21 +442,11 @@ impl PrimeGroupElement<SCALAR_LIMBS> for GroupElement {}
 
 impl HashToGroup for GroupElement {
     fn hash_to_group(bytes: &[u8]) -> crate::Result<Self> {
-        Secp256k1::hash_from_bytes::<ExpandMsgXof<Shake256>>(
+        hash2curve::hash_from_bytes::<Secp256k1, ExpandMsgXof<Shake256>>(
             &[bytes],
             &[b"CURVE_XOF:SHAKE-256_SSWU_RO_"],
         )
         .map_err(|_| crate::Error::HashToGroup)
         .map(Self)
-    }
-}
-
-impl AffineXCoordinate<SCALAR_LIMBS> for GroupElement {
-    fn x(&self) -> Scalar {
-        // Lift x-coordinate of 𝑹 (element of base field) into a serialized big
-        // integer, then reduce it into an element of the scalar field
-        Scalar(<k256::Scalar as Reduce<U256>>::reduce_bytes(
-            &self.0.to_affine().x(),
-        ))
     }
 }
