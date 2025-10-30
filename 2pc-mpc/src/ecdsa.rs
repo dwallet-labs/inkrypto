@@ -44,14 +44,14 @@ pub struct ECDSASecp256k1Signature(
 impl ECDSASecp256k1Signature {
     /// Retrieve the signature.
     pub fn signature(&self) -> Result<k256::ecdsa::Signature> {
-        let (signature_part, _) = self.0.split_at(64);
+        let (_, signature_part) = self.0.split_at(1);
 
         k256::ecdsa::Signature::try_from(signature_part).map_err(|_| Error::SignatureVerification)
     }
 
     /// Retrieve the recovery ID.
     pub fn recovery_id(&self) -> Result<RecoveryId> {
-        RecoveryId::from_byte(self.0[64]).ok_or(Error::SignatureVerification)
+        RecoveryId::from_byte(self.0[0]).ok_or(Error::SignatureVerification)
     }
 }
 
@@ -90,7 +90,7 @@ impl TryFrom<(secp256k1::GroupElement, secp256k1::Scalar)> for ECDSASecp256k1Sig
         let signature = signature.normalize_s();
 
         let mut encoded_signature = [0; 65];
-        let (signature_part, recovery_id_part) = encoded_signature.split_at_mut(64);
+        let (recovery_id_part, signature_part) = encoded_signature.split_at_mut(1);
         signature_part.copy_from_slice(&signature.to_bytes());
         recovery_id_part[0] = recovery_id.to_byte();
 
@@ -176,14 +176,14 @@ pub struct ECDSASecp256r1Signature(
 impl ECDSASecp256r1Signature {
     /// Retrieve the signature.
     pub fn signature(&self) -> Result<p256::ecdsa::Signature> {
-        let (signature_part, _) = self.0.split_at(64);
+        let (_, signature_part) = self.0.split_at(1);
 
         p256::ecdsa::Signature::try_from(signature_part).map_err(|_| Error::SignatureVerification)
     }
 
     /// Retrieve the recovery ID.
     pub fn recovery_id(&self) -> Result<RecoveryId> {
-        RecoveryId::from_byte(self.0[64]).ok_or(Error::SignatureVerification)
+        RecoveryId::from_byte(self.0[0]).ok_or(Error::SignatureVerification)
     }
 }
 
@@ -222,7 +222,7 @@ impl TryFrom<(secp256r1::GroupElement, secp256r1::Scalar)> for ECDSASecp256r1Sig
         let signature = signature.normalize_s();
 
         let mut encoded_signature = [0; 65];
-        let (signature_part, recovery_id_part) = encoded_signature.split_at_mut(64);
+        let (recovery_id_part, signature_part) = encoded_signature.split_at_mut(1);
         signature_part.copy_from_slice(&signature.to_bytes());
         recovery_id_part[0] = recovery_id.to_byte();
 
