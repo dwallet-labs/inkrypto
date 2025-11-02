@@ -11,7 +11,7 @@ pub use encryption_key::EncryptionKey;
 pub use equivalence_class::EquivalenceClass;
 use group::bounded_natural_numbers_group::MAURER_PROOFS_DIFF_UPPER_BOUND_BITS;
 use group::{curve25519, ristretto, secp256k1, secp256r1, PartyID, StatisticalSecuritySizedNumber};
-pub use ibqf::compact::CompactIbqf;
+pub use ibqf::{compact::CompactIbqf, Ibqf};
 use mpc::secret_sharing::shamir::over_the_integers::{
     computation_decryption_key_shares_interpolation_upper_bound, find_closest_crypto_bigint_size,
     secret_key_share_size_upper_bound, MAX_PLAYERS, MAX_THRESHOLD,
