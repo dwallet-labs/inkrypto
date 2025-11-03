@@ -43,6 +43,9 @@ pub mod publicly_verifiable_secret_sharing;
 mod randomizer;
 #[cfg(feature = "threshold")]
 pub mod reconfiguration;
+#[cfg(feature = "threshold")]
+// TODO: delete this after upgrade
+pub mod reconfiguration_backward_compatible;
 
 pub const DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER: u32 = 112;
 pub const MINIMUM_FUNDAMENTAL_DISCRIMINANT_112BIT_SECURITY_BITS: u32 = 1348;
