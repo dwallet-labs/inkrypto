@@ -688,9 +688,9 @@ dependencies = [
 
 [[package]]
 name = "hash2curve"
-version = "0.14.0-rc.2"
+version = "0.14.0-rc.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4dc9fc1e7c8838651b0541e9af3ae5d39114bed92d199fcace0d1c684c752c9"
+checksum = "3c5619cb0db310640f6e5067ebdff3c0d3212148cea01b80670d0f52bc0e775a"
 dependencies = [
  "digest 0.11.0-rc.3",
  "elliptic-curve",
