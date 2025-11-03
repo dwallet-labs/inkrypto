@@ -22,7 +22,7 @@ description = "dWallet Labs LTD. Cryptography Library."
 edition = "2021"
 license = "CC-BY-NC-ND-4.0"
 repository = "https://github.com/dwallet-labs/inkrypto"
-version = "0.1.0"
+version = "0.2.0"
 
 [workspace.dependencies]
 bulletproofs = { git = "https://github.com/ycscaly/bulletproofs.git", rev = "738c572f", default-features = false }

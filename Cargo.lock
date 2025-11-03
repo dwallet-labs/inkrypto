@@ -176,13 +176,13 @@ checksum = "b94f61472cee1439c0b966b47e3aca9ae07e45d070759512cd390ea2bebc6675"
 
 [[package]]
 name = "class_groups"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "commitment",
  "criterion",
  "crypto-bigint",
  "crypto-primes",
- "group 0.1.0",
+ "group 0.2.0",
  "homomorphic_encryption",
  "itertools 0.14.0",
  "maurer",
@@ -201,11 +201,11 @@ dependencies = [
 
 [[package]]
 name = "commitment"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bulletproofs",
  "crypto-bigint",
- "group 0.1.0",
+ "group 0.2.0",
  "merlin",
  "serde",
  "serde_json",
@@ -483,7 +483,7 @@ dependencies = [
 
 [[package]]
 name = "enhanced_maurer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bulletproofs",
  "class_groups",
@@ -491,7 +491,7 @@ dependencies = [
  "criterion",
  "crypto-bigint",
  "curve25519-dalek 5.0.0-pre.1",
- "group 0.1.0",
+ "group 0.2.0",
  "homomorphic_encryption",
  "maurer",
  "merlin",
@@ -632,7 +632,7 @@ checksum = "a8d1add55171497b4705a648c6b583acafb01d58050a51727785f0b2c8e0a2b2"
 
 [[package]]
 name = "group"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "criterion",
  "crypto-bigint",
@@ -715,11 +715,11 @@ dependencies = [
 
 [[package]]
 name = "homomorphic_encryption"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "criterion",
  "crypto-bigint",
- "group 0.1.0",
+ "group 0.2.0",
  "mpc",
  "rayon",
  "rstest",
@@ -837,13 +837,13 @@ checksum = "13dc2df351e3202783a1fe0d44375f7295ffb4049267b0f3018346dc122a1d94"
 
 [[package]]
 name = "maurer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "class_groups",
  "commitment",
  "criterion",
  "crypto-bigint",
- "group 0.1.0",
+ "group 0.2.0",
  "homomorphic_encryption",
  "merlin",
  "mpc",
@@ -875,14 +875,14 @@ dependencies = [
 
 [[package]]
 name = "mpc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bcs",
  "commitment",
  "criterion",
  "crypto-bigint",
  "gcd",
- "group 0.1.0",
+ "group 0.2.0",
  "itertools 0.14.0",
  "merlin",
  "rand",
@@ -1014,14 +1014,14 @@ dependencies = [
 
 [[package]]
 name = "proof"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bulletproofs",
  "commitment",
  "criterion",
  "crypto-bigint",
  "curve25519-dalek 5.0.0-pre.1",
- "group 0.1.0",
+ "group 0.2.0",
  "itertools 0.14.0",
  "merlin",
  "mpc",
@@ -1430,7 +1430,7 @@ dependencies = [
  "criterion",
  "crypto-bigint",
  "crypto-primes",
- "group 0.1.0",
+ "group 0.2.0",
  "homomorphic_encryption",
  "merlin",
  "mpc",
@@ -1461,7 +1461,7 @@ dependencies = [
 
 [[package]]
 name = "twopc_mpc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "class_groups",
  "commitment",
@@ -1471,7 +1471,7 @@ dependencies = [
  "ecdsa",
  "ed25519",
  "ed25519-dalek",
- "group 0.1.0",
+ "group 0.2.0",
  "homomorphic_encryption",
  "itertools 0.14.0",
  "k256",
