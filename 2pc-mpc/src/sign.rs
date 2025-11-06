@@ -403,7 +403,7 @@ pub(crate) mod tests {
 
         if bench {
             println!(
-                "{description} Sign {} (delta {delta}), {number_of_tangible_parties}, {number_of_virtual_parties}, {threshold}, 1, {:?}, {:?}, {:?}, {:?}",
+                "{description} Sign {} (delta {delta}), {number_of_tangible_parties}, {number_of_virtual_parties}, {threshold}, {:?}, {:?}, {:?}, {:?}",
                 if expected_case {"expected"} else {"unexpected"},
                 centralized_party_total_time.as_millis(),
                 decentralized_party_time.as_millis(),
@@ -891,8 +891,6 @@ pub(crate) mod tests {
         #[case] party_to_weight: HashMap<PartyID, Weight>,
         #[case] is_trusted_dealer: bool,
     ) {
-        let hashed_message = k256::sha2::Sha256::new_with_prefix(MESSAGE).finalize();
-
         dkg_presign_signs_async_class_groups_secp256k1_internal::<
             crate::secp256k1::class_groups::TaprootProtocol,
         >(
@@ -900,7 +898,7 @@ pub(crate) mod tests {
             party_to_weight,
             HashScheme::SHA256,
             is_trusted_dealer,
-            &hashed_message,
+            MESSAGE.as_bytes(),
             verify_taproot_signature,
             "Class Groups Asynchronous Schnorr secp256k1 (Taproot)",
         )
@@ -1628,8 +1626,6 @@ pub(crate) mod tests {
         #[case] threshold: PartyID,
         #[case] party_to_weight: HashMap<PartyID, Weight>,
     ) {
-        let hashed_message = k256::sha2::Sha256::new_with_prefix(MESSAGE).finalize();
-
         signs_async_class_groups_secp256k1_internal::<crate::secp256k1::class_groups::TaprootProtocol>(
             threshold,
             party_to_weight,
@@ -1637,7 +1633,7 @@ pub(crate) mod tests {
             HashSet::new(),
             false,
             true,
-            &hashed_message,
+            MESSAGE.as_bytes(),
             verify_taproot_signature,
             "Class Groups Asynchronous Schnorr secp256k1 (Taproot)",
         )
@@ -2321,19 +2317,21 @@ pub(crate) mod tests {
 
 #[cfg(all(test, feature = "benchmarking"))]
 mod benches {
-    use std::collections::HashSet;
-
-    use crate::secp256k1::class_groups::ECDSAProtocol;
-    use crate::sign::tests::{verify_secp256k1_ecdsa_signature, MESSAGE};
+    use crate::secp256k1::class_groups::{ECDSAProtocol, TaprootProtocol};
+    use crate::sign::tests::{
+        verify_eddsa_signature, verify_schnorrkel_signature, verify_secp256k1_ecdsa_signature,
+        verify_secp256r1_ecdsa_signature, verify_taproot_signature, MESSAGE,
+    };
     use group::{HashScheme, OsCsRng};
     use mpc::WeightedThresholdAccessStructure;
+    use std::collections::HashSet;
 
     #[test]
     #[ignore]
     #[allow(clippy::single_element_loop)]
     fn benchmark() {
         println!(
-            "\nProtocol, Number of Parties, Threshold, Batch Size, Centralized Party Total Time (ms), Decentralized Party Total Time (ms), Decentralized Party Decryption Share Time (ms), Decentralized Party Threshold Decryption Time (ms)",
+            "\nProtocol, Number of Parties, Threshold, Centralized Party Total Time (ms), Decentralized Party Total Time (ms), Decentralized Party Decryption Share Time (ms), Decentralized Party Threshold Decryption Time (ms)",
         );
 
         for (threshold, number_of_tangible_parties, total_weight) in [(67, 100, 100)] {
@@ -2344,6 +2342,46 @@ mod benches {
                 &mut OsCsRng,
             )
             .unwrap();
+
+            super::tests::signs_async_class_groups_secp256k1_internal::<TaprootProtocol>(
+                access_structure.threshold,
+                access_structure.party_to_weight.clone(),
+                HashScheme::SHA256,
+                HashSet::new(),
+                true,
+                true,
+                MESSAGE.as_bytes(),
+                verify_taproot_signature,
+                "Class Groups Asynchronous Schnorr secp256k1 (Taproot)",
+            );
+
+            super::tests::signs_async_class_groups_curve25519_internal::<
+                crate::curve25519::class_groups::EdDSAProtocol,
+            >(
+                access_structure.threshold,
+                access_structure.party_to_weight.clone(),
+                HashScheme::SHA512,
+                HashSet::new(),
+                true,
+                true,
+                MESSAGE.as_bytes(),
+                verify_eddsa_signature,
+                "Class Groups Asynchronous Schnorr Curve25519 (EdDSA)",
+            );
+
+            super::tests::signs_async_class_groups_ristretto_internal::<
+                crate::ristretto::class_groups::SchnorrkelSubstrateProtocol,
+            >(
+                access_structure.threshold,
+                access_structure.party_to_weight.clone(),
+                HashScheme::Merlin,
+                HashSet::new(),
+                true,
+                true,
+                MESSAGE.as_bytes(),
+                verify_schnorrkel_signature,
+                "Class Groups Asynchronous Schnorr Ristretto (Schnorrkel/sr25519)",
+            );
 
             super::tests::signs_async_class_groups_secp256k1_internal::<ECDSAProtocol>(
                 access_structure.threshold,
@@ -2359,14 +2397,42 @@ mod benches {
 
             super::tests::signs_async_class_groups_secp256k1_internal::<ECDSAProtocol>(
                 access_structure.threshold,
-                access_structure.party_to_weight,
-                HashScheme::Keccak256,
+                access_structure.party_to_weight.clone(),
+                HashScheme::SHA256,
                 HashSet::new(),
                 true,
                 false,
                 MESSAGE.as_bytes(),
                 verify_secp256k1_ecdsa_signature,
                 "Class Groups Asynchronous ECDSA secp256k1",
+            );
+
+            super::tests::signs_async_class_groups_secp256r1_internal::<
+                crate::secp256r1::class_groups::ECDSAProtocol,
+            >(
+                access_structure.threshold,
+                access_structure.party_to_weight.clone(),
+                HashScheme::SHA256,
+                HashSet::new(),
+                true,
+                true,
+                MESSAGE.as_bytes(),
+                verify_secp256r1_ecdsa_signature,
+                "Class Groups Asynchronous ECDSA secp256r1",
+            );
+
+            super::tests::signs_async_class_groups_secp256r1_internal::<
+                crate::secp256r1::class_groups::ECDSAProtocol,
+            >(
+                access_structure.threshold,
+                access_structure.party_to_weight.clone(),
+                HashScheme::SHA256,
+                HashSet::new(),
+                true,
+                false,
+                MESSAGE.as_bytes(),
+                verify_secp256r1_ecdsa_signature,
+                "Class Groups Asynchronous ECDSA secp256r1",
             );
         }
     }
