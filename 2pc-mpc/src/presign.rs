@@ -181,6 +181,16 @@ pub(crate) mod tests {
             >,
         >,
     {
+        let description = format!(
+            "{} {}",
+            description,
+            if is_universal {
+                "Universal"
+            } else {
+                "Targeted"
+            }
+        );
+
         let (protocol_public_parameters, _) = setup_class_groups_secp256r1();
 
         let dkg_output = if is_universal {
@@ -216,12 +226,7 @@ pub(crate) mod tests {
             secp256r1::GroupElement,
             Secp256r1EncryptionKey,
             P,
-        >(
-            session_id,
-            access_structure,
-            public_inputs,
-            description.to_string(),
-        );
+        >(session_id, access_structure, public_inputs, description);
     }
 
     #[rstest]
@@ -472,6 +477,16 @@ pub(crate) mod tests {
             >,
         >,
     {
+        let description = format!(
+            "{} {}",
+            description,
+            if is_universal {
+                "Universal"
+            } else {
+                "Targeted"
+            }
+        );
+
         let (protocol_public_parameters, _) = setup_class_groups_secp256k1();
 
         let dkg_output = if is_universal {
@@ -507,12 +522,7 @@ pub(crate) mod tests {
             secp256k1::GroupElement,
             Secp256k1EncryptionKey,
             P,
-        >(
-            session_id,
-            access_structure,
-            public_inputs,
-            description.to_string(),
-        );
+        >(session_id, access_structure, public_inputs, description);
     }
 
     #[allow(dead_code)]
@@ -583,7 +593,7 @@ pub(crate) mod tests {
 
         if number_of_rounds == 2 {
             println!(
-                "{description} Presign, {number_of_tangible_parties}, {number_of_virtual_parties}, {threshold}, {:?}, {:?}, {:?}",
+                "{description} Universal Presign, {number_of_tangible_parties}, {number_of_virtual_parties}, {threshold}, {:?}, {:?}, {:?}",
                 decentralized_party_total_time.as_millis(),
                 times[0].as_millis(),
                 times[1].as_millis(),
@@ -855,6 +865,42 @@ mod benches {
             );
         }
 
+        for (threshold, number_of_tangible_parties, total_weight) in [(67, 100, 100)] {
+            let access_structure = WeightedThresholdAccessStructure::random(
+                threshold,
+                number_of_tangible_parties,
+                total_weight,
+                &mut OsCsRng,
+            )
+            .unwrap();
+
+            super::tests::generates_presignatures_async_class_groups_curve25519_internal::<
+                crate::curve25519::class_groups::EdDSAProtocol,
+            >(
+                access_structure.threshold,
+                access_structure.party_to_weight,
+                "Class Groups Asynchronous Schnorr curve25519 (EdDSA)",
+            );
+        }
+
+        for (threshold, number_of_tangible_parties, total_weight) in [(67, 100, 100)] {
+            let access_structure = WeightedThresholdAccessStructure::random(
+                threshold,
+                number_of_tangible_parties,
+                total_weight,
+                &mut OsCsRng,
+            )
+            .unwrap();
+
+            super::tests::generates_presignatures_async_class_groups_ristretto_internal::<
+                crate::ristretto::class_groups::SchnorrkelSubstrateProtocol,
+            >(
+                access_structure.threshold,
+                access_structure.party_to_weight,
+                "Class Groups Asynchronous Schnorr Ristretto (Schnorrkel/sr25519)",
+            );
+        }
+
         println!("\nProtocol, Number of Tangible Parties, Number of Virtual Parties, Threshold, Decentralized Party Total Time (ms), Decentralized Party First Round Time (ms), Decentralized Party Second Round Time (ms), Decentralized Party Third Round Time (ms), Decentralized Party Fourth Round Time (ms)", );
 
         for (threshold, number_of_tangible_parties, total_weight) in [(67, 100, 100)] {
@@ -873,6 +919,25 @@ mod benches {
                 access_structure.party_to_weight,
                 true,
                 "Class Groups Asynchronous ECDSA secp256k1",
+            );
+        }
+
+        for (threshold, number_of_tangible_parties, total_weight) in [(67, 100, 100)] {
+            let access_structure = WeightedThresholdAccessStructure::random(
+                threshold,
+                number_of_tangible_parties,
+                total_weight,
+                &mut OsCsRng,
+            )
+            .unwrap();
+
+            super::tests::generates_presignatures_async_class_groups_secp256r1_internal::<
+                crate::secp256r1::class_groups::ECDSAProtocol,
+            >(
+                access_structure.threshold,
+                access_structure.party_to_weight,
+                true,
+                "Class Groups Asynchronous ECDSA secp256r1",
             );
         }
     }

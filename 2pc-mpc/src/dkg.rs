@@ -474,7 +474,7 @@ where
 #[cfg(any(test, feature = "benchmarking"))]
 #[allow(dead_code)]
 pub(crate) mod tests {
-    use std::{collections::HashMap, time::Duration};
+    use std::collections::HashMap;
 
     use crate::dkg::centralized_party::{PublicKeyShareAndProof, SecretKeyShare};
     use crate::languages::KnowledgeOfDiscreteLogUCProof;
@@ -718,8 +718,6 @@ pub(crate) mod tests {
         Uint<SCALAR_LIMBS>: Encoding,
     {
         let measurement = WallTime;
-        let mut centralized_party_total_time = Duration::ZERO;
-        let mut decentralized_party_total_time = Duration::ZERO;
 
         let parties: Vec<PartyID> = access_structure
             .party_to_virtual_parties()
@@ -751,8 +749,7 @@ pub(crate) mod tests {
             centralized_party::Output::from(centralized_party_dkg_output.clone());
         let centralized_party_secret_key_share = round_result.private_output;
 
-        centralized_party_total_time =
-            measurement.add(&centralized_party_total_time, &measurement.end(now));
+        let centralized_party_time = measurement.end(now);
 
         let decentralized_party_public_key_share = GroupElement::new(
             centralized_party_dkg_output_inner.decentralized_party_public_key_share,
@@ -860,9 +857,6 @@ pub(crate) mod tests {
             decentralized_party_dkg_output_inner.public_key,
         );
 
-        decentralized_party_total_time =
-            measurement.add(&decentralized_party_total_time, &decentralized_party_time);
-
         // Test malicious case
         let wrong_centralized_party_secret_key_share = SecretKeyShare(
             GroupElement::Scalar::neutral_from_public_parameters(
@@ -927,9 +921,8 @@ pub(crate) mod tests {
         let threshold = access_structure.threshold;
 
         println!(
-            "{description} DKG, {number_of_tangible_parties}, {number_of_virtual_parties}, {threshold}, {:?}, {:?}, {:?}",
-            centralized_party_total_time.as_millis(),
-            decentralized_party_total_time.as_millis(),
+            "{description} DKG, {number_of_tangible_parties}, {number_of_virtual_parties}, {threshold}, {:?}, {:?}",
+            centralized_party_time.as_millis(),
             decentralized_party_time.as_millis(),
         );
 
@@ -1243,7 +1236,22 @@ mod benches {
 
             super::tests::generates_distributed_key_async_class_groups_secp256k1_internal(
                 access_structure.threshold,
-                access_structure.party_to_weight,
+                access_structure.party_to_weight.clone(),
+            );
+
+            super::tests::generates_distributed_key_async_class_groups_secp256r1_internal(
+                access_structure.threshold,
+                access_structure.party_to_weight.clone(),
+            );
+
+            super::tests::generates_distributed_key_async_class_groups_curve25519_internal(
+                access_structure.threshold,
+                access_structure.party_to_weight.clone(),
+            );
+
+            super::tests::generates_distributed_key_async_class_groups_ristretto_internal(
+                access_structure.threshold,
+                access_structure.party_to_weight.clone(),
             );
         }
     }
