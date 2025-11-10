@@ -33,7 +33,7 @@ serde_json = { version = "1.0", default-features = false }
 thiserror = "2.0"
 subtle = { version = "2.5" }
 gcd = { version = "2.3.0" }
-crypto-primes = { version = "0.7.0-pre.3", default-features = false }
+crypto-primes = { version = "0.7.0-pre.4", default-features = false }
 rayon = { version = "1.11.0" }
 rand_core = { version = "0.9", default-features = false }
 rstest = "0.26"
