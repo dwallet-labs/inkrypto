@@ -45,7 +45,7 @@ getrandom = { version = "0.3" }
 k256 = { version = "0.14.0-pre.11", default-features = false }
 p256 = { version = "0.14.0-pre.11", default-features = false }
 hash2curve = { version = "0.14.0-rc.2" }
-sha2 = "0.11.0-rc.2"
+sha2 = "0.11.0-rc.3"
 sha3 = "0.11.0-rc.3"
 ecdsa = { version = "0.17.0-rc.7" }
 itertools = "0.14.0"
