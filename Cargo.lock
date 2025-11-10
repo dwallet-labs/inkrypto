@@ -88,7 +88,7 @@ source = "git+https://github.com/ycscaly/bulletproofs.git?rev=738c572f#738c572fd
 dependencies = [
  "byteorder",
  "curve25519-dalek 5.0.0-pre.1",
- "digest 0.11.0-rc.3",
+ "digest 0.11.0-rc.4",
  "group 0.13.0",
  "merlin",
  "rand_core 0.9.3",
@@ -322,9 +322,9 @@ dependencies = [
 
 [[package]]
 name = "crypto-common"
-version = "0.2.0-rc.4"
+version = "0.2.0-rc.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a8235645834fbc6832939736ce2f2d08192652269e11010a6240f61b908a1c6"
+checksum = "919bd05924682a5480aec713596b9e2aabed3a0a6022fab6847f85a99e5f190a"
 dependencies = [
  "hybrid-array",
 ]
@@ -365,7 +365,7 @@ dependencies = [
  "cfg-if",
  "cpufeatures",
  "curve25519-dalek-derive",
- "digest 0.11.0-rc.3",
+ "digest 0.11.0-rc.4",
  "fiat-crypto 0.3.0",
  "group 0.14.0-pre.0",
  "rand_core 0.9.3",
@@ -408,13 +408,13 @@ dependencies = [
 
 [[package]]
 name = "digest"
-version = "0.11.0-rc.3"
+version = "0.11.0-rc.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dac89f8a64533a9b0eaa73a68e424db0fb1fd6271c74cc0125336a05f090568d"
+checksum = "ea390c940e465846d64775e55e3115d5dc934acb953de6f6e6360bc232fe2bf7"
 dependencies = [
  "block-buffer 0.11.0-rc.5",
  "const-oid",
- "crypto-common 0.2.0-rc.4",
+ "crypto-common 0.2.0-rc.5",
  "subtle",
 ]
 
@@ -425,7 +425,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4ab355ec063f7a110eb627471058093aba00eb7f4e70afbd15e696b79d1077b"
 dependencies = [
  "der",
- "digest 0.11.0-rc.3",
+ "digest 0.11.0-rc.4",
  "elliptic-curve",
  "rfc6979",
  "serdect",
@@ -436,9 +436,9 @@ dependencies = [
 
 [[package]]
 name = "ed25519"
-version = "3.0.0-rc.1"
+version = "3.0.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ef49c0b20c0ad088893ad2a790a29c06a012b3f05bcfc66661fd22a94b32129"
+checksum = "594435fe09e345ee388e4e8422072ff7dfeca8729389fbd997b3f5504c44cd47"
 dependencies = [
  "signature",
 ]
@@ -469,7 +469,7 @@ checksum = "e8cbb5fbebc360d8631bb2e0c0e2617e9141e32825c54547b982509c6ad8de87"
 dependencies = [
  "base16ct",
  "crypto-bigint",
- "digest 0.11.0-rc.3",
+ "digest 0.11.0-rc.4",
  "ff 0.14.0-pre.0",
  "group 0.14.0-pre.0",
  "hybrid-array",
@@ -692,7 +692,7 @@ version = "0.14.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4dc9fc1e7c8838651b0541e9af3ae5d39114bed92d199fcace0d1c684c752c9"
 dependencies = [
- "digest 0.11.0-rc.3",
+ "digest 0.11.0-rc.4",
  "elliptic-curve",
  "ff 0.14.0-pre.0",
  "subtle",
@@ -710,7 +710,7 @@ version = "0.13.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a3fd4dc94c318c1ede8a2a48341c250d6ddecd3ba793da2820301a9f92417ad9"
 dependencies = [
- "digest 0.11.0-rc.3",
+ "digest 0.11.0-rc.4",
 ]
 
 [[package]]
@@ -1083,6 +1083,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "rand_core"
+version = "0.10.0-rc-2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "104a23e4e8b77312a823b6b5613edbac78397e2f34320bc7ac4277013ec4478e"
+
+[[package]]
 name = "rayon"
 version = "1.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1308,7 +1314,7 @@ checksum = "d1e3878ab0f98e35b2df35fe53201d088299b41a6bb63e3e34dada2ac4abd924"
 dependencies = [
  "cfg-if",
  "cpufeatures",
- "digest 0.11.0-rc.3",
+ "digest 0.11.0-rc.4",
 ]
 
 [[package]]
@@ -1317,18 +1323,18 @@ version = "0.11.0-rc.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2103ca0e6f4e9505eae906de5e5883e06fc3b2232fb5d6914890c7bbcb62f478"
 dependencies = [
- "digest 0.11.0-rc.3",
+ "digest 0.11.0-rc.4",
  "keccak 0.2.0-rc.0",
 ]
 
 [[package]]
 name = "signature"
-version = "3.0.0-rc.4"
+version = "3.0.0-rc.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc280a6ff65c79fbd6622f64d7127f32b85563bca8c53cd2e9141d6744a9056d"
+checksum = "2a0251c9d6468f4ba853b6352b190fb7c1e405087779917c238445eb03993826"
 dependencies = [
- "digest 0.11.0-rc.3",
- "rand_core 0.9.3",
+ "digest 0.11.0-rc.4",
+ "rand_core 0.10.0-rc-2",
 ]
 
 [[package]]
