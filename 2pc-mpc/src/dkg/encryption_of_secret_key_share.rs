@@ -99,27 +99,3 @@ pub struct PublicInput<
     pub encryption_scheme_public_parameters: EncryptionSchemePublicParameters,
     pub base_protocol_context: BaseProtocolContext,
 }
-
-impl<ScalarPublicParameters, GroupPublicParameters, EncryptionSchemePublicParameters>
-    PublicInput<ScalarPublicParameters, GroupPublicParameters, EncryptionSchemePublicParameters>
-{
-    /// The backward-compatible instantiation function used for two-round targeted dkg.
-    pub fn new_targeted_dkg(
-        scalar_group_public_parameters: ScalarPublicParameters,
-        group_public_parameters: GroupPublicParameters,
-        encryption_scheme_public_parameters: EncryptionSchemePublicParameters,
-    ) -> Self {
-        let base_protocol_context = BaseProtocolContext {
-            protocol_name: "2PC-MPC DKG".to_string(),
-            round_name: "1 - Encryption of Secret Key Share".to_string(),
-            proof_name: "Encryption of Secret Key Share and Public Key Share Proof".to_string(),
-        };
-
-        Self {
-            scalar_group_public_parameters,
-            group_public_parameters,
-            encryption_scheme_public_parameters,
-            base_protocol_context,
-        }
-    }
-}
