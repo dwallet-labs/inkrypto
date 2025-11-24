@@ -7,6 +7,7 @@ use crate::dkg;
 use mpc::AsynchronouslyAdvanceable;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
+use std::sync::Arc;
 
 /// An instantiation of the 2PC-MPC Presign protocol.
 pub trait Protocol: dkg::Protocol {
@@ -16,7 +17,7 @@ pub trait Protocol: dkg::Protocol {
     /// The public input of the (decentralized party's) Presign protocol.
     type PresignPublicInput: AsRef<Self::ProtocolPublicParameters>
         + From<(
-            Self::ProtocolPublicParameters,
+            Arc<Self::ProtocolPublicParameters>,
             Option<Self::DecentralizedPartyTargetedDKGOutput>,
         )> + Clone
         + Debug
@@ -78,7 +79,7 @@ pub(crate) mod tests {
         CiphertextSpaceValue: Clone,
         ProtocolPublicParameters: Clone,
         PublicInput: From<(
-            ProtocolPublicParameters,
+            Arc<ProtocolPublicParameters>,
             Option<dkg::decentralized_party::Output<GroupElementValue, CiphertextSpaceValue>>,
         )>,
     >(
@@ -103,6 +104,7 @@ pub(crate) mod tests {
 
         let session_id = CommitmentSizedNumber::random(&mut OsCsRng);
 
+        let protocol_public_parameters = Arc::new(protocol_public_parameters);
         let public_inputs = parties
             .iter()
             .map(|&party_id| {

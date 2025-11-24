@@ -757,8 +757,8 @@ pub mod asynchronous {
         Uint<MESSAGE_LIMBS>: Encoding,
         GroupElement::Scalar: Serialize + for<'a> Deserialize<'a>,
     {
-        if public_input.dkg_output != public_input.protocol_public_parameters
-            || public_input.presign != public_input.protocol_public_parameters
+        if public_input.dkg_output != *public_input.protocol_public_parameters
+            || public_input.presign != *public_input.protocol_public_parameters
             || public_input.presign != public_input.dkg_output
         {
             return Err(Error::InvalidParameters);

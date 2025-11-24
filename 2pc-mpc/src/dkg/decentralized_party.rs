@@ -1,11 +1,11 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
-use std::fmt::Debug;
-use std::marker::PhantomData;
-
 use crypto_bigint::{ConcatMixed, Encoding, Uint};
 use serde::{Deserialize, Serialize};
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
 
 use commitment::CommitmentSizedNumber;
 use group::{
@@ -366,7 +366,7 @@ where
 }
 
 /// The public input of the DKG proof verification round.
-#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PublicInput<
     GroupElementValue,
     KnowledgeOfDiscreteLogUCProof,
@@ -375,7 +375,7 @@ pub struct PublicInput<
 > {
     pub public_key_share_and_proof:
         centralized_party::PublicKeyShareAndProof<GroupElementValue, KnowledgeOfDiscreteLogUCProof>,
-    pub protocol_public_parameters: ProtocolPublicParameters,
+    pub protocol_public_parameters: Arc<ProtocolPublicParameters>,
     pub centralized_party_secret_key_share_verification: CentralizedPartyKeyShareVerification,
 }
 
@@ -386,7 +386,7 @@ impl<
         CentralizedPartyKeyShareVerification,
     >
     From<(
-        ProtocolPublicParameters,
+        Arc<ProtocolPublicParameters>,
         PublicKeyShareAndProof<GroupElementValue, KnowledgeOfDiscreteLogUCProof>,
         CentralizedPartyKeyShareVerification,
     )>
@@ -403,7 +403,7 @@ impl<
             public_key_share_and_proof,
             centralized_party_secret_key_share_verification,
         ): (
-            ProtocolPublicParameters,
+            Arc<ProtocolPublicParameters>,
             PublicKeyShareAndProof<GroupElementValue, KnowledgeOfDiscreteLogUCProof>,
             CentralizedPartyKeyShareVerification,
         ),
