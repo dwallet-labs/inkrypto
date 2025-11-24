@@ -14,6 +14,7 @@ use homomorphic_encryption::AdditivelyHomomorphicEncryptionKey;
 use serde::Serialize;
 use std::fmt::Debug;
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 pub struct Party<
     const SCALAR_LIMBS: usize,
@@ -31,17 +32,17 @@ pub struct Party<
     PhantomData<CentralizedPartyKeyShareVerification>,
 );
 
-#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PublicInput<Message, ProtocolPublicParameters, CentralizedPartyKeyShareVerification> {
     pub centralized_party_message: Message,
-    pub protocol_public_parameters: ProtocolPublicParameters,
+    pub protocol_public_parameters: Arc<ProtocolPublicParameters>,
     pub session_id: CommitmentSizedNumber,
     pub centralized_party_secret_key_share_verification: CentralizedPartyKeyShareVerification,
 }
 
 impl<Message, ProtocolPublicParameters, CentralizedPartyKeyShareVerification>
     From<(
-        ProtocolPublicParameters,
+        Arc<ProtocolPublicParameters>,
         CommitmentSizedNumber,
         Message,
         CentralizedPartyKeyShareVerification,
@@ -54,7 +55,7 @@ impl<Message, ProtocolPublicParameters, CentralizedPartyKeyShareVerification>
             centralized_party_message,
             centralized_party_secret_key_share_verification,
         ): (
-            ProtocolPublicParameters,
+            Arc<ProtocolPublicParameters>,
             CommitmentSizedNumber,
             Message,
             CentralizedPartyKeyShareVerification,

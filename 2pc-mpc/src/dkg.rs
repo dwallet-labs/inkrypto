@@ -1,11 +1,11 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
-use std::fmt::Debug;
-
 use crypto_bigint::{ConcatMixed, Encoding, NonZero, Uint};
 use merlin::Transcript;
 use serde::{Deserialize, Serialize};
+use std::fmt::Debug;
+use std::sync::Arc;
 
 use commitment::CommitmentSizedNumber;
 use group::{CsRng, GroupElement, PrimeGroupElement, Scale, StatisticalSecuritySizedNumber};
@@ -95,7 +95,7 @@ pub trait Protocol {
 
     /// The public input of the decentralized party's DKG protocol.
     type DKGDecentralizedPartyPublicInput: From<(
-            Self::ProtocolPublicParameters,
+            Arc<Self::ProtocolPublicParameters>,
             Self::PublicKeyShareAndProof,
             CentralizedPartyKeyShareVerification<
                 Self::CentralizedPartySecretKeyShare,
@@ -247,7 +247,7 @@ pub trait Protocol {
     /// The public input of the  decentralized party in a trusted dealer setting.
     /// Used for the "import" feature.
     type TrustedDealerDKGDecentralizedPublicInput: From<(
-            Self::ProtocolPublicParameters,
+            Arc<Self::ProtocolPublicParameters>,
             CommitmentSizedNumber,
             Self::DealTrustedShareMessage,
             CentralizedPartyKeyShareVerification<
@@ -799,6 +799,7 @@ pub(crate) mod tests {
             )
             .unwrap();
 
+        let protocol_public_parameters = Arc::new(protocol_public_parameters);
         let proof_verification_round_public_inputs = parties
             .into_iter()
             .map(|party_id| {
@@ -861,6 +862,7 @@ pub(crate) mod tests {
         let wrong_centralized_party_secret_key_share = SecretKeyShare(
             GroupElement::Scalar::neutral_from_public_parameters(
                 &protocol_public_parameters
+                    .as_ref()
                     .as_ref()
                     .scalar_group_public_parameters,
             )
@@ -1061,6 +1063,7 @@ pub(crate) mod tests {
 
         assert_eq!(secret_key_share * generator, public_key_share);
 
+        let protocol_public_parameters = Arc::new(protocol_public_parameters);
         let proof_verification_round_public_inputs = parties
             .into_iter()
             .map(|party_id| {

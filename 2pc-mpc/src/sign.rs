@@ -7,6 +7,7 @@ use mpc::{two_party, AsynchronouslyAdvanceable};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
+use std::sync::Arc;
 
 /// An instantiation of the 2PC-MPC Sign protocol.
 pub trait Protocol: dkg::Protocol + presign::Protocol {
@@ -22,15 +23,14 @@ pub trait Protocol: dkg::Protocol + presign::Protocol {
     /// The public input of the decentralized party's Sign protocol.
     type SignDecentralizedPartyPublicInput: From<(
             HashSet<PartyID>,
-            Self::ProtocolPublicParameters,
+            Arc<Self::ProtocolPublicParameters>,
             Vec<u8>,
             HashScheme,
             Self::DecentralizedPartyDKGOutput,
             Self::Presign,
             Self::SignMessage,
-            Self::DecryptionKeySharePublicParameters,
-        )> + Serialize
-        + Clone
+            Arc<Self::DecryptionKeySharePublicParameters>,
+        )> + Clone
         + Debug
         + PartialEq
         + Eq
@@ -49,15 +49,14 @@ pub trait Protocol: dkg::Protocol + presign::Protocol {
     /// The public input of the decentralized party's Sign protocol.
     type DKGSignDecentralizedPartyPublicInput: From<(
             HashSet<PartyID>,
-            Self::ProtocolPublicParameters,
+            Arc<Self::ProtocolPublicParameters>,
             Vec<u8>,
             HashScheme,
             Self::DKGDecentralizedPartyPublicInput,
             Self::Presign,
             Self::SignMessage,
-            Self::DecryptionKeySharePublicParameters,
-        )> + Serialize
-        + Clone
+            Arc<Self::DecryptionKeySharePublicParameters>,
+        )> + Clone
         + Debug
         + PartialEq
         + Eq
@@ -342,6 +341,9 @@ pub(crate) mod tests {
             HashMap::from([(1, subset.clone()), (2, subset)])
         };
 
+        let protocol_public_parameters = Arc::new(protocol_public_parameters);
+        let decryption_key_share_public_parameters =
+            Arc::new(decryption_key_share_public_parameters);
         let decentralized_party_public_inputs: HashMap<
             PartyID,
             P::SignDecentralizedPartyPublicInput,
@@ -386,7 +388,9 @@ pub(crate) mod tests {
 
         let public_key = GroupElement::new(
             centralized_party_dkg_output_inner.public_key,
-            &protocol_public_parameters.as_ref().group_public_parameters,
+            &(*protocol_public_parameters)
+                .as_ref()
+                .group_public_parameters,
         )
         .unwrap();
 
@@ -2086,6 +2090,7 @@ pub(crate) mod tests {
             } => None,
         };
 
+        let protocol_public_parameters = Arc::new(protocol_public_parameters);
         let encryption_of_mask_and_masked_key_share_round_public_inputs = parties
             .into_iter()
             .map(|party_id| {
@@ -2128,7 +2133,7 @@ pub(crate) mod tests {
             tangible_party_id_to_virtual_party_id_to_decryption_key_share,
             message,
             verify_signature,
-            protocol_public_parameters,
+            (*protocol_public_parameters).clone(),
             description.clone(),
             HashSet::new(),
             false,

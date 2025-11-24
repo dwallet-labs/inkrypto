@@ -28,6 +28,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::ops::Neg;
+use std::sync::Arc;
 
 pub(crate) mod class_groups;
 pub mod signature_partial_decryption_round;
@@ -48,7 +49,7 @@ pub struct Party<
 );
 
 /// The public input of the decentralized party's Sign protocol.
-#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PublicInput<
     DKGOutput,
     Presign,
@@ -62,12 +63,12 @@ pub struct PublicInput<
     pub dkg_output: DKGOutput,
     pub presign: Presign,
     pub centralized_party_partial_signature: PartialSignature,
-    pub decryption_key_share_public_parameters: DecryptionKeySharePublicParameters,
-    pub protocol_public_parameters: ProtocolPublicParameters,
+    pub decryption_key_share_public_parameters: Arc<DecryptionKeySharePublicParameters>,
+    pub protocol_public_parameters: Arc<ProtocolPublicParameters>,
 }
 
 /// The public input of the decentralized party's DKG followed by a Sign protocol.
-#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DKGSignPublicInput<
     DKGPublicInput,
     Presign,
@@ -81,8 +82,8 @@ pub struct DKGSignPublicInput<
     pub dkg_public_input: DKGPublicInput,
     pub presign: Presign,
     pub centralized_party_partial_signature: PartialSignature,
-    pub decryption_key_share_public_parameters: DecryptionKeySharePublicParameters,
-    pub protocol_public_parameters: ProtocolPublicParameters,
+    pub decryption_key_share_public_parameters: Arc<DecryptionKeySharePublicParameters>,
+    pub protocol_public_parameters: Arc<ProtocolPublicParameters>,
 }
 
 #[derive(PartialEq, Eq, Clone, Debug, Serialize, Deserialize)]
@@ -299,8 +300,8 @@ where
         >,
         Error,
     > {
-        if &public_input.dkg_output != public_input.protocol_public_parameters.as_ref()
-            || &public_input.presign != public_input.protocol_public_parameters.as_ref()
+        if &public_input.dkg_output != (*public_input.protocol_public_parameters).as_ref()
+            || &public_input.presign != (*public_input.protocol_public_parameters).as_ref()
         {
             return Err(Error::InvalidParameters);
         }
@@ -690,13 +691,13 @@ impl<
     >
     From<(
         HashSet<PartyID>,
-        ProtocolPublicParameters,
+        Arc<ProtocolPublicParameters>,
         Vec<u8>,
         HashScheme,
         DKGOutput,
         Presign,
         PartialSignature,
-        DecryptionKeySharePublicParameters,
+        Arc<DecryptionKeySharePublicParameters>,
     )>
     for PublicInput<
         DKGOutput,
@@ -718,13 +719,13 @@ impl<
             decryption_key_share_public_parameters,
         ): (
             HashSet<PartyID>,
-            ProtocolPublicParameters,
+            Arc<ProtocolPublicParameters>,
             Vec<u8>,
             HashScheme,
             DKGOutput,
             Presign,
             PartialSignature,
-            DecryptionKeySharePublicParameters,
+            Arc<DecryptionKeySharePublicParameters>,
         ),
     ) -> Self {
         Self {
@@ -749,13 +750,13 @@ impl<
     >
     From<(
         HashSet<PartyID>,
-        ProtocolPublicParameters,
+        Arc<ProtocolPublicParameters>,
         Vec<u8>,
         HashScheme,
         DKGPublicInput,
         Presign,
         PartialSignature,
-        DecryptionKeySharePublicParameters,
+        Arc<DecryptionKeySharePublicParameters>,
     )>
     for DKGSignPublicInput<
         DKGPublicInput,
@@ -777,13 +778,13 @@ impl<
             decryption_key_share_public_parameters,
         ): (
             HashSet<PartyID>,
-            ProtocolPublicParameters,
+            Arc<ProtocolPublicParameters>,
             Vec<u8>,
             HashScheme,
             DKGPublicInput,
             Presign,
             PartialSignature,
-            DecryptionKeySharePublicParameters,
+            Arc<DecryptionKeySharePublicParameters>,
         ),
     ) -> Self {
         Self {
