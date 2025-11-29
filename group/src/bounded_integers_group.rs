@@ -72,7 +72,7 @@ where
             .checked_add(MAURER_PROOFS_DIFF_UPPER_BOUND_BITS)
             .ok_or(Error::InvalidPublicParameters)?;
 
-        Self::new(sample_bits, upper_bound_bits)
+        Self::new(sample_bits, upper_bound_bits - 10)
     }
 }
 
