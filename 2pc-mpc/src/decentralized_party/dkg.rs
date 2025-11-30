@@ -23,7 +23,7 @@ use class_groups::{
     Secp256k1SetupParameters, Secp256r1SetupParameters, DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
     SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS as FUNDAMENTAL_DISCRIMINANT_LIMBS,
     SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS as NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-    SECRET_KEY_SHARE_LIMBS,
+    SECRET_KEY_SHARE_LIMBS, SECRET_KEY_SHARE_WITNESS_LIMBS,
 };
 use commitment::CommitmentSizedNumber;
 use crypto_bigint::Uint;
@@ -66,7 +66,7 @@ pub const EQUALITY_OF_COEFFICIENTS_COMMITMENTS_PROOF_NAME: &str =
 ///
 /// Verification keys will be computed as usual from the commitments to coefficients and the masked key.
 pub type EqualityOfCoefficientsCommitmentsProof = EqualityOfDiscreteLogsInHiddenOrderGroupProof<
-    SECRET_KEY_SHARE_LIMBS,
+    SECRET_KEY_SHARE_WITNESS_LIMBS,
     ThreeWayGroupElement<
         EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
         EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
@@ -362,7 +362,7 @@ impl Party {
         secp256r1_setup_parameters: &Secp256r1SetupParameters,
     ) -> crate::Result<
         EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters<
-            SECRET_KEY_SHARE_LIMBS,
+            SECRET_KEY_SHARE_WITNESS_LIMBS,
             ThreeWayGroupElement<
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
@@ -399,7 +399,7 @@ impl Party {
 
         let equality_of_discrete_logs_language_public_parameters =
             construct_equality_of_discrete_log_public_parameters::<
-                SECRET_KEY_SHARE_LIMBS,
+                SECRET_KEY_SHARE_WITNESS_LIMBS,
                 ThreeWayGroupElement<
                     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
                     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
