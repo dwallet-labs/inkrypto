@@ -78,39 +78,39 @@ pub enum Message {
 /// The Public Input of the Reconfiguration party.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PublicInput {
-    class_groups_public_input: class_groups::reconfiguration::PublicInput<
+    pub(crate) class_groups_public_input: class_groups::reconfiguration::PublicInput<
         SCALAR_LIMBS,
         FUNDAMENTAL_DISCRIMINANT_LIMBS,
         NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
         group::PublicParameters<Scalar>,
     >,
-    secp256k1_encryption_of_secret_key_share_first_part:
+    pub(crate) secp256k1_encryption_of_secret_key_share_first_part:
         CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    secp256k1_encryption_of_secret_key_share_second_part:
+    pub(crate) secp256k1_encryption_of_secret_key_share_second_part:
         CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    secp256k1_public_key_share_first_part: secp256k1::group_element::Value,
-    secp256k1_public_key_share_second_part: secp256k1::group_element::Value,
-    ristretto_encryption_of_secret_key_share_first_part:
+    pub(crate) secp256k1_public_key_share_first_part: secp256k1::group_element::Value,
+    pub(crate) secp256k1_public_key_share_second_part: secp256k1::group_element::Value,
+    pub(crate) ristretto_encryption_of_secret_key_share_first_part:
         CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    ristretto_encryption_of_secret_key_share_second_part:
+    pub(crate) ristretto_encryption_of_secret_key_share_second_part:
         CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    ristretto_public_key_share_first_part: ristretto::GroupElement,
-    ristretto_public_key_share_second_part: ristretto::GroupElement,
-    ristretto_setup_parameters: RistrettoSetupParameters,
-    curve25519_encryption_of_secret_key_share_first_part:
+    pub(crate) ristretto_public_key_share_first_part: ristretto::GroupElement,
+    pub(crate) ristretto_public_key_share_second_part: ristretto::GroupElement,
+    pub(crate) ristretto_setup_parameters: RistrettoSetupParameters,
+    pub(crate) curve25519_encryption_of_secret_key_share_first_part:
         CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    curve25519_encryption_of_secret_key_share_second_part:
+    pub(crate) curve25519_encryption_of_secret_key_share_second_part:
         CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    curve25519_public_key_share_first_part: curve25519::GroupElement,
-    curve25519_public_key_share_second_part: curve25519::GroupElement,
-    curve25519_setup_parameters: Curve25519SetupParameters,
-    secp256r1_encryption_of_secret_key_share_first_part:
+    pub(crate) curve25519_public_key_share_first_part: curve25519::GroupElement,
+    pub(crate) curve25519_public_key_share_second_part: curve25519::GroupElement,
+    pub(crate) curve25519_setup_parameters: Curve25519SetupParameters,
+    pub(crate) secp256r1_encryption_of_secret_key_share_first_part:
         CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    secp256r1_encryption_of_secret_key_share_second_part:
+    pub(crate) secp256r1_encryption_of_secret_key_share_second_part:
         CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    secp256r1_public_key_share_first_part: secp256r1::group_element::Value,
-    secp256r1_public_key_share_second_part: secp256r1::group_element::Value,
-    secp256r1_setup_parameters: Secp256r1SetupParameters,
+    pub(crate) secp256r1_public_key_share_first_part: secp256r1::group_element::Value,
+    pub(crate) secp256r1_public_key_share_second_part: secp256r1::group_element::Value,
+    pub(crate) secp256r1_setup_parameters: Secp256r1SetupParameters,
 }
 
 impl PublicInput {

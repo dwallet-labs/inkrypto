@@ -7,32 +7,23 @@ mod public_output;
 mod second_round;
 mod third_round;
 
+use crate::decentralized_party::reconfiguration::PublicInput;
 use crate::decentralized_party_backward_compatible::dkg::{
     EqualityOfCoefficientsCommitmentsProof, EQUALITY_OF_COEFFICIENTS_COMMITMENTS_PROOF_NAME,
 };
 use crate::languages::construct_equality_of_discrete_log_public_parameters;
+use crate::BaseProtocolContext;
 use crate::Error;
-use crate::{decentralized_party_backward_compatible, BaseProtocolContext};
-use class_groups::publicly_verifiable_secret_sharing::chinese_remainder_theorem::KnowledgeOfDiscreteLogUCProof;
-use class_groups::setup::DeriveFromPlaintextPublicParameters;
 use class_groups::{
-    publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
-        CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, MAX_PRIMES,
-    },
-    CiphertextSpaceValue, CompactIbqf, Curve25519SetupParameters, EquivalenceClass,
-    RistrettoSetupParameters, Secp256r1SetupParameters, SecretKeyShareSizedInteger,
-    DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+    CompactIbqf, EquivalenceClass, SecretKeyShareSizedInteger,
     SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS as FUNDAMENTAL_DISCRIMINANT_LIMBS,
     SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS as NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
     SECRET_KEY_SHARE_LIMBS,
 };
 use commitment::CommitmentSizedNumber;
 use group::direct_product::ThreeWayGroupElement;
-use group::secp256k1::{GroupElement, Scalar, SCALAR_LIMBS};
-use group::{
-    bounded_integers_group, curve25519, direct_product, ristretto, secp256k1, secp256r1, CsRng,
-    GroupElement as _, PartyID,
-};
+use group::secp256k1::{GroupElement, SCALAR_LIMBS};
+use group::{bounded_integers_group, direct_product, CsRng, GroupElement as _, PartyID};
 use mpc::{AsynchronousRoundResult, AsynchronouslyAdvanceable, WeightedThresholdAccessStructure};
 pub use public_output::PublicOutput;
 use serde::{Deserialize, Serialize};
@@ -73,239 +64,6 @@ pub enum Message {
         >,
         malicious_coefficients_committers: HashSet<PartyID>,
     },
-}
-
-/// The Public Input of the Reconfiguration party.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct PublicInput {
-    class_groups_public_input: class_groups::reconfiguration::PublicInput<
-        SCALAR_LIMBS,
-        FUNDAMENTAL_DISCRIMINANT_LIMBS,
-        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-        group::PublicParameters<Scalar>,
-    >,
-    secp256k1_encryption_of_secret_key_share_first_part:
-        CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    secp256k1_encryption_of_secret_key_share_second_part:
-        CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    secp256k1_public_key_share_first_part: secp256k1::group_element::Value,
-    secp256k1_public_key_share_second_part: secp256k1::group_element::Value,
-    ristretto_encryption_of_secret_key_share_first_part:
-        CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    ristretto_encryption_of_secret_key_share_second_part:
-        CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    ristretto_public_key_share_first_part: ristretto::GroupElement,
-    ristretto_public_key_share_second_part: ristretto::GroupElement,
-    ristretto_setup_parameters: RistrettoSetupParameters,
-    curve25519_encryption_of_secret_key_share_first_part:
-        CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    curve25519_encryption_of_secret_key_share_second_part:
-        CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    curve25519_public_key_share_first_part: curve25519::GroupElement,
-    curve25519_public_key_share_second_part: curve25519::GroupElement,
-    curve25519_setup_parameters: Curve25519SetupParameters,
-    secp256r1_encryption_of_secret_key_share_first_part:
-        CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    secp256r1_encryption_of_secret_key_share_second_part:
-        CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-    secp256r1_public_key_share_first_part: secp256r1::group_element::Value,
-    secp256r1_public_key_share_second_part: secp256r1::group_element::Value,
-    secp256r1_setup_parameters: Secp256r1SetupParameters,
-}
-
-impl PublicInput {
-    pub fn new_from_reconfiguration_output(
-        current_access_structure: &WeightedThresholdAccessStructure,
-        upcoming_access_structure: WeightedThresholdAccessStructure,
-        current_encryption_key_values_and_proofs_per_crt_prime: HashMap<
-            PartyID,
-            [(
-                CompactIbqf<CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-                KnowledgeOfDiscreteLogUCProof,
-            ); MAX_PRIMES],
-        >,
-        upcoming_encryption_key_values_and_proofs_per_crt_prime: HashMap<
-            PartyID,
-            [(
-                CompactIbqf<CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-                KnowledgeOfDiscreteLogUCProof,
-            ); MAX_PRIMES],
-        >,
-        current_tangible_party_id_to_upcoming: HashMap<PartyID, Option<PartyID>>,
-        dkg_output: class_groups::dkg::PublicOutput<
-            SCALAR_LIMBS,
-            FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-        >,
-        public_output: PublicOutput,
-    ) -> crate::Result<Self> {
-        let ristretto_setup_parameters =
-            RistrettoSetupParameters::derive_from_plaintext_parameters::<ristretto::Scalar>(
-                ristretto::scalar::PublicParameters::default(),
-                DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
-            )?;
-
-        let curve25519_setup_parameters =
-            Curve25519SetupParameters::derive_from_plaintext_parameters::<curve25519::Scalar>(
-                group::curve25519::scalar::PublicParameters::default(),
-                DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
-            )?;
-
-        let secp256r1_setup_parameters =
-            Secp256r1SetupParameters::derive_from_plaintext_parameters::<secp256r1::Scalar>(
-                secp256r1::scalar::PublicParameters::default(),
-                DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
-            )?;
-
-        let secp256k1_decryption_key_share_public_parameters = public_output
-            .secp256k1_decryption_key_share_public_parameters(current_access_structure)?;
-
-        let class_groups_public_input =
-            class_groups::reconfiguration::PublicInput::new::<secp256k1::GroupElement>(
-                current_access_structure,
-                upcoming_access_structure,
-                secp256k1::scalar::PublicParameters::default(),
-                current_encryption_key_values_and_proofs_per_crt_prime,
-                upcoming_encryption_key_values_and_proofs_per_crt_prime,
-                secp256k1_decryption_key_share_public_parameters,
-                DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
-                current_tangible_party_id_to_upcoming,
-                dkg_output,
-            )?;
-
-        Ok(Self {
-            class_groups_public_input,
-            secp256k1_encryption_of_secret_key_share_first_part: public_output
-                .secp256k1_encryption_of_secret_key_share_first_part,
-            secp256k1_encryption_of_secret_key_share_second_part: public_output
-                .secp256k1_encryption_of_secret_key_share_second_part,
-            secp256k1_public_key_share_first_part: public_output
-                .secp256k1_public_key_share_first_part,
-            secp256k1_public_key_share_second_part: public_output
-                .secp256k1_public_key_share_second_part,
-            ristretto_encryption_of_secret_key_share_first_part: public_output
-                .ristretto_encryption_of_secret_key_share_first_part,
-            ristretto_encryption_of_secret_key_share_second_part: public_output
-                .ristretto_encryption_of_secret_key_share_second_part,
-            ristretto_public_key_share_first_part: public_output
-                .ristretto_public_key_share_first_part,
-            ristretto_public_key_share_second_part: public_output
-                .ristretto_public_key_share_second_part,
-            ristretto_setup_parameters,
-            curve25519_encryption_of_secret_key_share_first_part: public_output
-                .curve25519_encryption_of_secret_key_share_first_part,
-            curve25519_encryption_of_secret_key_share_second_part: public_output
-                .curve25519_encryption_of_secret_key_share_second_part,
-            curve25519_public_key_share_first_part: public_output
-                .curve25519_public_key_share_first_part,
-            curve25519_public_key_share_second_part: public_output
-                .curve25519_public_key_share_second_part,
-            curve25519_setup_parameters,
-            secp256r1_encryption_of_secret_key_share_first_part: public_output
-                .secp256r1_encryption_of_secret_key_share_first_part,
-            secp256r1_encryption_of_secret_key_share_second_part: public_output
-                .secp256r1_encryption_of_secret_key_share_second_part,
-            secp256r1_public_key_share_first_part: public_output
-                .secp256r1_public_key_share_first_part,
-            secp256r1_public_key_share_second_part: public_output
-                .secp256r1_public_key_share_second_part,
-            secp256r1_setup_parameters,
-        })
-    }
-
-    pub fn new_from_dkg_output(
-        current_access_structure: &WeightedThresholdAccessStructure,
-        upcoming_access_structure: WeightedThresholdAccessStructure,
-        current_encryption_key_values_and_proofs_per_crt_prime: HashMap<
-            PartyID,
-            [(
-                CompactIbqf<CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-                KnowledgeOfDiscreteLogUCProof,
-            ); MAX_PRIMES],
-        >,
-        upcoming_encryption_key_values_and_proofs_per_crt_prime: HashMap<
-            PartyID,
-            [(
-                CompactIbqf<CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-                KnowledgeOfDiscreteLogUCProof,
-            ); MAX_PRIMES],
-        >,
-        current_tangible_party_id_to_upcoming: HashMap<PartyID, Option<PartyID>>,
-        universal_public_output: decentralized_party_backward_compatible::dkg::PublicOutput,
-    ) -> crate::Result<Self> {
-        let ristretto_setup_parameters =
-            RistrettoSetupParameters::derive_from_plaintext_parameters::<ristretto::Scalar>(
-                ristretto::scalar::PublicParameters::default(),
-                DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
-            )?;
-
-        let curve25519_setup_parameters =
-            Curve25519SetupParameters::derive_from_plaintext_parameters::<curve25519::Scalar>(
-                group::curve25519::scalar::PublicParameters::default(),
-                DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
-            )?;
-
-        let secp256r1_setup_parameters =
-            Secp256r1SetupParameters::derive_from_plaintext_parameters::<secp256r1::Scalar>(
-                secp256r1::scalar::PublicParameters::default(),
-                DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
-            )?;
-
-        let secp256k1_decryption_key_share_public_parameters = universal_public_output
-            .secp256k1_decryption_key_share_public_parameters(current_access_structure)?;
-
-        let class_groups_public_input =
-            class_groups::reconfiguration::PublicInput::new::<secp256k1::GroupElement>(
-                current_access_structure,
-                upcoming_access_structure,
-                secp256k1::scalar::PublicParameters::default(),
-                current_encryption_key_values_and_proofs_per_crt_prime,
-                upcoming_encryption_key_values_and_proofs_per_crt_prime,
-                secp256k1_decryption_key_share_public_parameters,
-                DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
-                current_tangible_party_id_to_upcoming,
-                universal_public_output.clone().into(),
-            )?;
-
-        Ok(Self {
-            class_groups_public_input,
-            secp256k1_encryption_of_secret_key_share_first_part: universal_public_output
-                .secp256k1_encryption_of_secret_key_share_first_part,
-            secp256k1_encryption_of_secret_key_share_second_part: universal_public_output
-                .secp256k1_encryption_of_secret_key_share_second_part,
-            secp256k1_public_key_share_first_part: universal_public_output
-                .secp256k1_public_key_share_first_part,
-            secp256k1_public_key_share_second_part: universal_public_output
-                .secp256k1_public_key_share_second_part,
-            ristretto_encryption_of_secret_key_share_first_part: universal_public_output
-                .ristretto_encryption_of_secret_key_share_first_part,
-            ristretto_encryption_of_secret_key_share_second_part: universal_public_output
-                .ristretto_encryption_of_secret_key_share_second_part,
-            ristretto_public_key_share_first_part: universal_public_output
-                .ristretto_public_key_share_first_part,
-            ristretto_public_key_share_second_part: universal_public_output
-                .ristretto_public_key_share_second_part,
-            ristretto_setup_parameters,
-            curve25519_encryption_of_secret_key_share_first_part: universal_public_output
-                .curve25519_encryption_of_secret_key_share_first_part,
-            curve25519_encryption_of_secret_key_share_second_part: universal_public_output
-                .curve25519_encryption_of_secret_key_share_second_part,
-            curve25519_public_key_share_first_part: universal_public_output
-                .curve25519_public_key_share_first_part,
-            curve25519_public_key_share_second_part: universal_public_output
-                .curve25519_public_key_share_second_part,
-            curve25519_setup_parameters,
-            secp256r1_encryption_of_secret_key_share_first_part: universal_public_output
-                .secp256r1_encryption_of_secret_key_share_first_part,
-            secp256r1_encryption_of_secret_key_share_second_part: universal_public_output
-                .secp256r1_encryption_of_secret_key_share_second_part,
-            secp256r1_public_key_share_first_part: universal_public_output
-                .secp256r1_public_key_share_first_part,
-            secp256r1_public_key_share_second_part: universal_public_output
-                .secp256r1_public_key_share_second_part,
-            secp256r1_setup_parameters,
-        })
-    }
 }
 
 impl mpc::Party for Party {
@@ -496,9 +254,9 @@ pub(crate) mod tests {
     use class_groups::{
         Curve25519EncryptionKey, RistrettoDecryptionKey, RistrettoEncryptionKey,
         Secp256k1DecryptionKey, Secp256k1EncryptionKey, Secp256r1DecryptionKey,
-        Secp256r1EncryptionKey,
+        Secp256r1EncryptionKey, DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
     };
-    use group::OsCsRng;
+    use group::{curve25519, ristretto, secp256k1, secp256r1, OsCsRng};
     use mpc::test_helpers::asynchronous_session_terminates_successfully_internal;
 
     #[test]
