@@ -15,7 +15,6 @@ use proof::TranscriptProtocol;
 pub mod languages;
 
 pub mod decentralized_party;
-pub mod decentralized_party_backward_compatible;
 pub mod dkg;
 pub mod ecdsa;
 pub mod presign;
