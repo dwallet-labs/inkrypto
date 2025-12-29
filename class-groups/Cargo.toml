@@ -21,7 +21,7 @@ maurer = { path = "../maurer", optional = true }
 rand = { workspace = true, default-features = false }
 rand_chacha = { workspace = true, default-features = false }
 rstest = { workspace = true, optional = true }
-serde = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive", "rc"] }
 sha3 = { workspace = true }
 thiserror = { workspace = true }
 itertools = { workspace = true }

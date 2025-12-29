@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use crypto_bigint::{Encoding, Int, Limb, Uint};
 use serde::{Deserialize, Serialize};
@@ -80,6 +81,8 @@ pub const RANDOMIZER_WITNESS_LIMBS: usize = find_closest_crypto_bigint_size(
 ) / Limb::BITS as usize;
 
 /// The Public Input of the Reconfiguration party.
+/// Note: SetupParameters are wrapped in Arc to avoid expensive deep clones
+/// since they contain large accelerator tables (~8MB each).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PublicInput<
     const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
@@ -120,12 +123,14 @@ pub struct PublicInput<
 {
     pub upcoming_access_structure: WeightedThresholdAccessStructure,
     pub plaintext_space_public_parameters: ScalarPublicParameters,
-    pub setup_parameters_per_crt_prime: [SecretKeyShareCRTPrimeSetupParameters; MAX_PRIMES],
-    pub setup_parameters: SetupParameters<
-        PLAINTEXT_SPACE_SCALAR_LIMBS,
-        FUNDAMENTAL_DISCRIMINANT_LIMBS,
-        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-        ScalarPublicParameters,
+    pub setup_parameters_per_crt_prime: Arc<[SecretKeyShareCRTPrimeSetupParameters; MAX_PRIMES]>,
+    pub setup_parameters: Arc<
+        SetupParameters<
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            ScalarPublicParameters,
+        >,
     >,
     pub computational_security_parameter: u32,
     pub current_encryption_key_values_and_proofs_per_crt_prime: HashMap<
@@ -367,14 +372,15 @@ where
             return Err(Error::InvalidParameters);
         }
 
-        let setup_parameters =
+        let setup_parameters = Arc::new(
             SetupParameters::derive_from_plaintext_parameters::<GroupElement::Scalar>(
                 plaintext_space_public_parameters.clone(),
                 computational_security_parameter,
-            )?;
+            )?,
+        );
 
         let setup_parameters_per_crt_prime =
-            construct_setup_parameters_per_crt_prime(computational_security_parameter)?;
+            Arc::new(construct_setup_parameters_per_crt_prime(computational_security_parameter)?);
 
         Ok(Self {
             plaintext_space_public_parameters,

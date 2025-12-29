@@ -36,6 +36,7 @@ use group::{
 use mpc::{AsynchronousRoundResult, AsynchronouslyAdvanceable, WeightedThresholdAccessStructure};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use crate::BaseProtocolContext;
 pub use public_output::PublicOutput;
@@ -126,6 +127,8 @@ pub enum Message {
 }
 
 /// The Public Input of the DKG party.
+/// Note: SetupParameters are wrapped in Arc to avoid expensive deep clones
+/// since they contain large accelerator tables (~8MB each).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PublicInput {
     class_groups_public_input: class_groups::dkg::PublicInput<
@@ -134,9 +137,9 @@ pub struct PublicInput {
         NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
         group::PublicParameters<Scalar>,
     >,
-    ristretto_setup_parameters: RistrettoSetupParameters,
-    curve25519_setup_parameters: Curve25519SetupParameters,
-    secp256r1_setup_parameters: Secp256r1SetupParameters,
+    ristretto_setup_parameters: Arc<RistrettoSetupParameters>,
+    curve25519_setup_parameters: Arc<Curve25519SetupParameters>,
+    secp256r1_setup_parameters: Arc<Secp256r1SetupParameters>,
 }
 
 impl PublicInput {
@@ -150,23 +153,26 @@ impl PublicInput {
             ); MAX_PRIMES],
         >,
     ) -> crate::Result<Self> {
-        let ristretto_setup_parameters =
+        let ristretto_setup_parameters = Arc::new(
             RistrettoSetupParameters::derive_from_plaintext_parameters::<ristretto::Scalar>(
                 ristretto::scalar::PublicParameters::default(),
                 DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
-            )?;
+            )?,
+        );
 
-        let curve25519_setup_parameters =
+        let curve25519_setup_parameters = Arc::new(
             Curve25519SetupParameters::derive_from_plaintext_parameters::<curve25519::Scalar>(
                 group::curve25519::scalar::PublicParameters::default(),
                 DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
-            )?;
+            )?,
+        );
 
-        let secp256r1_setup_parameters =
+        let secp256r1_setup_parameters = Arc::new(
             Secp256r1SetupParameters::derive_from_plaintext_parameters::<secp256r1::Scalar>(
                 secp256r1::scalar::PublicParameters::default(),
                 DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
-            )?;
+            )?,
+        );
 
         let class_groups_public_input =
             class_groups::dkg::PublicInput::new::<secp256k1::GroupElement>(

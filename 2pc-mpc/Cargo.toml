@@ -9,7 +9,7 @@ itertools = { workspace = true }
 thiserror = { workspace = true }
 crypto-bigint = { workspace = true, features = ["serde"], default-features = false }
 merlin = { workspace = true, default-features = false }
-serde = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true, default-features = false, features = ["alloc"] }
 group = { path = "../group" }
 proof = { path = "../proof" }

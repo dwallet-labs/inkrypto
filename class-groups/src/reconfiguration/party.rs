@@ -417,8 +417,8 @@ where
                 upcoming_party_id,
                 current_access_structure.clone(),
                 public_input.upcoming_access_structure.clone(),
-                public_input.setup_parameters.clone(),
-                public_input.setup_parameters_per_crt_prime.clone(),
+                (*public_input.setup_parameters).clone(),
+                (*public_input.setup_parameters_per_crt_prime).clone(),
                 public_input
                     .upcoming_encryption_key_values_and_proofs_per_crt_prime
                     .clone(),
