@@ -37,6 +37,7 @@ use mpc::{AsynchronousRoundResult, AsynchronouslyAdvanceable, WeightedThresholdA
 pub use public_output::PublicOutput;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 pub struct Party {}
 
@@ -76,6 +77,8 @@ pub enum Message {
 }
 
 /// The Public Input of the Reconfiguration party.
+/// Note: SetupParameters are wrapped in Arc to avoid expensive deep clones
+/// since they contain large accelerator tables (~8MB each).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PublicInput {
     class_groups_public_input: class_groups::reconfiguration::PublicInput<
@@ -96,21 +99,21 @@ pub struct PublicInput {
         CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
     ristretto_public_key_share_first_part: ristretto::GroupElement,
     ristretto_public_key_share_second_part: ristretto::GroupElement,
-    ristretto_setup_parameters: RistrettoSetupParameters,
+    ristretto_setup_parameters: Arc<RistrettoSetupParameters>,
     curve25519_encryption_of_secret_key_share_first_part:
         CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
     curve25519_encryption_of_secret_key_share_second_part:
         CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
     curve25519_public_key_share_first_part: curve25519::GroupElement,
     curve25519_public_key_share_second_part: curve25519::GroupElement,
-    curve25519_setup_parameters: Curve25519SetupParameters,
+    curve25519_setup_parameters: Arc<Curve25519SetupParameters>,
     secp256r1_encryption_of_secret_key_share_first_part:
         CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
     secp256r1_encryption_of_secret_key_share_second_part:
         CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
     secp256r1_public_key_share_first_part: secp256r1::group_element::Value,
     secp256r1_public_key_share_second_part: secp256r1::group_element::Value,
-    secp256r1_setup_parameters: Secp256r1SetupParameters,
+    secp256r1_setup_parameters: Arc<Secp256r1SetupParameters>,
 }
 
 impl PublicInput {
@@ -139,23 +142,26 @@ impl PublicInput {
         >,
         public_output: PublicOutput,
     ) -> crate::Result<Self> {
-        let ristretto_setup_parameters =
+        let ristretto_setup_parameters = Arc::new(
             RistrettoSetupParameters::derive_from_plaintext_parameters::<ristretto::Scalar>(
                 ristretto::scalar::PublicParameters::default(),
                 DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
-            )?;
+            )?,
+        );
 
-        let curve25519_setup_parameters =
+        let curve25519_setup_parameters = Arc::new(
             Curve25519SetupParameters::derive_from_plaintext_parameters::<curve25519::Scalar>(
                 group::curve25519::scalar::PublicParameters::default(),
                 DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
-            )?;
+            )?,
+        );
 
-        let secp256r1_setup_parameters =
+        let secp256r1_setup_parameters = Arc::new(
             Secp256r1SetupParameters::derive_from_plaintext_parameters::<secp256r1::Scalar>(
                 secp256r1::scalar::PublicParameters::default(),
                 DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
-            )?;
+            )?,
+        );
 
         let secp256k1_decryption_key_share_public_parameters = public_output
             .secp256k1_decryption_key_share_public_parameters(current_access_structure)?;
@@ -233,23 +239,26 @@ impl PublicInput {
         current_tangible_party_id_to_upcoming: HashMap<PartyID, Option<PartyID>>,
         universal_public_output: decentralized_party::dkg::PublicOutput,
     ) -> crate::Result<Self> {
-        let ristretto_setup_parameters =
+        let ristretto_setup_parameters = Arc::new(
             RistrettoSetupParameters::derive_from_plaintext_parameters::<ristretto::Scalar>(
                 ristretto::scalar::PublicParameters::default(),
                 DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
-            )?;
+            )?,
+        );
 
-        let curve25519_setup_parameters =
+        let curve25519_setup_parameters = Arc::new(
             Curve25519SetupParameters::derive_from_plaintext_parameters::<curve25519::Scalar>(
                 group::curve25519::scalar::PublicParameters::default(),
                 DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
-            )?;
+            )?,
+        );
 
-        let secp256r1_setup_parameters =
+        let secp256r1_setup_parameters = Arc::new(
             Secp256r1SetupParameters::derive_from_plaintext_parameters::<secp256r1::Scalar>(
                 secp256r1::scalar::PublicParameters::default(),
                 DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
-            )?;
+            )?,
+        );
 
         let secp256k1_decryption_key_share_public_parameters = universal_public_output
             .secp256k1_decryption_key_share_public_parameters(current_access_structure)?;
@@ -484,6 +493,7 @@ impl AsynchronouslyAdvanceable for Party {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use std::sync::Arc;
     use crate::test_helpers::mock_decentralized_party_dkg;
     use class_groups::dkg::test_helpers::mock_dkg_output;
     use class_groups::publicly_verifiable_secret_sharing::chinese_remainder_theorem::construct_setup_parameters_per_crt_prime;
@@ -673,17 +683,17 @@ pub(crate) mod tests {
             ristretto_encryption_of_secret_key_share_second_part,
             ristretto_public_key_share_first_part,
             ristretto_public_key_share_second_part,
-            ristretto_setup_parameters,
+            ristretto_setup_parameters: Arc::new(ristretto_setup_parameters),
             curve25519_public_key_share_first_part,
             curve25519_public_key_share_second_part,
             curve25519_encryption_of_secret_key_share_first_part,
             curve25519_encryption_of_secret_key_share_second_part,
-            curve25519_setup_parameters,
+            curve25519_setup_parameters: Arc::new(curve25519_setup_parameters),
             secp256r1_encryption_of_secret_key_share_first_part,
             secp256r1_encryption_of_secret_key_share_second_part,
             secp256r1_public_key_share_first_part,
             secp256r1_public_key_share_second_part,
-            secp256r1_setup_parameters,
+            secp256r1_setup_parameters: Arc::new(secp256r1_setup_parameters),
         };
 
         reconfigures_internal_internal(
