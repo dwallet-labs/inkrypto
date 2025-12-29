@@ -335,7 +335,7 @@ where
 
         let public_output = PublicOutput::new::<GroupElement>(
             access_structure,
-            public_input.setup_parameters_per_crt_prime.clone(),
+            (*public_input.setup_parameters_per_crt_prime).clone(),
             malicious_decryption_key_contribution_dealers.clone(),
             interpolation_subset,
             adjusted_lagrange_coefficients,

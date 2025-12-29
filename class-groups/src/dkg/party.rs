@@ -371,8 +371,8 @@ where
             Some(tangible_party_id),
             access_structure.clone(),
             access_structure.clone(),
-            public_input.setup_parameters.clone(),
-            public_input.setup_parameters_per_crt_prime.clone(),
+            (*public_input.setup_parameters).clone(),
+            (*public_input.setup_parameters_per_crt_prime).clone(),
             public_input
                 .encryption_key_values_and_proofs_per_crt_prime
                 .clone(),

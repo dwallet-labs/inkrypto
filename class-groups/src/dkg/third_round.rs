@@ -353,7 +353,7 @@ where
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             GroupElement,
         >::decrypt_secrets(
-            public_input.setup_parameters_per_crt_prime.clone(),
+            (*public_input.setup_parameters_per_crt_prime).clone(),
             SECRET_SHARE_CRT_COEFFICIENTS,
             SECRET_SHARE_CRT_PRIMES_PRODUCT,
             encryptions_of_shares_per_crt_prime
