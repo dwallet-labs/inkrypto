@@ -28,7 +28,7 @@ use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
 use crate::publicly_verifiable_secret_sharing::{DealSecretMessage, DealtSecretShareMessage};
 use crate::setup::{DeriveFromPlaintextPublicParameters, SetupParameters};
 use crate::{
-    decryption_key_share, dkg, equivalence_class, CompactIbqf, EquivalenceClass, Error, Result,
+    decryption_key_share, dkg, equivalence_class, CompactIbqf, EquivalenceClass, Error, ErrorKind, Result,
     DECRYPTION_KEY_BITS_112BIT_SECURITY, DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
 };
 use crate::{
@@ -321,7 +321,7 @@ where
     {
         if computational_security_parameter != DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER {
             // Our sizes are optimized for 112-bits security, need to recompile to allow 128-bit security.
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         if u32::from(current_access_structure.threshold) > MAX_THRESHOLD
@@ -329,11 +329,11 @@ where
             || u32::from(current_access_structure.number_of_virtual_parties()) > MAX_PLAYERS
             || u32::from(upcoming_access_structure.number_of_virtual_parties()) > MAX_PLAYERS
         {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         if FUNDAMENTAL_DISCRIMINANT_LIMBS != CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         let current_tangible_parties: HashSet<_> = current_tangible_party_id_to_upcoming
@@ -353,7 +353,7 @@ where
                 .copied()
                 .collect()
         {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         let upcoming_party_ids_of_current_parties: HashSet<_> =
@@ -364,7 +364,7 @@ where
                 .collect();
 
         if !upcoming_tangible_parties.is_superset(&upcoming_party_ids_of_current_parties) {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         let setup_parameters =

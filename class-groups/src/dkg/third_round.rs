@@ -35,7 +35,7 @@ use crate::setup::DeriveFromPlaintextPublicParameters;
 use crate::setup::SetupParameters;
 use crate::{
     equivalence_class, publicly_verifiable_secret_sharing, CiphertextSpaceGroupElement,
-    CompactIbqf, EquivalenceClass, Error, Result, SECRET_KEY_SHARE_LIMBS,
+    CompactIbqf, EquivalenceClass, Error, ErrorKind, Result, SECRET_KEY_SHARE_LIMBS,
     SECRET_KEY_SHARE_WITNESS_LIMBS,
 };
 
@@ -486,13 +486,13 @@ where
                                         encryptions_of_decryption_key_shares,
                                     ))
                                 } else {
-                                    Err(Error::InvalidMessage)
+                                    Err(Error::from(ErrorKind::InvalidMessage))
                                 }
                             } else {
-                                Err(Error::InvalidMessage)
+                                Err(Error::from(ErrorKind::InvalidMessage))
                             }
                         }
-                        _ => Err(Error::InvalidParameters),
+                        _ => Err(Error::from(ErrorKind::InvalidParameters)),
                     };
 
                     (dealer_party_id, res)

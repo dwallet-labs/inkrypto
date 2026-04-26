@@ -5,7 +5,7 @@ use crate::discriminant::Discriminant;
 use crate::helpers::vartime_mul::CheckedMulVartime;
 use crate::ibqf::math::bounded_div_rem_vartime;
 use crate::ibqf::Ibqf;
-use crate::Error;
+use crate::{Error, ErrorKind};
 use crypto_bigint::subtle::{
     Choice, ConditionallySelectable, ConstantTimeEq, ConstantTimeGreater, ConstantTimeLess,
     CtOption,
@@ -329,7 +329,7 @@ where
             .and_then(|b_plus_r_on_two| b_plus_r_on_two.checked_mul_vartime(&q))
             .and_then(|qb_plus_qr_on_two| self.c.wrapping_sub(&qb_plus_qr_on_two).to_nz().into())
             .into_option()
-            .ok_or(Error::InternalError)?;
+            .ok_or(Error::from(ErrorKind::InternalError))?;
 
         Ok(self)
     }
@@ -474,7 +474,7 @@ where
     fn rho_vartime(self) -> Result<Self, Error> {
         self.mirror_unreduced()
             .into_option()
-            .ok_or(Error::InternalError)
+            .ok_or(Error::from(ErrorKind::InternalError))
             .and_then(|form| form.normalize_vartime())
     }
 }
@@ -525,7 +525,7 @@ where
         value
             .try_into_reduced()
             .into_option()
-            .ok_or(Error::Unreduced)
+            .ok_or(Error::from(ErrorKind::Unreduced))
     }
 }
 

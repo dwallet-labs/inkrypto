@@ -31,7 +31,7 @@ use crate::publicly_verifiable_secret_sharing::{
 use crate::setup::SetupParameters;
 use crate::{
     encryption_key, equivalence_class, CiphertextSpaceGroupElement, CiphertextSpaceValue,
-    CompactIbqf, EquivalenceClass, Error, Result,
+    CompactIbqf, EquivalenceClass, Error, ErrorKind, Result,
 };
 
 /// The Publicly Verifiable Secret Sharing (PVSS) party,
@@ -185,7 +185,7 @@ where
             || u32::from(participating_parties_access_structure.number_of_virtual_parties())
                 > MAX_PLAYERS
         {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         let participating_parties_n_factorial =
@@ -217,7 +217,7 @@ where
                 .copied()
                 .collect();
         if !participating_tangible_parties.is_superset(&parties_with_encryption_keys) {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
         let parties_without_encryption_keys: HashSet<_> = participating_tangible_parties
             .difference(&parties_with_encryption_keys)
@@ -293,13 +293,13 @@ where
         let encryption_key_per_crt_prime = self
             .encryption_keys_per_crt_prime
             .get(&participating_tangible_party_id)
-            .ok_or(Error::InvalidParameters)?
+            .ok_or(Error::from(ErrorKind::InvalidParameters))?
             .iter()
             .take(NUM_PRIMES)
             .copied()
             .collect::<Vec<_>>()
             .try_into()
-            .map_err(|_| Error::InternalError)?;
+            .map_err(|_| Error::from(ErrorKind::InternalError))?;
 
         prove_encryption_of_discrete_log_per_crt_prime::<
             NUM_PRIMES,
@@ -456,7 +456,7 @@ where
             .map(|participating_virtual_party_id| {
                 let participating_tangible_party_id = participating_parties_access_structure
                     .to_tangible_party_id(participating_virtual_party_id)
-                    .ok_or(Error::InternalError)?;
+                    .ok_or(Error::from(ErrorKind::InternalError))?;
 
                 encryptions_of_secrets_and_proofs
                     .values()
@@ -477,10 +477,10 @@ where
                                     })
                                     .map(self_product::GroupElement::from)
                             })
-                            .ok_or(Error::InvalidParameters)
+                            .ok_or(Error::from(ErrorKind::InvalidParameters))
                     })
                     .reduce(|a, b| a.and_then(|a| b.map(|b| a.add_vartime(&b))))
-                    .ok_or(Error::InternalError)?
+                    .ok_or(Error::from(ErrorKind::InternalError))?
                     .map(<[_; NUM_PRIMES]>::from)
                     .map(|encryption| (participating_virtual_party_id, encryption))
             })
@@ -597,7 +597,7 @@ where
                 )
                 .into_option()
                 .map(|share_modulo_crt_prime| share_modulo_crt_prime.value())
-                .ok_or(Error::Decryption)
+                .ok_or(Error::from(ErrorKind::Decryption))
         })
         .flat_map_results()?;
 

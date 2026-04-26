@@ -22,7 +22,7 @@ use crate::parameters::{minimum_discriminant_bits, Parameters};
 use crate::randomizer::ScalingRandomizer;
 use crate::{
     decryption_key_size_from_fundamental_discriminant_size, equivalence_class, helpers,
-    CompactIbqf, Error, DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+    CompactIbqf, Error, ErrorKind, DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
     HIGHEST_ACCELERATOR_FOLDING_DEGREE, SECRET_KEY_SHARE_SIZE_UPPER_BOUND,
 };
 use crate::{CiphertextSpacePublicParameters, RandomnessSpacePublicParameters};
@@ -178,14 +178,14 @@ where
             RandomnessSpacePublicParameters::new_with_randomizer_upper_bound(
                 randomness_sample_bits,
             )
-            .map_err(|_| Error::InvalidPublicParameters)?;
+            .map_err(|_| Error::from(ErrorKind::InvalidPublicParameters))?;
 
         let decryption_key_sample_bits = Self::compute_decryption_key_bits(class_group_parameters)?;
         let decryption_key_public_parameters =
             DecryptionKeySpacePublicParameters::new_with_randomizer_upper_bound(
                 decryption_key_sample_bits,
             )
-            .map_err(|_| Error::InvalidPublicParameters)?;
+            .map_err(|_| Error::from(ErrorKind::InvalidPublicParameters))?;
 
         let h = class_group_parameters.h(rng)?;
 
@@ -493,7 +493,7 @@ where
         let order = Scalar::order_from_public_parameters(&plaintext_space_parameters);
         let q = NonZero::new(order)
             .into_option()
-            .ok_or(Error::InvalidParameters)?;
+            .ok_or(Error::from(ErrorKind::InvalidParameters))?;
 
         // TODO(#17): quit hardcoding for k > 1
         let class_group_parameters =

@@ -35,7 +35,7 @@ use crate::publicly_verifiable_secret_sharing::DealtSecretShare;
 use crate::setup::{DeriveFromPlaintextPublicParameters, SetupParameters};
 use crate::{
     decryption_key_share, encryption_key, equivalence_class, publicly_verifiable_secret_sharing,
-    CiphertextSpaceGroupElement, CiphertextSpaceValue, CompactIbqf, EquivalenceClass, Error,
+    CiphertextSpaceGroupElement, CiphertextSpaceValue, CompactIbqf, EquivalenceClass, Error, ErrorKind,
     Result, SecretKeyShareSizedInteger, DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
     SECRET_KEY_SHARE_LIMBS, SECRET_KEY_SHARE_WITNESS_LIMBS,
 };
@@ -254,7 +254,7 @@ where
             .and_then(|encryption_of_decryption_key_share| {
                 encryption_of_decryption_key_share
                     .first()
-                    .ok_or(Error::InternalError)
+                    .ok_or(Error::from(ErrorKind::InternalError))
                     .map(|encryption_of_decryption_key_share| {
                         // This effectively divides the message by $n^-2$,
                         // reaching an encryption of the decryption key modulo $Q'_{m'}$.
@@ -293,7 +293,7 @@ where
         decryption_key_contribution_commitments
             .into_values()
             .reduce(|a, b| a + b)
-            .ok_or(Error::InvalidParameters)
+            .ok_or(Error::from(ErrorKind::InvalidParameters))
     }
 
     /// This function filters out the malicious parties
@@ -384,7 +384,7 @@ where
                     *threshold_encryption_key_share_per_crt_prime
                 })
                 .reduce(|a, b| a.add_vartime(&b))
-                .ok_or(Error::InternalError)
+                .ok_or(Error::from(ErrorKind::InternalError))
         })
         .flat_map_results()
     }

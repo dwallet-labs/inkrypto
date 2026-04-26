@@ -39,7 +39,7 @@ use crate::publicly_verifiable_secret_sharing::{
 use crate::setup::SetupParameters;
 use crate::{
     encryption_key, equivalence_class, CiphertextSpaceValue, CompactIbqf, EncryptionKey,
-    EquivalenceClass, Error, RandomnessSpaceGroupElement, Result,
+    EquivalenceClass, Error, ErrorKind, RandomnessSpaceGroupElement, Result,
 };
 
 /// A proof of equality of discrete logs $(g_1,g_1^x), (g_2,g_2^x)$ under different hidden order groups $g_1\in G_1, g_2 \in G_2$.
@@ -254,7 +254,7 @@ where
         )?;
 
         let (_, threshold_encryption_key_per_crt_prime) =
-            statement.first().ok_or(Error::InternalError)?.into();
+            statement.first().ok_or(Error::from(ErrorKind::InternalError))?.into();
 
         Ok::<_, Error>((proof, threshold_encryption_key_per_crt_prime.value()))
     })
@@ -625,7 +625,7 @@ where
         )?;
 
         let (encryption_of_discrete_log, _) =
-            (*statement.first().ok_or(crate::Error::InternalError)?).into();
+            (*statement.first().ok_or(crate::Error::from(crate::ErrorKind::InternalError))?).into();
 
         Ok((proof, encryption_of_discrete_log.value()))
     })
@@ -724,11 +724,11 @@ where
                                              )| {
                                                 let commitment_to_share = commitments
                                                     .get(&dealer_tangible_party_id)
-                                                    .ok_or(Error::InvalidParameters)?
+                                                    .ok_or(Error::from(ErrorKind::InvalidParameters))?
                                                     .get(&dealer_virtual_party_id)
-                                                    .ok_or(Error::InvalidParameters)?
+                                                    .ok_or(Error::from(ErrorKind::InvalidParameters))?
                                                     .get(&participating_virtual_party_id)
-                                                    .ok_or(Error::InvalidParameters)?;
+                                                    .ok_or(Error::from(ErrorKind::InvalidParameters))?;
 
                                                 // Safe to dereference - same sized arrays.
                                                 array::from_fn(|i| {

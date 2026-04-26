@@ -23,7 +23,7 @@ use crate::accelerator::MultiFoldNupowAccelerator;
 use crate::equivalence_class::EquivalenceClassOps;
 use crate::{
     equivalence_class, CiphertextSpaceGroupElement, CiphertextSpaceValue, CompactIbqf,
-    EncryptionKey, EquivalenceClass, Error, Result,
+    EncryptionKey, EquivalenceClass, Error, ErrorKind, Result,
 };
 
 pub use party::Party;
@@ -222,7 +222,7 @@ pub(crate) fn compute_adjusted_lagrange_coefficients(
         .collect();
 
     if interpolation_subset.len() != usize::from(access_structure.threshold) {
-        return Err(Error::InternalError);
+        return Err(Error::from(ErrorKind::InternalError));
     }
 
     let adjusted_lagrange_coefficients: HashMap<_, _> = interpolation_subset
@@ -231,7 +231,7 @@ pub(crate) fn compute_adjusted_lagrange_coefficients(
         .map(|j| {
             binomial_coefficients
                 .get(&j)
-                .ok_or(Error::InvalidParameters)
+                .ok_or(Error::from(ErrorKind::InvalidParameters))
                 .map(|binomial_coefficient| {
                     let coefficient = compute_adjusted_lagrange_coefficient(
                         j,

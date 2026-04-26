@@ -30,7 +30,7 @@ use crate::accelerator::MultiFoldNupowAccelerator;
 use crate::decryption_key::{DecryptionKey, DiscreteLogInF};
 use crate::equivalence_class::{EquivalenceClass, EquivalenceClassOps};
 use crate::ibqf::compact::CompactIbqf;
-use crate::{encryption_key, Error, SecretKeyShareSizedInteger, SECRET_KEY_SHARE_WITNESS_LIMBS};
+use crate::{encryption_key, Error, ErrorKind, SecretKeyShareSizedInteger, SECRET_KEY_SHARE_WITNESS_LIMBS};
 use crate::{equivalence_class, Result};
 use crate::{CiphertextSpaceGroupElement, EncryptionKey};
 
@@ -469,7 +469,7 @@ where
                         .setup_parameters,
                 )
                 .into_option()
-                .ok_or(Error::InternalError); // $ CLSolve(PP_{cl}, \bar{M}) $
+                .ok_or(Error::from(ErrorKind::InternalError)); // $ CLSolve(PP_{cl}, \bar{M}) $
 
                 solved_message.and_then(|m| {
                     let message_by_delta_cubed = GroupElement::Scalar::new(
@@ -508,7 +508,7 @@ where
                 .map(|(party_id, (decryption_shares, proof))| {
                     let res = if decryption_shares.len() != batch_size || proof.len() != batch_size
                     {
-                        Err(Error::InvalidMessage)
+                        Err(Error::from(ErrorKind::InvalidMessage))
                     } else {
                         Ok((decryption_shares, proof))
                     };
@@ -560,7 +560,7 @@ where
                     *party_id,
                     public_verification_key
                         .zip(binomial_coefficient)
-                        .ok_or(Error::InvalidParameters)
+                        .ok_or(Error::from(ErrorKind::InvalidParameters))
                         .and_then(|(public_verification_key, binomial_coefficient)| {
                             decryption_share_bases
                                 .clone()
@@ -640,7 +640,7 @@ where
             .values()
             .next()
             .map(|shares| shares.len())
-            .ok_or(Error::InvalidParameters)?;
+            .ok_or(Error::from(ErrorKind::InvalidParameters))?;
 
         // Instantiate decryption shares.
         let (parties_sending_invalid_decryption_shares, invalid_semi_honest_decryption_shares) = invalid_semi_honest_decryption_shares
@@ -660,7 +660,7 @@ where
                         })
                         .collect()
                 } else {
-                    Err(Error::InvalidMessage)
+                    Err(Error::from(ErrorKind::InvalidMessage))
                 };
 
                 (party_id, decryption_shares)
@@ -684,12 +684,12 @@ where
                         })
                         .collect()
                 } else {
-                    Err(Error::InvalidMessage)
+                    Err(Error::from(ErrorKind::InvalidMessage))
                 };
 
                 decryption_shares.map(|decryption_shares| (party_id, decryption_shares))
             })
-            .try_collect_hash_map().map_err(|_| Error::InvalidParameters)?;
+            .try_collect_hash_map().map_err(|_| Error::from(ErrorKind::InvalidParameters))?;
 
         let malicious_decrypters = identify_malicious_semi_honest_decrypters(
             invalid_semi_honest_decryption_shares,
@@ -808,7 +808,7 @@ where
         GroupElement::Scalar: group::GroupElement<PublicParameters = ScalarPublicParameters>,
     {
         if u32::from(threshold) > MAX_THRESHOLD || u32::from(number_of_parties) > MAX_PLAYERS {
-            return Err(crate::Error::InvalidParameters);
+            return Err(crate::Error::from(crate::ErrorKind::InvalidParameters));
         }
 
         let precomputed_values = PrecomputedValues::<group::Value<GroupElement::Scalar>>::new::<

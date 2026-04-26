@@ -16,7 +16,7 @@ use crate::accelerator::MultiFoldNupowAccelerator;
 use crate::helpers::{math, CtMinMax};
 use crate::randomizer::{ExponentWithFormMask, ScalingRandomizer};
 use crate::DEFAULT_ACCELERATOR_FOLDING_DEGREE;
-use crate::{discriminant::Discriminant, ibqf::Ibqf, Error};
+use crate::{discriminant::Discriminant, ibqf::Ibqf, Error, ErrorKind};
 
 mod group_element;
 pub(crate) mod public_parameters;
@@ -413,11 +413,11 @@ where
 
         let b = CtOption::from(b.try_into_int())
             .into_option()
-            .ok_or(Error::InternalError)?;
+            .ok_or(Error::from(ErrorKind::InternalError))?;
 
         EquivalenceClass::new_from_coefficients_reduced_vartime_discriminant(p, b, discriminant)
             .into_option()
-            .ok_or(Error::InternalError)
+            .ok_or(Error::from(ErrorKind::InternalError))
     }
 }
 
@@ -466,7 +466,7 @@ where
     /// Multiply `self` with `rhs`.
     pub fn mul(&self, rhs: &Self) -> Result<Self, Error> {
         if !self.is_from_the_same_class_as(rhs) {
-            return Err(Error::CombiningRequiresSameDiscriminant);
+            return Err(Error::from(ErrorKind::CombiningRequiresSameDiscriminant));
         }
 
         let res = self.representative.nucomp(rhs.representative);
@@ -480,7 +480,7 @@ where
     /// algorithm can be exploited. Might return `None` if the assumption proves incorrect.
     pub fn mul_randomized(&self, rhs: &Self) -> Result<Self, Error> {
         if !self.is_from_the_same_class_as(rhs) {
-            return Err(Error::CombiningRequiresSameDiscriminant);
+            return Err(Error::from(ErrorKind::CombiningRequiresSameDiscriminant));
         }
 
         let res = self.representative.nucomp_randomized(rhs.representative);
@@ -493,7 +493,7 @@ where
     /// `rhs.representative`.
     pub fn mul_vartime(&self, rhs: &Self) -> Result<Self, Error> {
         if !self.is_from_the_same_class_as(rhs) {
-            return Err(Error::CombiningRequiresSameDiscriminant);
+            return Err(Error::from(ErrorKind::CombiningRequiresSameDiscriminant));
         }
 
         let res = self.representative.nucomp_vartime(rhs.representative);
@@ -503,7 +503,7 @@ where
     /// Divide `self` by `rhs`.
     pub fn div(&self, rhs: &Self) -> Result<Self, Error> {
         if !self.is_from_the_same_class_as(rhs) {
-            return Err(Error::CombiningRequiresSameDiscriminant);
+            return Err(Error::from(ErrorKind::CombiningRequiresSameDiscriminant));
         }
 
         let res = self.representative.nucompinv(rhs.representative);
@@ -516,7 +516,7 @@ where
     /// `rhs.representative`.
     pub fn div_vartime(&self, rhs: &Self) -> Result<Self, Error> {
         if !self.is_from_the_same_class_as(rhs) {
-            return Err(Error::CombiningRequiresSameDiscriminant);
+            return Err(Error::from(ErrorKind::CombiningRequiresSameDiscriminant));
         }
 
         let res = self.representative.nucompinv_vartime(&rhs.representative);
@@ -625,7 +625,7 @@ where
         exp_bits: u32,
     ) -> Result<Self, Error> {
         if exp_bits > Uint::<EXPONENT_LIMBS>::BITS {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         let res = self.representative.nupow_bounded_randomized_with_base(
@@ -667,7 +667,7 @@ where
     ///
     /// ### Bounded
     /// Requires `exp_bits ≤ Uint::<EXPONENT_LIMBS>::BITS`; will return an
-    /// [Error::ScalarBoundTooLarge] otherwise.
+    /// [Error::from(ErrorKind::ScalarBoundTooLarge)] otherwise.
     ///
     /// ### Vartime
     /// Executes in variable time w.r.t. `self.representative` and `exp`, but not in `exp_bits`.
@@ -678,7 +678,7 @@ where
         exp_bits: u32,
     ) -> Result<Self, Error> {
         if exp_bits > Uint::<EXPONENT_LIMBS>::BITS {
-            return Err(Error::ScalarBoundTooLarge);
+            return Err(Error::from(ErrorKind::ScalarBoundTooLarge));
         }
 
         let res = self
@@ -732,7 +732,7 @@ where
             || !self.is_from_the_same_class_as(&m2)
             || !self.is_from_the_same_class_as(&m3)
         {
-            return Err(Error::CombiningRequiresSameDiscriminant);
+            return Err(Error::from(ErrorKind::CombiningRequiresSameDiscriminant));
         }
 
         let res = self
@@ -775,13 +775,13 @@ where
             || !self.is_from_the_same_class_as(&m2)
             || !self.is_from_the_same_class_as(&m3)
         {
-            return Err(Error::CombiningRequiresSameDiscriminant);
+            return Err(Error::from(ErrorKind::CombiningRequiresSameDiscriminant));
         }
 
         let exp_bits = u32::ct_min(&exp_bits, &Uint::<EXPONENT_LIMBS>::BITS);
         let equal_target_bits = scalar_bits_bound.ct_eq(&exp_bits);
         if (!equal_target_bits).into() {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         let res = self
@@ -830,7 +830,7 @@ where
             || !self.is_from_the_same_class_as(&randomizer.m2)
             || !self.is_from_the_same_class_as(&randomizer.m3)
         {
-            return Err(Error::CombiningRequiresSameDiscriminant);
+            return Err(Error::from(ErrorKind::CombiningRequiresSameDiscriminant));
         }
 
         let ScalingRandomizer {
@@ -843,7 +843,7 @@ where
         let exp_bits = u32::ct_min(&exp_bits, &Uint::<EXPONENT_LIMBS>::BITS);
         let equal_target_bits = scalar_bits_bound.ct_eq(&exp_bits);
         if (!equal_target_bits).into() {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         let res = self

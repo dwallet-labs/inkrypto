@@ -34,7 +34,7 @@ use crate::reconfiguration::{
 use crate::setup::{DeriveFromPlaintextPublicParameters, SetupParameters};
 use crate::{
     equivalence_class, publicly_verifiable_secret_sharing, CiphertextSpaceGroupElement,
-    CompactIbqf, EquivalenceClass, Error, Result,
+    CompactIbqf, EquivalenceClass, Error, ErrorKind, Result,
 };
 use crate::{SECRET_KEY_SHARE_LIMBS, SECRET_KEY_SHARE_WITNESS_LIMBS};
 
@@ -249,7 +249,7 @@ where
                             (Some(dealer_virtual_party_id), public_verification_key),
                         )
                     })
-                    .ok_or(Error::InternalError)
+                    .ok_or(Error::from(ErrorKind::InternalError))
             })
             .collect::<Result<Vec<_>>>()?
             .into_iter()
@@ -374,7 +374,7 @@ where
             let masked_decryption_key = masked_decryption_key
                 .first()
                 .copied()
-                .ok_or(Error::InternalError)?
+                .ok_or(Error::from(ErrorKind::InternalError))?
                 .value();
 
             malicious_decrypters.extend(&current_malicious_decrypters);

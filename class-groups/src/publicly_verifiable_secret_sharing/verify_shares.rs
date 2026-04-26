@@ -21,7 +21,7 @@ use crate::encryption_key::public_parameters::Instantiate;
 use crate::equivalence_class::EquivalenceClassOps;
 use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::*;
 use crate::publicly_verifiable_secret_sharing::{DealtSecretShare, Party};
-use crate::{encryption_key, equivalence_class, CompactIbqf, EquivalenceClass, Error, Result};
+use crate::{encryption_key, equivalence_class, CompactIbqf, EquivalenceClass, Error, ErrorKind, Result};
 
 impl<
         const NUM_PRIMES: usize,
@@ -386,7 +386,7 @@ where
 
         if malicious_dealers.contains(&self.dealer_tangible_party_id) {
             // We cannot be a malicious party unless there is a bug.
-            return Err(Error::InternalError);
+            return Err(Error::from(ErrorKind::InternalError));
         }
 
         Ok(malicious_dealers)

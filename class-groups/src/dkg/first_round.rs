@@ -31,7 +31,7 @@ use crate::publicly_verifiable_secret_sharing::{
 use crate::setup::DeriveFromPlaintextPublicParameters;
 use crate::setup::SetupParameters;
 use crate::{
-    equivalence_class, publicly_verifiable_secret_sharing, CompactIbqf, EquivalenceClass, Error,
+    equivalence_class, publicly_verifiable_secret_sharing, CompactIbqf, EquivalenceClass, Error, ErrorKind,
     Result, SECRET_KEY_SHARE_LIMBS, SECRET_KEY_SHARE_WITNESS_LIMBS,
 };
 
@@ -307,7 +307,7 @@ where
                         HashMap::from([(None, deal_secret_message)]),
                         share_threshold_encryption_key_message,
                     )),
-                    _ => Err(Error::InvalidParameters),
+                    _ => Err(Error::from(ErrorKind::InvalidParameters)),
                 };
 
                 (dealer_party_id, res)

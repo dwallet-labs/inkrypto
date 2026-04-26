@@ -24,7 +24,7 @@ use crate::publicly_verifiable_secret_sharing::{
     DealSecretMessage, DealtSecretShare, DealtSecretShareMessage, Party,
 };
 use crate::{
-    equivalence_class, CiphertextSpaceGroupElement, CompactIbqf, EquivalenceClass, Error, Result,
+    equivalence_class, CiphertextSpaceGroupElement, CompactIbqf, EquivalenceClass, Error, ErrorKind, Result,
 };
 
 impl<
@@ -115,7 +115,7 @@ where
             encryption_keys_per_crt_prime.keys().copied().collect();
         self.participating_parties_access_structure
             .is_authorized_subset(&participating_parties_with_valid_encryption_keys)
-            .map_err(|_| Error::InternalError)?;
+            .map_err(|_| Error::from(ErrorKind::InternalError))?;
 
         // ($\bar{C}_{i}=\bar{g}_{q'}^{f(i)}$, $[s]_{{i}}=f(i)$)
         let (coefficients_contribution_commitments, coefficients_for_commitments, secret_shares) =
@@ -193,7 +193,7 @@ where
                                     )
                                 })
                             } else {
-                                Err(Error::InternalError)
+                                Err(Error::from(ErrorKind::InternalError))
                             }
                         })
                         .collect();
@@ -201,7 +201,7 @@ where
                     encryptions_of_secret_shares_and_proofs
                         .map(|value| (participating_tangible_party_id, value))
                 } else {
-                    Err(Error::InternalError)
+                    Err(Error::from(ErrorKind::InternalError))
                 }
             })
             .collect::<Result<Vec<_>>>()?;
@@ -287,7 +287,7 @@ where
                             }).flat_map_results().map(|proofs_and_encryptions_of_share_per_crt_prime| (participant_virtual_party_id, proofs_and_encryptions_of_share_per_crt_prime))
                         }).try_collect_hash_map().map_err(Error::from)
                     } else {
-                        Err(Error::InvalidMessage)
+                        Err(Error::from(ErrorKind::InvalidMessage))
                     };
 
                     encryptions_of_shares_and_proofs.map(|encryptions_and_proofs| (participating_tangible_party_id, encryptions_and_proofs))
@@ -543,7 +543,7 @@ where
 
         if malicious_dealers.contains(&self.dealer_tangible_party_id) {
             // This means a bug assuming we acted honestly, and nothing else for us to do here.
-            return Err(Error::InternalError);
+            return Err(Error::from(ErrorKind::InternalError));
         }
 
         if let Some(participating_tangible_party_id) = self.participating_tangible_party_id {
@@ -552,7 +552,7 @@ where
                 // and either no one encrypted shares for us or no one will proceed to take us into account in this session
                 // because we didn't agree on the right subset.
                 // This means a bug assuming we acted honestly, and nothing else for us to do here.
-                return Err(Error::InternalError);
+                return Err(Error::from(ErrorKind::InternalError));
             }
         }
 
@@ -565,7 +565,7 @@ where
             // There was agreement on a set of parties with valid encryption keys, yet we found them invalid.
             // This must either mean we were sent wrong `encryption_keys_and_proofs_per_crt_prime`, or some bug happened, or there was an authorized subset that lied.
             // In any case we cannot continue.
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         Ok((
@@ -626,7 +626,7 @@ where
                     &parties_with_valid_encryption_keys_verified_by_virtual_parties.clone().into_iter().collect::<Vec<_>>()[..] {
                     Ok(parties_with_valid_encryption_keys_verified_by_current_party.clone())
                 } else {
-                    Err(Error::InvalidMessage)
+                    Err(Error::from(ErrorKind::InvalidMessage))
                 };
 
                 (dealer_tangible_party_id, res)
@@ -636,7 +636,7 @@ where
         let (disagreeing_parties, parties_that_were_dealt_shares) =
             parties_with_valid_encryption_keys
                 .weighted_majority_vote(&self.dealer_access_structure)
-                .map_err(|_| Error::InternalError)?;
+                .map_err(|_| Error::from(ErrorKind::InternalError))?;
 
         let malicious_dealers: Vec<_> = parties_encrypting_inconsistently
             .into_iter()

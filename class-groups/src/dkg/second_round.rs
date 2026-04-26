@@ -18,7 +18,7 @@ use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
 use crate::setup::DeriveFromPlaintextPublicParameters;
 use crate::setup::SetupParameters;
 use crate::{
-    equivalence_class, publicly_verifiable_secret_sharing, CompactIbqf, EquivalenceClass, Error,
+    equivalence_class, publicly_verifiable_secret_sharing, CompactIbqf, EquivalenceClass, Error, ErrorKind,
     Result, SECRET_KEY_SHARE_LIMBS, SECRET_KEY_SHARE_WITNESS_LIMBS,
 };
 
@@ -157,7 +157,7 @@ where
                 reconstructed_commitments_to_sharing,
                 rng,
             )?
-            .ok_or(Error::InternalError)?;
+            .ok_or(Error::from(ErrorKind::InternalError))?;
 
         // We don't report those that sent invalid shares, because for consistency they will be validated in the next round regardless.
         Ok((first_round_malicious_parties, verified_dealers))
@@ -182,7 +182,7 @@ where
             .map(|(party_id, message)| {
                 let res = match message {
                     Message::VerifiedDealers(verified_dealers) => Ok(verified_dealers),
-                    _ => Err(Error::InvalidParameters),
+                    _ => Err(Error::from(ErrorKind::InvalidParameters)),
                 };
 
                 (party_id, res)

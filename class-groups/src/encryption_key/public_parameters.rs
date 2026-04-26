@@ -12,7 +12,7 @@ use crate::{
     CiphertextSpacePublicParameters, CompactIbqf, RandomnessSpacePublicParameters,
     HIGHEST_ACCELERATOR_FOLDING_DEGREE,
 };
-use crate::{Error, DEFAULT_ACCELERATOR_FOLDING_DEGREE};
+use crate::{Error, ErrorKind, DEFAULT_ACCELERATOR_FOLDING_DEGREE};
 use group::bounded_natural_numbers_group::MAURER_RANDOMIZER_DIFF_BITS;
 use group::Transcribeable;
 use homomorphic_encryption::{GroupsPublicParameters, GroupsPublicParametersAccessors};
@@ -198,7 +198,7 @@ where
         folding_degree: u32,
     ) -> Result<Self, Error> {
         if !encryption_key.is_from_the_same_class_as(&setup_parameters.h) {
-            return Err(Error::InvalidEncryptionKey);
+            return Err(Error::from(ErrorKind::InvalidEncryptionKey));
         }
 
         let encryption_key_accelerators = [
@@ -579,7 +579,7 @@ mod tests {
     use crate::encryption_key::public_parameters::test_helpers::get_public_parameters_secp256k1_112_bits_deterministic;
     use crate::encryption_key::public_parameters::{Instantiate, PublicParameters};
     use crate::setup::test_helpers::get_setup_parameters_secp256k1_112_bits_deterministic;
-    use crate::{EquivalenceClass, Error};
+    use crate::{EquivalenceClass, ErrorKind};
     use crypto_bigint::{I1024, U1024, U1536, U2048, U320, U64};
     use group::bounded_natural_numbers_group::MAURER_RANDOMIZER_DIFF_BITS;
     use homomorphic_encryption::GroupsPublicParametersAccessors;
@@ -646,7 +646,7 @@ mod tests {
         let pp = PublicParameters::new(setup_parameters, pk);
 
         assert!(pp.is_err());
-        matches!(pp.unwrap_err(), Error::InvalidEncryptionKey);
+        matches!(pp.unwrap_err().kind, ErrorKind::InvalidEncryptionKey);
     }
 
     #[test]

@@ -17,7 +17,7 @@ pub use public_parameters::PublicParameters;
 
 use crate::equivalence_class::EquivalenceClass;
 use crate::parameters::Parameters;
-use crate::{CiphertextSpaceGroupElement, Error, RandomnessSpaceGroupElement};
+use crate::{CiphertextSpaceGroupElement, Error, ErrorKind, RandomnessSpaceGroupElement};
 
 pub mod public_parameters;
 
@@ -350,7 +350,7 @@ where
 
         let (h_r, pk_r) = encoded_randomness;
         if !pk_r.is_from_the_same_class_as(&encoded_plaintext) {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         let c1 = h_r;

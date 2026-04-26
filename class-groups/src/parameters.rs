@@ -15,7 +15,7 @@ use crate::discriminant::Discriminant;
 use crate::equivalence_class::EquivalenceClass;
 use crate::helpers::math;
 use crate::helpers::math::FIRST_100_PRIMES;
-use crate::Error;
+use crate::{Error, ErrorKind};
 
 /// The bit-length of the prime being targeted during the construction of `h`.
 const H_PRIME_BIT_LENGTH_TARGET: u32 = 128;
@@ -95,19 +95,19 @@ where
                     .expect("product of non-zero values is non-zero")
             })
             .into_option()
-            .ok_or(Error::InvalidDiscriminantParameters)?;
+            .ok_or(Error::from(ErrorKind::InvalidDiscriminantParameters))?;
 
         // Compute ∆_k := -p·q
         let delta_k = Discriminant::new(q, 0, p)
             .into_option()
-            .ok_or(Error::InvalidDiscriminantParameters)?;
+            .ok_or(Error::from(ErrorKind::InvalidDiscriminantParameters))?;
 
         // Compute ∆_{q^k} := -p·q^{2k+1} = ∆_k · q^2k
         let delta_qk = delta_k
             .upscale::<DELTA_QK_LIMBS>()
             .with_incremented_k()
             .into_option()
-            .ok_or(Error::InvalidDiscriminantParameters)?;
+            .ok_or(Error::from(ErrorKind::InvalidDiscriminantParameters))?;
 
         Ok(Self {
             delta_k,
@@ -131,13 +131,13 @@ where
         // `∆_{q^k}` will be computed as `- q^{2k+1} * p`
         let delta_qk_bits = q.bits() * (2 * u32::from(k) + 1) + p.bits();
         if delta_qk_bits > Uint::<DELTA_QK_LIMBS>::BITS {
-            return Err(Error::InvalidPublicParameters);
+            return Err(Error::from(ErrorKind::InvalidPublicParameters));
         }
 
         // Verify that the resulting discriminant has the desired bit size
         let delta_k_bits = q.bits() + p.bits();
         if delta_k_bits < minimum_discriminant_bits(computational_security_parameter)? {
-            return Err(Error::InvalidPublicParameters);
+            return Err(Error::from(ErrorKind::InvalidPublicParameters));
         }
 
         // Verify that p*q ≡ 3 mod 4
@@ -150,7 +150,7 @@ where
         let q_mod_4 = q.as_limbs()[0].0 & three;
         let p_mod_4 = p.as_limbs()[0].0 & three;
         if (q_mod_4 * p_mod_4) & three != three {
-            return Err(Error::InvalidPublicParameters);
+            return Err(Error::from(ErrorKind::InvalidPublicParameters));
         }
 
         // Verify q is valid
@@ -161,21 +161,21 @@ where
 
         // Verify that p is prime, or one.
         if !(p.get() == Uint::ONE || is_prime(Flavor::Any, p.deref())) {
-            return Err(Error::InvalidPublicParameters);
+            return Err(Error::from(ErrorKind::InvalidPublicParameters));
         }
 
         // If p ≠ 1, check that (q/p) = -1
         let q_ = CtOption::from((*q).resize::<DELTA_QK_LIMBS>().try_into_int())
             .into_option()
-            .ok_or(Error::InternalError)?;
+            .ok_or(Error::from(ErrorKind::InternalError))?;
         let p_ = p
             .resize::<DELTA_QK_LIMBS>()
             .to_nz()
             .expect("upscaled non-zero value should be non-zero");
         if !(p.get() == Uint::ONE
-            || math::legendre_symbol(&q_, &p_).map_err(|_| Error::InvalidPublicParameters)? == -1)
+            || math::legendre_symbol(&q_, &p_).map_err(|_| Error::from(ErrorKind::InvalidPublicParameters))? == -1)
         {
-            return Err(Error::InvalidPublicParameters);
+            return Err(Error::from(ErrorKind::InvalidPublicParameters));
         }
 
         Ok(())
@@ -185,7 +185,7 @@ where
     fn validate_q(q: &Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>) -> Result<(), Error> {
         // Only requirement: `q` must be prime.
         if !is_prime(Flavor::Any, q) {
-            return Err(Error::InvalidPublicParameters);
+            return Err(Error::from(ErrorKind::InvalidPublicParameters));
         }
         Ok(())
     }
@@ -195,7 +195,7 @@ where
         // Currently, only `k=1` is supported.
         // TODO(#17): support k > 1
         if k != 1 {
-            return Err(Error::InvalidPublicParameters);
+            return Err(Error::from(ErrorKind::InvalidPublicParameters));
         }
         Ok(())
     }
@@ -216,7 +216,7 @@ where
             H_PRIME_BIT_LENGTH_TARGET,
             H_PRIME_MAX_SAMPLE_ATTEMPTS,
         )
-        .ok_or(Error::InvalidPublicParameters)?
+        .ok_or(Error::from(ErrorKind::InvalidPublicParameters))?
         .to_nz()
         .expect("is non-zero; kronecker_prime is a prime");
 
@@ -247,19 +247,19 @@ where
         let min_small_discriminant_bits =
             minimum_discriminant_bits(computational_security_parameter)?;
         if small_discriminant_bits < min_small_discriminant_bits {
-            return Err(Error::InvalidPublicParameters);
+            return Err(Error::from(ErrorKind::InvalidPublicParameters));
         }
 
         // DELTA_QK_LIMBS must at least be able to contain the large discriminant
         let min_large_discriminant_bits = min_small_discriminant_bits + 2 * u32::from(k) * q.bits();
         if large_discriminant_bits < min_large_discriminant_bits {
-            return Err(Error::InvalidPublicParameters);
+            return Err(Error::from(ErrorKind::InvalidPublicParameters));
         }
 
         let min_p_bits = min_small_discriminant_bits.saturating_sub(q.bits());
         let max_p_bits = large_discriminant_bits.saturating_sub((2 * u32::from(k) + 1) * q.bits());
         if max_p_bits < min_p_bits {
-            return Err(Error::InvalidPublicParameters);
+            return Err(Error::from(ErrorKind::InvalidPublicParameters));
         }
 
         // Test if `p=1` can be selected
@@ -271,7 +271,7 @@ where
         }
         // `p=1` is invalid; we have to choose something larger.
         if max_p_bits <= 1 {
-            return Err(Error::InvalidPublicParameters);
+            return Err(Error::from(ErrorKind::InvalidPublicParameters));
         }
 
         // Test if some small p can be selected
@@ -283,7 +283,7 @@ where
                     let p = NonZero::new(Uint::<DELTA_K_LIMBS>::from(*candidate)).unwrap();
                     Self::new(q, k, p, computational_security_parameter).ok()
                 })
-                .ok_or(Error::InvalidPublicParameters);
+                .ok_or(Error::from(ErrorKind::InvalidPublicParameters));
         }
 
         // Attempt to sample a prime for the given bit-length
@@ -302,14 +302,14 @@ where
         }
 
         // Was not able to find a valid set of parameters
-        Err(Error::InvalidPublicParameters)
+        Err(Error::from(ErrorKind::InvalidPublicParameters))
     }
 }
 
 /// Obtain the minimum size of the discriminant for a given security level.
 /// Ref: [BICYCL Implements CryptographY in CLass groups](https://eprint.iacr.org/archive/2022/1466/1694590466.pdf),
 /// Table 2
-pub(crate) const fn minimum_discriminant_bits(
+pub(crate) fn minimum_discriminant_bits(
     computational_security_bits: u32,
 ) -> Result<u32, Error> {
     if computational_security_bits <= 112 {
@@ -317,7 +317,7 @@ pub(crate) const fn minimum_discriminant_bits(
     } else if computational_security_bits <= 128 {
         Ok(1827)
     } else {
-        Err(Error::ComputationalSecurityTooHigh)
+        Err(Error::from(ErrorKind::ComputationalSecurityTooHigh))
     }
 }
 
@@ -382,7 +382,7 @@ mod tests {
     use group::{secp256k1, OsCsRng};
 
     use crate::parameters::Parameters;
-    use crate::Error;
+    use crate::ErrorKind;
 
     // Some consts, making it easier to spot the difference in the tests.
     // Valid (q, k, p) triple, using SECP256K1;
@@ -442,14 +442,14 @@ mod tests {
         let res =
             Parameters::<PTL, SDL, LDL>::new_random_vartime(NonZero::ONE, K, CSP, &mut OsCsRng);
         assert!(res.is_err());
-        matches!(res.unwrap_err(), Error::InvalidPublicParameters);
+        matches!(res.unwrap_err().kind, ErrorKind::InvalidPublicParameters);
     }
 
     #[test]
     fn test_new_random_vartime_non_unit_k_is_error() {
         let res = Parameters::<PTL, SDL, LDL>::new_random_vartime(Q, 0, CSP, &mut OsCsRng);
         assert!(res.is_err());
-        matches!(res.unwrap_err(), Error::InvalidPublicParameters);
+        matches!(res.unwrap_err().kind, ErrorKind::InvalidPublicParameters);
     }
 
     #[test]
@@ -457,14 +457,14 @@ mod tests {
         let res =
             Parameters::<PTL, SDL, { U1536::LIMBS }>::new_random_vartime(Q, K, CSP, &mut OsCsRng);
         assert!(res.is_err());
-        matches!(res.unwrap_err(), Error::InvalidPublicParameters);
+        matches!(res.unwrap_err().kind, ErrorKind::InvalidPublicParameters);
     }
 
     #[test]
     fn test_new_random_vartime_csp_too_high_errors() {
         let res = Parameters::<PTL, SDL, LDL>::new_random_vartime(Q, K, 128, &mut OsCsRng);
         assert!(res.is_err());
-        matches!(res.unwrap_err(), Error::ComputationalSecurityTooHigh);
+        matches!(res.unwrap_err().kind, ErrorKind::ComputationalSecurityTooHigh);
     }
 
     #[test]

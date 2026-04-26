@@ -39,7 +39,7 @@ use crate::reconfiguration::{Message, Party, PublicInput};
 use crate::setup::{DeriveFromPlaintextPublicParameters, SetupParameters};
 use crate::{
     equivalence_class, publicly_verifiable_secret_sharing, CiphertextSpaceGroupElement,
-    CompactIbqf, EquivalenceClass, Error, Result, SecretKeyShareSizedInteger,
+    CompactIbqf, EquivalenceClass, Error, ErrorKind, Result, SecretKeyShareSizedInteger,
     SECRET_KEY_SHARE_LIMBS, SECRET_KEY_SHARE_WITNESS_LIMBS,
 };
 
@@ -381,11 +381,11 @@ where
                             &decryption_key_share_public_parameters,
                             rng,
                         ))
-                        .ok_or(Error::InternalError)?;
+                        .ok_or(Error::from(ErrorKind::InternalError))?;
 
                     match &decryption_shares[..] {
                         [decryption_share] => Ok((*decryption_share, proof)),
-                        _ => Err(Error::InternalError),
+                        _ => Err(Error::from(ErrorKind::InternalError)),
                     }
                 })
                 .flat_map_results()
@@ -519,13 +519,13 @@ where
                                         prove_public_verification_keys_messages,
                                     ))
                                 } else {
-                                    Err(Error::InvalidMessage)
+                                    Err(Error::from(ErrorKind::InvalidMessage))
                                 }
                             } else {
-                                Err(Error::InvalidMessage)
+                                Err(Error::from(ErrorKind::InvalidMessage))
                             }
                         }
-                        _ => Err(Error::InvalidMessage),
+                        _ => Err(Error::from(ErrorKind::InvalidMessage)),
                     };
 
                     (dealer_tangible_party_id, res)
@@ -645,7 +645,7 @@ where
                     ct
                 })
                 .reduce(|a, b| a + b)
-                .ok_or(Error::InternalError)
+                .ok_or(Error::from(ErrorKind::InternalError))
         })
         .flat_map_results()
     }

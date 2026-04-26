@@ -23,7 +23,7 @@ use crate::publicly_verifiable_secret_sharing::BaseProtocolContext;
 use crate::reconfiguration::{Message, PublicInput, PublicOutput};
 use crate::setup::{DeriveFromPlaintextPublicParameters, SetupParameters};
 use crate::{
-    equivalence_class, publicly_verifiable_secret_sharing, CompactIbqf, EquivalenceClass, Error,
+    equivalence_class, publicly_verifiable_secret_sharing, CompactIbqf, EquivalenceClass, Error, ErrorKind,
     Result, SecretKeyShareSizedInteger,
 };
 use crate::{
@@ -261,7 +261,7 @@ where
                     rng,
                 )
             }
-            _ => Err(Error::InvalidParameters),
+            _ => Err(Error::from(ErrorKind::InvalidParameters)),
         }
     }
 
@@ -343,13 +343,13 @@ where
             GroupElement,
         >,
     )> {
-        let decryption_key_shares = private_input.ok_or(Error::InvalidParameters)?;
+        let decryption_key_shares = private_input.ok_or(Error::from(ErrorKind::InvalidParameters))?;
 
         let upcoming_party_id = public_input
             .current_tangible_party_id_to_upcoming
             .get(&tangible_party_id)
             .cloned()
-            .ok_or(Error::InvalidParameters)?;
+            .ok_or(Error::from(ErrorKind::InvalidParameters))?;
 
         let decryption_key_bits = public_input.setup_parameters.decryption_key_bits();
         let current_decryption_key_share_bits = secret_key_share_size_upper_bound(

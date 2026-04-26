@@ -6,7 +6,7 @@ use std::ops::Shr;
 use crate::helpers::lookup::ConstantTimeLookup;
 use crate::helpers::CtMinMax;
 use crate::ibqf::Ibqf;
-use crate::{EquivalenceClass, Error};
+use crate::{EquivalenceClass, Error, ErrorKind};
 use crypto_bigint::subtle::ConstantTimeEq;
 use crypto_bigint::{Concat, ConstantTimeSelect, Encoding, Int, Limb, Split, Uint};
 use serde::{Deserialize, Serialize};
@@ -47,16 +47,16 @@ where
         max_exponent_bit_size: u32,
     ) -> Result<Self, Error> {
         if folding_degree == 0 {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         let nr_lanes = folding_degree;
         let lane_length = max_exponent_bit_size.div_ceil(nr_lanes);
         let target_bits = lane_length
             .checked_mul(nr_lanes)
-            .ok_or(Error::InternalError)?;
+            .ok_or(Error::from(ErrorKind::InternalError))?;
 
-        let table_size = 1usize.checked_shl(nr_lanes).ok_or(Error::InternalError)?;
+        let table_size = 1usize.checked_shl(nr_lanes).ok_or(Error::from(ErrorKind::InternalError))?;
         let mut table = Vec::with_capacity(table_size);
         table.resize(table_size, *form.representative());
 

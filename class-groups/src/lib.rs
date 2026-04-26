@@ -335,9 +335,33 @@ pub const SECRET_KEY_SHARE_WITNESS_LIMBS: usize = find_closest_crypto_bigint_siz
     (SECRET_KEY_SHARE_SIZE_UPPER_BOUND + MAURER_PROOFS_DIFF_UPPER_BOUND_BITS) as usize,
 ) / Limb::BITS as usize;
 
-/// Class Group Error.
+/// Class Group Error wrapper that carries a backtrace captured at construction.
+///
+/// The backtrace is captured by `Backtrace::capture()`, which is gated by
+/// the `RUST_BACKTRACE` (or `RUST_LIB_BACKTRACE`) env var — set it to `1`
+/// (or `full`) to see the line where each error was minted.
 #[derive(thiserror::Error, Debug, Clone)]
-pub enum Error {
+#[error("{kind}\n{backtrace}")]
+pub struct Error {
+    pub kind: ErrorKind,
+    pub backtrace: std::sync::Arc<std::backtrace::Backtrace>,
+}
+
+impl<E> From<E> for Error
+where
+    ErrorKind: From<E>,
+{
+    fn from(value: E) -> Self {
+        Self {
+            kind: ErrorKind::from(value),
+            backtrace: std::sync::Arc::new(std::backtrace::Backtrace::capture()),
+        }
+    }
+}
+
+/// Class Group Error kind.
+#[derive(thiserror::Error, Debug, Clone)]
+pub enum ErrorKind {
     #[error("cannot combine forms that belong to a different class")]
     CombiningRequiresSameDiscriminant,
     #[error("this compact form does not match this discriminant")]
@@ -414,17 +438,17 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 impl From<Error> for mpc::Error {
     fn from(value: Error) -> Self {
-        match value {
-            Error::ProofVerificationError(malicious_parties) => {
+        match value.kind {
+            ErrorKind::ProofVerificationError(malicious_parties) => {
                 mpc::Error::MaliciousMessage(malicious_parties)
             }
-            Error::Group(e) => mpc::Error::Group(e),
-            Error::InternalError => mpc::Error::InternalError,
-            Error::InvalidParameters => mpc::Error::InvalidParameters,
-            Error::InvalidPublicParameters => mpc::Error::InvalidParameters,
-            Error::MPC(e) => e,
+            ErrorKind::Group(e) => mpc::Error::Group(e),
+            ErrorKind::InternalError => mpc::Error::InternalError,
+            ErrorKind::InvalidParameters => mpc::Error::InvalidParameters,
+            ErrorKind::InvalidPublicParameters => mpc::Error::InvalidParameters,
+            ErrorKind::MPC(e) => e,
             #[cfg(feature = "threshold")]
-            Error::Maurer(e) => e.into(),
+            ErrorKind::Maurer(e) => e.into(),
             e => mpc::Error::Consumer(format!("class groups error {e:?}")),
         }
     }

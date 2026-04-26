@@ -28,7 +28,7 @@ use crate::setup::DeriveFromPlaintextPublicParameters;
 use crate::setup::SetupParameters;
 use crate::{
     decryption_key_share, encryption_key, equivalence_class, CompactIbqf, DecryptionKey,
-    DecryptionKeyShare, EncryptionKey, EquivalenceClass, Error, Result,
+    DecryptionKeyShare, EncryptionKey, EquivalenceClass, Error, ErrorKind, Result,
 };
 
 mod consts;
@@ -168,7 +168,7 @@ pub fn reconstruct_integer<const NUM_PRIMES: usize, const SECRET_LIMBS: usize>(
     let secret_negative = secret
         .checked_sub(&crt_primes_product)
         .into_option()
-        .ok_or(Error::InternalError)?;
+        .ok_or(Error::from(ErrorKind::InternalError))?;
 
     let secret = <Int<CRT_RECONSTRUCTION_LIMBS> as ConditionallySelectable>::conditional_select(
         &secret,
@@ -218,7 +218,7 @@ pub fn construct_knowledge_of_decryption_key_public_parameters(
 ) -> crate::Result<KnowledgeOfDiscreteLogUCPublicParameters> {
     if fischlin::target_bits::<UC_PROOFS_REPETITIONS>() > 10 {
         // For security we need to have small challenges. Refer to paper: https://eprint.iacr.org/2024/717.pdf
-        return Err(Error::InternalError);
+        return Err(Error::from(ErrorKind::InternalError));
     }
 
     let witness_group_public_parameters = bounded_natural_numbers_group::PublicParameters::<
@@ -297,7 +297,7 @@ pub fn generate_knowledge_of_decryption_key_proofs_per_crt_prime(
 
     encryption_keys_and_proofs
         .try_into()
-        .map_err(|_| Error::InternalError)
+        .map_err(|_| Error::from(ErrorKind::InternalError))
 }
 
 pub(super) fn instantiate_encryption_keys_per_crt_prime(

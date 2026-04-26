@@ -23,7 +23,7 @@ use crate::publicly_verifiable_secret_sharing::BaseProtocolContext;
 use crate::setup::DeriveFromPlaintextPublicParameters;
 use crate::setup::SetupParameters;
 use crate::{
-    equivalence_class, publicly_verifiable_secret_sharing, CompactIbqf, EquivalenceClass, Error,
+    equivalence_class, publicly_verifiable_secret_sharing, CompactIbqf, EquivalenceClass, Error, ErrorKind,
     Result,
 };
 use crate::{SECRET_KEY_SHARE_LIMBS, SECRET_KEY_SHARE_WITNESS_LIMBS};
@@ -240,7 +240,7 @@ where
                     rng,
                 )
             }
-            _ => Err(Error::InvalidParameters),
+            _ => Err(Error::from(ErrorKind::InvalidParameters)),
         }
     }
 
@@ -328,7 +328,7 @@ where
         >,
     )> {
         let decryption_key_per_crt_prime =
-            decryption_key_per_crt_prime.ok_or(Error::InvalidParameters)?;
+            decryption_key_per_crt_prime.ok_or(Error::from(ErrorKind::InvalidParameters))?;
 
         let setup_parameters =
             SetupParameters::derive_from_plaintext_parameters::<GroupElement::Scalar>(

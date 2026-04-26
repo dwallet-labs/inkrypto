@@ -28,7 +28,7 @@ use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
 use crate::publicly_verifiable_secret_sharing::{DealSecretMessage, DealtSecretShareMessage};
 use crate::setup::{DeriveFromPlaintextPublicParameters, SetupParameters};
 use crate::{
-    equivalence_class, CompactIbqf, EquivalenceClass, Error, Result,
+    equivalence_class, CompactIbqf, EquivalenceClass, Error, ErrorKind, Result,
     DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
 };
 use crate::{
@@ -303,17 +303,17 @@ where
     {
         if computational_security_parameter != DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER {
             // Our sizes are optimized for 112-bits security, need to recompile to allow 128-bit security.
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         if u32::from(access_structure.threshold) > MAX_THRESHOLD
             || u32::from(access_structure.number_of_virtual_parties()) > MAX_PLAYERS
         {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         if FUNDAMENTAL_DISCRIMINANT_LIMBS != CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         let setup_parameters_per_crt_prime =
@@ -374,7 +374,7 @@ where
     let party_to_virtual_parties = access_structure.party_to_virtual_parties();
     let virtual_subset = party_to_virtual_parties
         .get(participating_tangible_party_id)
-        .ok_or(Error::InvalidParameters)?;
+        .ok_or(Error::from(ErrorKind::InvalidParameters))?;
 
     virtual_subset
         .iter()
@@ -386,7 +386,7 @@ where
                     commitments_to_shares
                         .get(&participating_virtual_party_id)
                         .cloned()
-                        .ok_or(Error::InvalidParameters)
+                        .ok_or(Error::from(ErrorKind::InvalidParameters))
                 })
                 .collect::<Result<Vec<_>>>()
                 .and_then(|commitments_to_shares| {
@@ -395,7 +395,7 @@ where
                         .reduce(|public_verification_key_accumulator, commitment_to_share| {
                             public_verification_key_accumulator + commitment_to_share
                         })
-                        .ok_or(Error::InvalidParameters)
+                        .ok_or(Error::from(ErrorKind::InvalidParameters))
                 })
                 .map(|public_verification_key| {
                     (participating_virtual_party_id, public_verification_key)
