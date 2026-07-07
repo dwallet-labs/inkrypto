@@ -12,7 +12,7 @@ use crypto_primes::Flavor;
 
 use group::CsRng;
 
-use crate::Error;
+use crate::{Error, ErrorKind};
 
 pub(crate) const FIRST_100_PRIMES: [u64; 100] = [
     2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97,
@@ -46,7 +46,7 @@ where
     Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
 {
     if p.get() <= Uint::from(2u32) {
-        return Err(Error::PIsNotAnOddPrime);
+        return Err(Error::from(ErrorKind::PIsNotAnOddPrime));
     }
 
     let n_mod_p = n.normalized_rem(p);
@@ -84,7 +84,7 @@ where
             Ok(-1i8)
         } else {
             // impossible; it must be one of the other three cases.
-            Err(Error::NoQuadraticNonResidueMod2)
+            Err(Error::from(ErrorKind::NoQuadraticNonResidueMod2))
         }
     } else {
         legendre_symbol(a, p)
@@ -111,10 +111,10 @@ where
     Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
 {
     if p.get() <= Uint::from(2u32) {
-        return Err(Error::PIsNotAnOddPrime);
+        return Err(Error::from(ErrorKind::PIsNotAnOddPrime));
     }
     if !bool::from(p.is_odd()) {
-        return Err(Error::PIsNotAnOddPrime);
+        return Err(Error::from(ErrorKind::PIsNotAnOddPrime));
     }
 
     // safe; p is a non-zero unsigned integer.
@@ -128,7 +128,7 @@ where
         Ok(false)
     } else {
         // should never be touched; it suggests `p` was not prime, which was assumed.
-        Err(Error::PIsNotPrime)
+        Err(Error::from(ErrorKind::PIsNotPrime))
     }
 }
 
@@ -143,7 +143,7 @@ where
     Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
 {
     if p.get() <= Uint::from(2u32) {
-        return Err(Error::NoQuadraticNonResidueMod2);
+        return Err(Error::from(ErrorKind::NoQuadraticNonResidueMod2));
     }
 
     let mut z = Uint::from(2u32);
@@ -151,7 +151,7 @@ where
         z = z
             .checked_add(&Uint::ONE)
             .into_option()
-            .ok_or(Error::InternalError)?;
+            .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
     }
     Ok(z)
 }
@@ -185,7 +185,7 @@ where
     // safe to unwrap; if two_exp_m is some, it is non-zero.
     let two_exp_m = CtOption::from(Uint::<LIMBS>::ONE.overflowing_shl(m))
         .into_option()
-        .ok_or(Error::InternalError)?
+        .ok_or_else(|| Error::from(ErrorKind::InternalError))?
         .to_nz()
         .unwrap();
     let q = p_min_1.div(&two_exp_m);
@@ -218,13 +218,13 @@ where
         }
 
         if i == m {
-            return Err(Error::QuadraticNonResidueHasNoSqrt);
+            return Err(Error::from(ErrorKind::QuadraticNonResidueHasNoSqrt));
         }
 
         // Compute b
         let exp = CtOption::from(Uint::ONE.overflowing_shl(m - i - 1))
             .into_option()
-            .ok_or(Error::InternalError)?;
+            .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
         let b = modpow_vartime(&c, &exp, p);
 
         m = i;
@@ -256,7 +256,7 @@ where
             return Ok(p);
         }
     }
-    Err(Error::NoSolutionAmongSmallPrimes)
+    Err(Error::from(ErrorKind::NoSolutionAmongSmallPrimes))
 }
 
 /// Construct a prime `p` of given `bit_size` s.t. the Kronecker Symbol `(n | p) = 1`.
@@ -357,13 +357,13 @@ where
     for exponent_bit in (0..exponent_bits).rev().map(|n| (e >> n) & 1) {
         (res, overflow) = res.square_wide();
         if overflow != Uint::ZERO {
-            return Err(Error::InternalError);
+            return Err(Error::from(ErrorKind::InternalError));
         }
 
         if exponent_bit == 1 {
             (res, overflow) = res.widening_mul(x);
             if overflow != Uint::ZERO {
-                return Err(Error::InternalError);
+                return Err(Error::from(ErrorKind::InternalError));
             }
         }
     }

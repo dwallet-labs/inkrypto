@@ -25,7 +25,7 @@ impl Party {
         const SCALAR_LIMBS: usize,
         const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
         const MESSAGE_LIMBS: usize,
-        GroupElement: VerifyingKey<SCALAR_LIMBS>,
+        GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
         EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
     >(
         protocol_public_parameters: &ProtocolPublicParameters<
@@ -101,7 +101,7 @@ impl Party {
         const SCALAR_LIMBS: usize,
         const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
         const MESSAGE_LIMBS: usize,
-        GroupElement: VerifyingKey<SCALAR_LIMBS>,
+        GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
         EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
     >(
         protocol_public_parameters: &ProtocolPublicParameters<
@@ -159,7 +159,7 @@ impl Party {
         const SCALAR_LIMBS: usize,
         const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
         const MESSAGE_LIMBS: usize,
-        GroupElement: VerifyingKey<SCALAR_LIMBS>,
+        GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
         EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
     >(
         protocol_public_parameters: &ProtocolPublicParameters<

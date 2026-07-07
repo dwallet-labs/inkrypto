@@ -15,7 +15,7 @@ use crate::helpers::vartime_div::{FullVartimeDiv, FullVartimeFlooredDiv};
 use crate::helpers::vartime_mul::{CheckedMulVartime, ConcatenatingMulVartime};
 use crate::ibqf::unreduced::UnreducedIbqf;
 use crate::ibqf::{math, Ibqf, PARTIAL_XGCD_VARTIME_OUTPUT_BITSIZE_SPREAD};
-use crate::Error;
+use crate::{Error, ErrorKind};
 
 impl<const HALF: usize, const LIMBS: usize, const DOUBLE: usize> Ibqf<LIMBS>
 where
@@ -53,7 +53,7 @@ where
     pub fn nucomp(&self, rhs: Self) -> Self {
         self.nucomp_unreduced::<false, false>(rhs)
             .into_option()
-            .ok_or(Error::InvalidParameters)
+            .ok_or_else(|| Error::from(ErrorKind::InvalidParameters))
             .unwrap()
             .reduce()
     }
@@ -74,11 +74,11 @@ where
     pub fn nucomp_randomized(&self, rhs: Self) -> Self {
         self.nucomp_unreduced::<true, false>(rhs)
             .into_option()
-            .ok_or(Error::InvalidParameters)
+            .ok_or_else(|| Error::from(ErrorKind::InvalidParameters))
             .unwrap()
             .reduce_randomized()
             .into_option()
-            .ok_or(Error::FormNotRandomized)
+            .ok_or_else(|| Error::from(ErrorKind::FormNotRandomized))
             .unwrap()
     }
 
@@ -92,11 +92,11 @@ where
     pub fn nucomp_randomized_pair(&self, rhs: Self) -> Self {
         self.nucomp_unreduced::<true, true>(rhs)
             .into_option()
-            .ok_or(Error::InvalidParameters)
+            .ok_or_else(|| Error::from(ErrorKind::InvalidParameters))
             .unwrap()
             .reduce_randomized()
             .into_option()
-            .ok_or(Error::FormNotRandomized)
+            .ok_or_else(|| Error::from(ErrorKind::FormNotRandomized))
             .unwrap()
     }
 
@@ -364,11 +364,11 @@ where
         let s = CtOption::from(b1.checked_add(&b2))
             .map(|b1_b2| b1_b2.shr_vartime(1))
             .into_option()
-            .ok_or(Error::InternalError)?;
+            .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
         let m = b2
             .checked_sub(&s)
             .into_option()
-            .ok_or(Error::InternalError)?;
+            .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
 
         // a1 * U + a2 * V = F = gcd(a1, a2);
         let (F, U, V, a1_div_F, a2_div_F) = math::xgcd_vartime(a1, *a2);
@@ -395,7 +395,7 @@ where
                 .and_then(|x| x.checked_add(&m.concatenating_mul_vartime(&V)).into())
                 .map(|x| x.div_full_vartime(&w))
                 .into_option()
-                .ok_or(Error::InternalError)?;
+                .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
 
             let (Cy, _) = a2.div_rem_vartime(&Ax);
 
@@ -416,7 +416,7 @@ where
             m11.concatenating_mul_vartime(&Ax),
             CtOption::from(m10.concatenating_mul_vartime(&Ax).as_int().checked_neg())
                 .into_option()
-                .ok_or(Error::InternalError)?,
+                .ok_or_else(|| Error::from(ErrorKind::InternalError))?,
         );
 
         // Update Cx and Cy
@@ -424,7 +424,7 @@ where
             .and_then(|BxCy| BxCy.checked_sub(&m.concatenating_mul_vartime(&m11)))
             .map(|BxCy_m11m| BxCy_m11m.div_full_vartime(&By))
             .into_option()
-            .ok_or(Error::InternalError)?;
+            .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
         let Cy = if Bx == Uint::ZERO {
             CtOption::from(new_By.concatenating_mul_vartime(&a2).try_into_int())
                 .and_then(|ByA2| {
@@ -433,14 +433,14 @@ where
                 })
                 .map(|ByA2_mAy| ByA2_mAy.div_full_vartime(&a1))
                 .into_option()
-                .ok_or(Error::InternalError)?
+                .ok_or_else(|| Error::from(ErrorKind::InternalError))?
         } else {
             let Bx_nz = Bx.to_nz().expect("Bx is non-zero due to if-statement");
             Cx.checked_mul_vartime(&new_By)
                 .and_then(|CxBy| CxBy.checked_add(&m.resize::<LIMBS>()).into())
                 .map(|CxBy_m| CxBy_m.div_full_vartime(&Bx_nz))
                 .into_option()
-                .ok_or(Error::InternalError)?
+                .ok_or_else(|| Error::from(ErrorKind::InternalError))?
         };
 
         /* Update Dx and Dy */
@@ -454,7 +454,7 @@ where
 
         let m11_nz = CtOption::from(m11.to_nz())
             .into_option()
-            .ok_or(Error::InternalError)?;
+            .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
         let Dy = Dy
             .resize::<DOUBLE>()
             .wrapping_sub(&Dx.concatenating_mul_vartime(&m10.resize::<LIMBS>()))
@@ -469,10 +469,10 @@ where
             Cy,
             CtOption::from(Bx.try_into_int())
                 .into_option()
-                .ok_or(Error::InternalError)?,
+                .ok_or_else(|| Error::from(ErrorKind::InternalError))?,
             CtOption::from(new_By.try_into_int())
                 .into_option()
-                .ok_or(Error::InternalError)?,
+                .ok_or_else(|| Error::from(ErrorKind::InternalError))?,
         )?;
 
         // A = Cy * By - Dy * Ay
@@ -480,18 +480,18 @@ where
             .checked_sub(&AyDy)
             .and_then(|a| a.to_nz().into())
             .into_option()
-            .ok_or(Error::InternalError)?;
+            .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
         // B = Ax * Dy + Ay * Dx - Cy * Bx - Cx * By
         let b = AxDy_AyDx
             .checked_sub(&BxCy_ByCx)
             .into_option()
-            .ok_or(Error::InternalError)?;
+            .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
         // C = Cx * Bx - Ax * Dx
         let c = BxCx
             .checked_sub(&AxDx)
             .and_then(|c| c.to_nz().into())
             .into_option()
-            .ok_or(Error::InternalError)?;
+            .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
 
         Ok(UnreducedIbqf {
             a,

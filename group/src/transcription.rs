@@ -1,7 +1,7 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
-use crate::{Error, Result};
+use crate::{Error, ErrorKind, Result};
 use serde::Serialize;
 
 /// A transcribeable struct is one which can be transcribed into bytes that uniquely and deterministically capture its value.
@@ -21,7 +21,7 @@ pub trait Transcribeable: Sized {
     fn transcribe(self) -> Result<Vec<u8>> {
         let canonical_representation: Self::CanonicalRepresentation = self.into();
         let serialized = serde_json::to_string_pretty(&canonical_representation)
-            .map_err(|_| Error::Transcription)?;
+            .map_err(|_| Error::from(ErrorKind::Transcription))?;
 
         Ok(serialized.into_bytes())
     }

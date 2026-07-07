@@ -24,18 +24,19 @@ use crate::dkg::{
 };
 use crate::equivalence_class::EquivalenceClassOps;
 use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
+    DealtSecretShare, DealtSecretShareMessage,
+};
+use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
     SecretKeyShareCRTPrimeSetupParameters, CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS,
     CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, MAX_PRIMES, NUM_ENCRYPTION_OF_DECRYPTION_KEY_PRIMES,
     NUM_SECRET_SHARE_PRIMES, SECRET_SHARE_CRT_COEFFICIENTS, SECRET_SHARE_CRT_PRIMES_PRODUCT,
 };
-use crate::publicly_verifiable_secret_sharing::{
-    BaseProtocolContext, DealtSecretShare, DealtSecretShareMessage,
-};
+use crate::publicly_verifiable_secret_sharing::BaseProtocolContext;
 use crate::setup::DeriveFromPlaintextPublicParameters;
 use crate::setup::SetupParameters;
 use crate::{
     equivalence_class, publicly_verifiable_secret_sharing, CiphertextSpaceGroupElement,
-    CompactIbqf, EquivalenceClass, Error, Result, SECRET_KEY_SHARE_LIMBS,
+    CompactIbqf, EquivalenceClass, Error, ErrorKind, Result, SECRET_KEY_SHARE_LIMBS,
     SECRET_KEY_SHARE_WITNESS_LIMBS,
 };
 
@@ -84,8 +85,8 @@ where
     >,
     GroupElement::Scalar: Default,
 {
-    /// The output of this round is an agreed upon subset of honest dealears along with the private shares gained by decrypting and summing over the agreed subset.
-    /// In addition, the parties agree on the therhold keys $\textsf{pk}_{Q'_{m'}}$ for $m'\in[1,M']$ along with the Elliptic Curve public key $\textsf{pk_{q}}$
+    /// The output of this round is an agreed upon subset of honest dealers along with the private shares gained by decrypting and summing over the agreed subset.
+    /// In addition, the parties agree on the threshold keys $\textsf{pk}_{Q'_{m'}}$ for $m'\in[1,M']$ along with the Elliptic Curve public key $\textsf{pk_{q}}$
     /// This round essentially finishes the implementation of $\mathcal{F}_{\textaf{ACS}}$.
     /// Namely, it is responsible for the local derivation of the secret key share $[\textsf{sk}]_i$, after reaching agreement on the subset $S$ of honestly participating parties in the previous rounds.
     /// $[\textsf{sk}]_{i}=\sum_{j\in S}[s_{j}]_{i}$
@@ -102,7 +103,7 @@ where
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             group::PublicParameters<GroupElement::Scalar>,
         >,
-        pvss_party: &publicly_verifiable_secret_sharing::Party<
+        pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
@@ -180,7 +181,7 @@ where
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             group::PublicParameters<GroupElement::Scalar>,
         >,
-        pvss_party: &publicly_verifiable_secret_sharing::Party<
+        pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
@@ -329,8 +330,15 @@ where
             >::compute_threshold_encryption_keys(
                 malicious_parties.clone(),
                 threshold_encryption_key_shares_and_proofs,
+                &public_input.setup_parameters_per_crt_prime,
             )?;
 
+        let ciphertext_space_public_parameters = group::self_product::PublicParameters(
+            public_input.setup_parameters_per_crt_prime[0]
+                .groups_public_parameters
+                .ciphertext_space_public_parameters
+                .clone(),
+        );
         let encryptions_of_shares_per_crt_prime = PublicOutput::<
             PLAINTEXT_SPACE_SCALAR_LIMBS,
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -340,28 +348,30 @@ where
             malicious_parties.clone(),
             parties_that_were_dealt_shares,
             encryptions_of_shares_and_proofs,
+            &ciphertext_space_public_parameters,
         )?;
 
         let virtual_subset = access_structure.virtual_subset(HashSet::from([tangible_party_id]))?;
 
-        let decryption_key_shares = publicly_verifiable_secret_sharing::Party::<
-            NUM_SECRET_SHARE_PRIMES,
-            SECRET_KEY_SHARE_LIMBS,
-            SECRET_KEY_SHARE_WITNESS_LIMBS,
-            PLAINTEXT_SPACE_SCALAR_LIMBS,
-            FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            GroupElement,
-        >::decrypt_secrets(
-            public_input.setup_parameters_per_crt_prime.clone(),
-            SECRET_SHARE_CRT_COEFFICIENTS,
-            SECRET_SHARE_CRT_PRIMES_PRODUCT,
-            encryptions_of_shares_per_crt_prime
-                .into_iter()
-                .filter(|(virtual_party_id, _)| virtual_subset.contains(virtual_party_id))
-                .collect(),
-            decryption_key_per_crt_prime,
-        )?;
+        let decryption_key_shares =
+            publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party::<
+                NUM_SECRET_SHARE_PRIMES,
+                SECRET_KEY_SHARE_LIMBS,
+                SECRET_KEY_SHARE_WITNESS_LIMBS,
+                PLAINTEXT_SPACE_SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >::decrypt_secrets(
+                public_input.setup_parameters_per_crt_prime.clone(),
+                SECRET_SHARE_CRT_COEFFICIENTS,
+                SECRET_SHARE_CRT_PRIMES_PRODUCT,
+                encryptions_of_shares_per_crt_prime
+                    .into_iter()
+                    .filter(|(virtual_party_id, _)| virtual_subset.contains(virtual_party_id))
+                    .collect(),
+                decryption_key_per_crt_prime,
+            )?;
 
         let decryption_key_bits = public_input.setup_parameters.decryption_key_bits();
         let sample_bits = secret_key_share_size_upper_bound(
@@ -486,13 +496,13 @@ where
                                         encryptions_of_decryption_key_shares,
                                     ))
                                 } else {
-                                    Err(Error::InvalidMessage)
+                                    Err(Error::from(ErrorKind::InvalidMessage))
                                 }
                             } else {
-                                Err(Error::InvalidMessage)
+                                Err(Error::from(ErrorKind::InvalidMessage))
                             }
                         }
-                        _ => Err(Error::InvalidParameters),
+                        _ => Err(Error::from(ErrorKind::InvalidParameters)),
                     };
 
                     (dealer_party_id, res)

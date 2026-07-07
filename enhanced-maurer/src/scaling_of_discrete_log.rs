@@ -14,7 +14,7 @@ impl<
         const RANGE_CLAIMS_PER_SCALAR: usize,
         const COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS: usize,
         const SCALAR_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
     >
     EnhanceableLanguage<
         SOUND_PROOFS_REPETITIONS,
@@ -522,9 +522,7 @@ pub(crate) mod tests {
     #[rstest]
     #[case(2, 1)]
     #[case(3, 3)]
-    #[should_panic(
-        expected = "called `Result::unwrap()` on an `Err` value: MismatchingRangeProofMaurerCommitments([2])"
-    )]
+    #[should_panic(expected = "MismatchingRangeProofMaurerCommitments([2])")]
     fn party_mismatching_maurer_range_proof_statements_aborts_identifiably(
         #[case] number_of_parties: usize,
         #[case] batch_size: usize,
@@ -585,7 +583,7 @@ pub(crate) mod tests {
             witnesses,
         );
 
-        proof::aggregation::test_helpers::wrong_decommitment_aborts_session_identifiably(
+        proof_aggregation::test_helpers::wrong_decommitment_aborts_session_identifiably(
             commitment_round_parties,
         );
     }
@@ -638,7 +636,7 @@ pub(crate) mod tests {
             witnesses,
         );
 
-        proof::aggregation::test_helpers::failed_proof_share_verification_aborts_session_identifiably(
+        proof_aggregation::test_helpers::failed_proof_share_verification_aborts_session_identifiably(
             commitment_round_parties, wrong_commitment_round_parties,
         );
     }
@@ -675,7 +673,7 @@ pub(crate) mod tests {
             witnesses,
         );
 
-        proof::aggregation::test_helpers::unresponsive_parties_aborts_session_identifiably(
+        proof_aggregation::test_helpers::unresponsive_parties_aborts_session_identifiably(
             commitment_round_parties,
         );
     }

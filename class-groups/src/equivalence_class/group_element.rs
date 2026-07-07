@@ -6,12 +6,8 @@ use std::ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign};
 use crypto_bigint::{Concat, Encoding, Int, Split, Uint};
 
 use group::linear_combination::linearly_combine_bounded_or_scale;
-use group::{
-    bounded_integers_group, bounded_natural_numbers_group, Error, GroupElement, LinearlyCombinable,
-    Scale,
-};
+use group::{Error, ErrorKind, GroupElement};
 
-use crate::accelerator::MultiFoldNupowAccelerator;
 use crate::equivalence_class::{
     public_parameters::PublicParameters, EquivalenceClass, EquivalenceClassOps,
 };
@@ -177,7 +173,7 @@ where
                 representative: form,
                 discriminant,
             })
-            .map_err(|_| Error::InvalidGroupElement)
+            .map_err(|_| Error::from(ErrorKind::InvalidGroupElement))
     }
 
     fn neutral(&self) -> Self {
@@ -192,15 +188,44 @@ where
         ))
     }
 
-    fn scale<const LIMBS: usize>(&self, scalar: &Uint<LIMBS>) -> Self {
+    fn add_constant_time(&self, other: &Self, _public_parameters: &Self::PublicParameters) -> Self {
+        *self + other
+    }
+
+    fn sub_constant_time(&self, other: &Self, _public_parameters: &Self::PublicParameters) -> Self {
+        *self - other
+    }
+
+    fn neg_constant_time(&self, _public_parameters: &Self::PublicParameters) -> Self {
+        (*self).neg()
+    }
+
+    fn scale<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        _public_parameters: &Self::PublicParameters,
+    ) -> Self {
         self.pow(scalar)
     }
 
-    fn scale_vartime<const LIMBS: usize>(&self, scalar: &Uint<LIMBS>) -> Self {
-        self.pow_vartime(scalar)
+    fn scale_vartime<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        let scalar_bits = scalar.bits_vartime();
+        match public_parameters.get_accelerator_for(&self.representative, scalar_bits) {
+            Some(accelerator) => Self::pow_multifold_accelerated_vartime(accelerator, scalar),
+            None => self.pow_vartime(scalar),
+        }
     }
 
-    fn scale_bounded<const LIMBS: usize>(&self, scalar: &Uint<LIMBS>, scalar_bits: u32) -> Self {
+    fn scale_bounded<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        scalar_bits: u32,
+        _public_parameters: &Self::PublicParameters,
+    ) -> Self {
         self.pow_bounded(scalar, scalar_bits)
     }
 
@@ -208,83 +233,310 @@ where
         &self,
         scalar: &Uint<LIMBS>,
         scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
     ) -> Self {
-        self.pow_bounded_vartime(scalar, scalar_bits)
+        match public_parameters.get_accelerator_for(&self.representative, scalar_bits) {
+            Some(accelerator) => {
+                Self::pow_bounded_multifold_accelerated_vartime(accelerator, scalar, scalar_bits)
+            }
+            None => self.pow_bounded_vartime(scalar, scalar_bits),
+        }
     }
 
-    fn add_randomized(self, other: &Self) -> Self {
+    fn scale_integer_bounded<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        group::scale_integer_bounded(self, integer, scalar_bits, public_parameters)
+    }
+
+    fn scale_integer<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_integer_bounded(integer, Uint::<LIMBS>::BITS, public_parameters)
+    }
+
+    fn scale_integer_vartime<const LIMBS: usize>(
+        &self,
+        scalar: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        let (abs_scalar, scalar_is_negative) = scalar.abs_sign();
+        let scalar_bits = abs_scalar.bits_vartime();
+        let scaled_by_absolute_value_scalar =
+            match public_parameters.get_accelerator_for(&self.representative, scalar_bits) {
+                Some(accelerator) => Self::pow_bounded_multifold_accelerated_vartime(
+                    accelerator,
+                    &abs_scalar,
+                    scalar_bits,
+                ),
+                None => self.scale_bounded_vartime(&abs_scalar, scalar_bits, public_parameters),
+            };
+
+        if bool::from(scalar_is_negative) {
+            scaled_by_absolute_value_scalar.neg_constant_time(public_parameters)
+        } else {
+            scaled_by_absolute_value_scalar
+        }
+    }
+
+    fn scale_integer_bounded_vartime<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        let (abs_scalar, scalar_is_negative) = integer.abs_sign();
+        let scaled_by_absolute_value_scalar =
+            match public_parameters.get_accelerator_for(&self.representative, scalar_bits) {
+                Some(accelerator) => Self::pow_bounded_multifold_accelerated_vartime(
+                    accelerator,
+                    &abs_scalar,
+                    scalar_bits,
+                ),
+                None => self.scale_bounded_vartime(&abs_scalar, scalar_bits, public_parameters),
+            };
+
+        if bool::from(scalar_is_negative) {
+            scaled_by_absolute_value_scalar.neg_constant_time(public_parameters)
+        } else {
+            scaled_by_absolute_value_scalar
+        }
+    }
+
+    fn scale_randomized_public_base<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        let scalar_bits = Uint::<LIMBS>::BITS;
+        match public_parameters.get_accelerator_for(&self.representative, scalar_bits) {
+            Some(accelerator) => {
+                Self::pow_bounded_multifold_accelerated_randomized(accelerator, scalar, scalar_bits)
+            }
+            None => self.pow_public_base_randomized(scalar),
+        }
+    }
+
+    fn scale_randomized_public_base_bounded<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        match public_parameters.get_accelerator_for(&self.representative, scalar_bits) {
+            Some(accelerator) => {
+                Self::pow_bounded_multifold_accelerated_randomized(accelerator, scalar, scalar_bits)
+            }
+            None => self.pow_public_base_bounded_randomized(scalar, scalar_bits),
+        }
+    }
+
+    fn scale_integer_randomized_public_base<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        let scalar_bits = Uint::<LIMBS>::BITS;
+        match public_parameters.get_accelerator_for(&self.representative, scalar_bits) {
+            Some(accelerator) => {
+                let (abs_scalar, scalar_is_negative) = integer.abs_sign();
+                Self::pow_bounded_multifold_accelerated_randomized(
+                    accelerator,
+                    &abs_scalar,
+                    scalar_bits,
+                )
+                .wrapping_negate_if(scalar_is_negative.into())
+            }
+            None => self.pow_public_base_integer_randomized(integer),
+        }
+    }
+
+    fn scale_integer_randomized_public_base_bounded<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        match public_parameters.get_accelerator_for(&self.representative, scalar_bits) {
+            Some(accelerator) => {
+                let (abs_scalar, scalar_is_negative) = integer.abs_sign();
+                Self::pow_bounded_multifold_accelerated_randomized(
+                    accelerator,
+                    &abs_scalar,
+                    scalar_bits,
+                )
+                .wrapping_negate_if(scalar_is_negative.into())
+            }
+            None => self.pow_public_base_integer_bounded_randomized(integer, scalar_bits),
+        }
+    }
+
+    fn scale_randomized<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        _public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.pow_randomized(scalar)
+    }
+
+    fn scale_randomized_bounded<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        scalar_bits: u32,
+        _public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.pow_bounded_randomized(scalar, scalar_bits)
+    }
+
+    fn scale_integer_randomized<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_integer_randomized_bounded(integer, Uint::<LIMBS>::BITS, public_parameters)
+    }
+
+    fn scale_integer_randomized_bounded<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        scalar_bits: u32,
+        _public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        let (abs_scalar, scalar_is_negative) = integer.abs_sign();
+        self.pow_bounded_randomized(&abs_scalar, scalar_bits)
+            .wrapping_negate_if(scalar_is_negative.into())
+    }
+
+    fn scale_public_base<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_public_base_bounded(scalar, Uint::<LIMBS>::BITS, public_parameters)
+    }
+
+    fn scale_public_base_bounded<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        match public_parameters.get_accelerator_for(&self.representative, scalar_bits) {
+            Some(accelerator) => {
+                Self::pow_bounded_multifold_accelerated(accelerator, scalar, scalar_bits)
+            }
+            None => self.pow_public_base_bounded(scalar, scalar_bits),
+        }
+    }
+
+    fn scale_integer_public_base<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_integer_public_base_bounded(integer, Uint::<LIMBS>::BITS, public_parameters)
+    }
+
+    fn scale_integer_public_base_bounded<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        let (abs_scalar, scalar_is_negative) = integer.abs_sign();
+        self.scale_public_base_bounded(&abs_scalar, scalar_bits, public_parameters)
+            .wrapping_negate_if(scalar_is_negative.into())
+    }
+
+    fn scale_vartime_scalar<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_bounded(scalar, scalar.bits_vartime(), public_parameters)
+    }
+
+    fn scale_randomized_vartime_scalar<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        _public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.pow_bounded_randomized(scalar, scalar.bits_vartime())
+    }
+
+    fn scale_integer_randomized_vartime_scalar<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        _public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        let (abs_scalar, scalar_is_negative) = integer.abs_sign();
+        let scaled_by_absolute_value_scalar =
+            self.pow_bounded_randomized(&abs_scalar, abs_scalar.bits_vartime());
+
+        if bool::from(scalar_is_negative) {
+            scaled_by_absolute_value_scalar.neg_constant_time(_public_parameters)
+        } else {
+            scaled_by_absolute_value_scalar
+        }
+    }
+
+    fn add_randomized(&self, other: &Self, _public_parameters: &Self::PublicParameters) -> Self {
         // TODO(#35): get rid of unwrap
         self.mul_randomized(other).unwrap()
     }
 
-    fn add_vartime(self, other: &Self) -> Self {
+    fn add_vartime(&self, other: &Self, _public_parameters: &Self::PublicParameters) -> Self {
         // TODO(#35): get rid of unwrap
         self.mul_vartime(other).unwrap()
     }
 
-    fn sub_randomized(self, other: &Self) -> Self {
+    fn sub_randomized(&self, other: &Self, _public_parameters: &Self::PublicParameters) -> Self {
         // TODO(#35): get rid of unwrap
         self.div(other).unwrap()
     }
 
-    fn sub_vartime(self, other: &Self) -> Self {
+    fn sub_vartime(&self, other: &Self, _public_parameters: &Self::PublicParameters) -> Self {
         // TODO(#35): get rid of unwrap
         self.div_vartime(other).unwrap()
     }
 
-    fn double(&self) -> Self {
+    fn double(&self, _public_parameters: &Self::PublicParameters) -> Self {
         self.square()
     }
 
-    fn double_vartime(&self) -> Self {
+    fn double_vartime(&self, _public_parameters: &Self::PublicParameters) -> Self {
         self.square_vartime()
     }
-}
 
-impl<
-        'r,
-        const ELEMENT_SCALAR_LIMBS: usize,
-        const HALF: usize,
-        const DISCRIMINANT_LIMBS: usize,
-        const DOUBLE: usize,
-    > Mul<&'r EquivalenceClass<DISCRIMINANT_LIMBS>>
-    for bounded_natural_numbers_group::GroupElement<ELEMENT_SCALAR_LIMBS>
-where
-    Uint<ELEMENT_SCALAR_LIMBS>: Encoding,
-
-    Int<DISCRIMINANT_LIMBS>: Encoding,
-    Uint<HALF>: Concat<Output = Uint<DISCRIMINANT_LIMBS>>,
-    Uint<DISCRIMINANT_LIMBS>: Encoding + Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
-    Uint<DOUBLE>: Split<Output = Uint<DISCRIMINANT_LIMBS>>,
-{
-    type Output = EquivalenceClass<DISCRIMINANT_LIMBS>;
-
-    fn mul(self, rhs: &'r EquivalenceClass<DISCRIMINANT_LIMBS>) -> Self::Output {
-        rhs.scale_bounded(&self.value(), self.upper_bound_bits)
+    fn linearly_combine_bounded<const RHS_LIMBS: usize>(
+        bases_and_multiplicands: Vec<(Self, Uint<RHS_LIMBS>)>,
+        exponent_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> group::Result<Self> {
+        linearly_combine_bounded_or_scale(
+            bases_and_multiplicands,
+            exponent_bits,
+            true,
+            public_parameters,
+        )
     }
-}
 
-impl<
-        'r,
-        const ELEMENT_SCALAR_LIMBS: usize,
-        const HALF: usize,
-        const DISCRIMINANT_LIMBS: usize,
-        const DOUBLE: usize,
-    > Mul<&'r EquivalenceClass<DISCRIMINANT_LIMBS>>
-    for bounded_integers_group::GroupElement<ELEMENT_SCALAR_LIMBS>
-where
-    Uint<ELEMENT_SCALAR_LIMBS>: Encoding,
-    Int<ELEMENT_SCALAR_LIMBS>: Encoding,
-
-    Int<DISCRIMINANT_LIMBS>: Encoding,
-    Uint<HALF>: Concat<Output = Uint<DISCRIMINANT_LIMBS>>,
-    Uint<DISCRIMINANT_LIMBS>: Encoding + Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
-    Uint<DOUBLE>: Split<Output = Uint<DISCRIMINANT_LIMBS>>,
-{
-    type Output = EquivalenceClass<DISCRIMINANT_LIMBS>;
-
-    fn mul(self, rhs: &'r EquivalenceClass<DISCRIMINANT_LIMBS>) -> Self::Output {
-        rhs.scale_integer_bounded(&self.value(), self.upper_bound_bits)
+    fn linearly_combine_bounded_vartime<const RHS_LIMBS: usize>(
+        bases_and_multiplicands: Vec<(Self, Uint<RHS_LIMBS>)>,
+        exponent_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> group::Result<Self> {
+        linearly_combine_bounded_or_scale(
+            bases_and_multiplicands,
+            exponent_bits,
+            false,
+            public_parameters,
+        )
     }
 }
 
@@ -305,7 +557,8 @@ where
     type Output = EquivalenceClass<DISCRIMINANT_LIMBS>;
 
     fn mul(self, rhs: Uint<SCALAR_LIMBS>) -> Self::Output {
-        self.scale(&rhs)
+        let public_parameters = PublicParameters::new_unaccelerated(*self.discriminant());
+        self.scale(&rhs, &public_parameters)
     }
 }
 
@@ -327,194 +580,8 @@ where
     type Output = EquivalenceClass<DISCRIMINANT_LIMBS>;
 
     fn mul(self, rhs: &'r Uint<SCALAR_LIMBS>) -> Self::Output {
-        self.scale(rhs)
-    }
-}
-
-impl<const HALF: usize, const DISCRIMINANT_LIMBS: usize, const DOUBLE: usize> LinearlyCombinable
-    for EquivalenceClass<DISCRIMINANT_LIMBS>
-where
-    Int<DISCRIMINANT_LIMBS>: Encoding,
-    Uint<HALF>: Concat<Output = Uint<DISCRIMINANT_LIMBS>>,
-    Uint<DISCRIMINANT_LIMBS>: Encoding + Concat<Output = Uint<DOUBLE>> + Split<Output = Uint<HALF>>,
-    Uint<DOUBLE>: Split<Output = Uint<DISCRIMINANT_LIMBS>>,
-{
-    fn linearly_combine_bounded<const RHS_LIMBS: usize>(
-        bases_and_multiplicands: Vec<(Self, Uint<RHS_LIMBS>)>,
-        exponent_bits: u32,
-    ) -> group::Result<Self> {
-        linearly_combine_bounded_or_scale(bases_and_multiplicands, exponent_bits, true)
-    }
-
-    fn linearly_combine_bounded_vartime<const RHS_LIMBS: usize>(
-        bases_and_multiplicands: Vec<(Self, Uint<RHS_LIMBS>)>,
-        exponent_bits: u32,
-    ) -> group::Result<Self> {
-        linearly_combine_bounded_or_scale(bases_and_multiplicands, exponent_bits, false)
-    }
-}
-
-impl<const DISCRIMINANT_LIMBS: usize, const LIMBS: usize> Scale<Uint<LIMBS>>
-    for EquivalenceClass<DISCRIMINANT_LIMBS>
-where
-    Int<DISCRIMINANT_LIMBS>: Encoding,
-    Uint<DISCRIMINANT_LIMBS>: Encoding,
-
-    Self: GroupElement<PublicParameters = PublicParameters<DISCRIMINANT_LIMBS>>
-        + EquivalenceClassOps<
-            DISCRIMINANT_LIMBS,
-            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<DISCRIMINANT_LIMBS>,
-        >,
-{
-    fn scale_randomized_accelerated(
-        &self,
-        scalar: &Uint<LIMBS>,
-        public_parameters: &Self::PublicParameters,
-    ) -> Self {
-        // `self` is public, so safe to match.
-        let scalar_bits = Uint::<LIMBS>::BITS;
-        match public_parameters.get_accelerator_for(&self.representative, scalar_bits) {
-            Some(accelerator) => Self::pow_bounded_multifold_accelerated_randomized(
-                accelerator,
-                scalar,
-                Uint::<LIMBS>::BITS,
-            ),
-            None => self.pow_public_base_randomized(scalar),
-        }
-    }
-
-    fn scale_vartime_accelerated(
-        &self,
-        scalar: &Uint<LIMBS>,
-        public_parameters: &Self::PublicParameters,
-    ) -> Self {
-        let scalar_bits = scalar.bits();
-        match public_parameters.get_accelerator_for(&self.representative, scalar_bits) {
-            Some(accelerator) => Self::pow_multifold_accelerated_vartime(accelerator, scalar),
-            None => self.scale_vartime(scalar),
-        }
-    }
-
-    fn scale_randomized_bounded_accelerated(
-        &self,
-        scalar: &Uint<LIMBS>,
-        public_parameters: &Self::PublicParameters,
-        scalar_bits: u32,
-    ) -> Self {
-        // `self` is public, so safe to match.
-        match public_parameters.get_accelerator_for(&self.representative, scalar_bits) {
-            Some(accelerator) => {
-                Self::pow_bounded_multifold_accelerated_randomized(accelerator, scalar, scalar_bits)
-            }
-            None => self.pow_public_base_bounded_randomized(scalar, scalar_bits),
-        }
-    }
-
-    fn scale_bounded_vartime_accelerated(
-        &self,
-        scalar: &Uint<LIMBS>,
-        public_parameters: &Self::PublicParameters,
-        scalar_bits: u32,
-    ) -> Self {
-        match public_parameters.get_accelerator_for(&self.representative, scalar_bits) {
-            Some(accelerator) => {
-                Self::pow_bounded_multifold_accelerated_vartime(accelerator, scalar, scalar_bits)
-            }
-            None => self.scale_bounded_vartime(scalar, scalar_bits),
-        }
-    }
-}
-
-impl<const DISCRIMINANT_LIMBS: usize, const LIMBS: usize> Scale<Int<LIMBS>>
-    for EquivalenceClass<DISCRIMINANT_LIMBS>
-where
-    Int<DISCRIMINANT_LIMBS>: Encoding,
-    Uint<DISCRIMINANT_LIMBS>: Encoding,
-
-    Self: GroupElement<PublicParameters = PublicParameters<DISCRIMINANT_LIMBS>>
-        + EquivalenceClassOps<
-            DISCRIMINANT_LIMBS,
-            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<DISCRIMINANT_LIMBS>,
-        >,
-{
-    fn scale_randomized_accelerated(
-        &self,
-        scalar: &Int<LIMBS>,
-        public_parameters: &Self::PublicParameters,
-    ) -> Self {
-        // `self` is public, so safe to match.
-        let scalar_bits = Uint::<LIMBS>::BITS;
-        match public_parameters.get_accelerator_for(&self.representative, scalar_bits) {
-            Some(accelerator) => {
-                let (abs_scalar, scalar_is_negative) = scalar.abs_sign();
-                Self::pow_bounded_multifold_accelerated_randomized(
-                    accelerator,
-                    &abs_scalar,
-                    scalar_bits,
-                )
-                .wrapping_negate_if(scalar_is_negative.into())
-            }
-            None => self.pow_public_base_integer_randomized(scalar),
-        }
-    }
-
-    fn scale_vartime_accelerated(
-        &self,
-        scalar: &Int<LIMBS>,
-        public_parameters: &Self::PublicParameters,
-    ) -> Self {
-        let (abs_scalar, scalar_is_negative) = scalar.abs_sign();
-        let scalar_bits = abs_scalar.bits();
-        match public_parameters.get_accelerator_for(&self.representative, scalar_bits) {
-            Some(accelerator) => Self::pow_bounded_multifold_accelerated_vartime(
-                accelerator,
-                &abs_scalar,
-                scalar_bits,
-            )
-            .wrapping_negate_if(scalar_is_negative.into()),
-            None => self.scale_integer_vartime(scalar),
-        }
-    }
-
-    fn scale_randomized_bounded_accelerated(
-        &self,
-        scalar: &Int<LIMBS>,
-        public_parameters: &Self::PublicParameters,
-        scalar_bits: u32,
-    ) -> Self {
-        // `self` is public, so safe to match.
-        match public_parameters.get_accelerator_for(&self.representative, scalar_bits) {
-            Some(accelerator) => {
-                let (abs_scalar, scalar_is_negative) = scalar.abs_sign();
-                Self::pow_bounded_multifold_accelerated_randomized(
-                    accelerator,
-                    &abs_scalar,
-                    scalar_bits,
-                )
-                .wrapping_negate_if(scalar_is_negative.into())
-            }
-            None => self.pow_public_base_integer_bounded_randomized(scalar, scalar_bits),
-        }
-    }
-
-    fn scale_bounded_vartime_accelerated(
-        &self,
-        scalar: &Int<LIMBS>,
-        public_parameters: &Self::PublicParameters,
-        scalar_bits: u32,
-    ) -> Self {
-        match public_parameters.get_accelerator_for(&self.representative, scalar_bits) {
-            Some(accelerator) => {
-                let (abs_scalar, scalar_is_negative) = scalar.abs_sign();
-                Self::pow_bounded_multifold_accelerated_vartime(
-                    accelerator,
-                    &abs_scalar,
-                    scalar_bits,
-                )
-                .wrapping_negate_if(scalar_is_negative.into())
-            }
-            None => self.scale_integer_bounded_vartime(scalar, scalar_bits),
-        }
+        let public_parameters = PublicParameters::new_unaccelerated(*self.discriminant());
+        self.scale(rhs, &public_parameters)
     }
 }
 

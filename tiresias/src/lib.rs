@@ -12,7 +12,7 @@ pub use ::group::ComputationalSecuritySizedNumber;
 pub use decryption_key::DecryptionKey;
 pub use decryption_key_share::DecryptionKeyShare;
 pub use encryption_key::EncryptionKey;
-pub use error::{Error, ProtocolError, Result, SanityCheckError};
+pub use error::{Error, ErrorKind, ProtocolError, Result, SanityCheckError};
 pub use group::{
     CiphertextSpaceGroupElement, CiphertextSpacePublicParameters, CiphertextSpaceValue,
     PlaintextSpaceGroupElement, PlaintextSpacePublicParameters, PlaintextSpaceValue,

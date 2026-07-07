@@ -58,11 +58,24 @@ where
             &language_public_parameters.second_commitment_scheme_public_parameters,
         )?;
 
-        let [first_randomness, second_randomness] = (*witness.commitment_randomnesses()).into();
+        let [first_randomness, second_randomness] =
+            witness.commitment_randomnesses().clone().into();
 
         Ok([
-            first_commitment_scheme.commit(witness.commitment_message(), &first_randomness),
-            second_commitment_scheme.commit(witness.commitment_message(), &second_randomness),
+            first_commitment_scheme.commit(
+                witness.commitment_message(),
+                &first_randomness,
+                language_public_parameters
+                    .first_commitment_scheme_public_parameters
+                    .commitment_space_public_parameters(),
+            ),
+            second_commitment_scheme.commit(
+                witness.commitment_message(),
+                &second_randomness,
+                language_public_parameters
+                    .second_commitment_scheme_public_parameters
+                    .commitment_space_public_parameters(),
+            ),
         ]
         .into())
     }
@@ -366,13 +379,11 @@ pub mod test_helpers {
 }
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use std::iter;
 
     use rstest::rstest;
 
-    use group::{OsCsRng, PartyID};
-    use mpc::Weight;
+    use group::OsCsRng;
 
     use crate::language::StatementSpaceGroupElement;
     use crate::test_helpers::{batch_verifies, generate_valid_proof, sample_witnesses};
@@ -481,91 +492,6 @@ mod tests {
             &mut OsCsRng,
         )
     }
-
-    #[rstest]
-    #[case(1, 1)]
-    #[case(1, 2)]
-    #[case(2, 1)]
-    #[case(2, 3)]
-    #[case(5, 2)]
-    fn aggregates(#[case] number_of_parties: usize, #[case] batch_size: usize) {
-        let language_public_parameters = language_public_parameters::<1>();
-
-        test_helpers::aggregates::<SOUND_PROOFS_REPETITIONS, Lang<1>>(
-            &language_public_parameters,
-            number_of_parties,
-            batch_size,
-        );
-    }
-
-    #[rstest]
-    #[case(2, HashMap::from([(1, 1), (2, 1)]), 1)]
-    #[case(2, HashMap::from([(1, 1), (2, 1)]), 2)]
-    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), 1)]
-    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), 2)]
-    fn statement_aggregates_asynchronously(
-        #[case] threshold: PartyID,
-        #[case] party_to_weight: HashMap<PartyID, Weight>,
-        #[case] batch_size: usize,
-    ) {
-        let language_public_parameters = language_public_parameters::<1>();
-
-        test_helpers::statement_aggregates_asynchronously::<SOUND_PROOFS_REPETITIONS, Lang<1>>(
-            &language_public_parameters,
-            threshold,
-            party_to_weight,
-            batch_size,
-            &mut OsCsRng,
-        );
-    }
-
-    #[rstest]
-    #[case(2, 1)]
-    #[case(3, 1)]
-    #[case(5, 2)]
-    fn unresponsive_parties_aborts_session_identifiably(
-        #[case] number_of_parties: usize,
-        #[case] batch_size: usize,
-    ) {
-        let language_public_parameters = language_public_parameters::<1>();
-
-        test_helpers::unresponsive_parties_aborts_session_identifiably::<
-            SOUND_PROOFS_REPETITIONS,
-            Lang<1>,
-        >(&language_public_parameters, number_of_parties, batch_size);
-    }
-
-    #[rstest]
-    #[case(2, 1)]
-    #[case(3, 1)]
-    #[case(5, 2)]
-    fn wrong_decommitment_aborts_session_identifiably(
-        #[case] number_of_parties: usize,
-        #[case] batch_size: usize,
-    ) {
-        let language_public_parameters = language_public_parameters::<1>();
-
-        test_helpers::wrong_decommitment_aborts_session_identifiably::<
-            SOUND_PROOFS_REPETITIONS,
-            Lang<1>,
-        >(&language_public_parameters, number_of_parties, batch_size);
-    }
-
-    #[rstest]
-    #[case(2, 1)]
-    #[case(3, 1)]
-    #[case(5, 2)]
-    fn failed_proof_share_verification_aborts_session_identifiably(
-        #[case] number_of_parties: usize,
-        #[case] batch_size: usize,
-    ) {
-        let language_public_parameters = language_public_parameters::<1>();
-
-        test_helpers::failed_proof_share_verification_aborts_session_identifiably::<
-            SOUND_PROOFS_REPETITIONS,
-            Lang<1>,
-        >(&language_public_parameters, number_of_parties, batch_size);
-    }
 }
 
 #[cfg(feature = "benchmarking")]
@@ -583,13 +509,6 @@ pub(crate) mod benches {
         let language_public_parameters = language_public_parameters::<1>();
 
         test_helpers::benchmark_proof::<SOUND_PROOFS_REPETITIONS, Lang<1>>(
-            &language_public_parameters,
-            None,
-            false,
-            None,
-        );
-
-        test_helpers::benchmark_aggregation::<SOUND_PROOFS_REPETITIONS, Lang<1>>(
             &language_public_parameters,
             None,
             false,

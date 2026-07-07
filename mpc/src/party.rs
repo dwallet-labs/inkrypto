@@ -83,7 +83,7 @@ pub trait AsynchronouslyAdvanceable: Party + Sized {
     >;
 
     /// For a given round `r = current_round`,
-    /// return the round `r` < r` that could cause the current round to abort on an [`Error::ThresholdNotReached`] error
+    /// return the round `r` < r` that could cause the current round to abort on an [`ErrorKind::ThresholdNotReached`] error
     /// (if some of the messages from that round were malicious,
     ///  such that more than `t` received with them, but less than `t` without them (in total weight.))
     ///
@@ -195,7 +195,40 @@ pub mod test_helpers {
         bench_separately: bool,
         debug: bool,
     ) -> (Duration, Vec<Duration>, P::PublicOutput) {
-        asynchronous_session_with_malicious_parties_terminates_successfully_internal::<P, P>(
+        let (time, times, _private_outputs, public_output) =
+            asynchronous_session_terminates_successfully_internal_with_private_outputs::<P>(
+                session_id,
+                access_structure,
+                private_inputs,
+                public_inputs,
+                number_of_rounds,
+                parties_by_round,
+                bench_separately,
+                debug,
+            );
+        (time, times, public_output)
+    }
+
+    /// Same as `asynchronous_session_terminates_successfully_internal`, but also returns
+    /// the private outputs from all parties that participated in the final round.
+    pub fn asynchronous_session_terminates_successfully_internal_with_private_outputs<
+        P: Party + AsynchronouslyAdvanceable,
+    >(
+        session_id: CommitmentSizedNumber,
+        access_structure: &WeightedThresholdAccessStructure,
+        private_inputs: HashMap<PartyID, P::PrivateInput>,
+        public_inputs: HashMap<PartyID, P::PublicInput>,
+        number_of_rounds: usize,
+        parties_by_round: HashMap<u64, HashSet<PartyID>>,
+        bench_separately: bool,
+        debug: bool,
+    ) -> (
+        Duration,
+        Vec<Duration>,
+        HashMap<PartyID, P::PrivateOutput>,
+        P::PublicOutput,
+    ) {
+        asynchronous_session_with_malicious_parties_terminates_successfully_internal_with_private_outputs::<P, P>(
             session_id,
             access_structure,
             private_inputs,
@@ -204,6 +237,7 @@ pub mod test_helpers {
             number_of_rounds,
             parties_by_round,
             bench_separately,
+            true,
             debug,
         )
     }
@@ -232,6 +266,54 @@ pub mod test_helpers {
         >,
         M: AsynchronouslyAdvanceable<PrivateInput = P::PrivateInput>,
     {
+        let (time, times, _private_outputs, public_output) =
+            asynchronous_session_with_malicious_parties_terminates_successfully_internal_with_private_outputs::<P, M>(
+                session_id,
+                access_structure,
+                private_inputs,
+                public_inputs,
+                malicious_parties_by_round,
+                number_of_rounds,
+                parties_by_round,
+                bench_separately,
+                false,
+                debug,
+            );
+        (time, times, public_output)
+    }
+
+    /// Same as `asynchronous_session_with_malicious_parties_terminates_successfully_internal`,
+    /// but also returns the private outputs from all parties that participated in the final round.
+    pub fn asynchronous_session_with_malicious_parties_terminates_successfully_internal_with_private_outputs<
+        P: Party + AsynchronouslyAdvanceable,
+        M,
+    >(
+        session_id: CommitmentSizedNumber,
+        access_structure: &WeightedThresholdAccessStructure,
+        private_inputs: HashMap<PartyID, P::PrivateInput>,
+        public_inputs: HashMap<PartyID, P::PublicInput>,
+        malicious_parties_by_round: HashMap<u64, HashSet<PartyID>>,
+        number_of_rounds: usize,
+        parties_by_round: HashMap<u64, HashSet<PartyID>>,
+        bench_separately: bool,
+        needs_private_output: bool,
+        debug: bool,
+    ) -> (
+        Duration,
+        Vec<Duration>,
+        HashMap<PartyID, P::PrivateOutput>,
+        P::PublicOutput,
+    )
+    where
+        M: Party<
+            Error = P::Error,
+            Message = P::Message,
+            PrivateOutput = P::PrivateOutput,
+            PublicInput = P::PublicInput,
+            PublicOutput = P::PublicOutput,
+        >,
+        M: AsynchronouslyAdvanceable<PrivateInput = P::PrivateInput>,
+    {
         let measurement = WallTime;
         let mut total_times = Vec::new();
         let mut total_time = Duration::ZERO;
@@ -241,13 +323,13 @@ pub mod test_helpers {
             let current_round = messages.len() + 1;
             let current_round_malicious_parties = malicious_parties_by_round
                 .get(&(current_round as u64))
-                .unwrap_or(&HashSet::new())
-                .clone()
+                .cloned()
+                .unwrap_or_default()
                 .deduplicate_and_sort();
             let expected_malicious_parties = malicious_parties_by_round
                 .get(&((current_round - 1) as u64))
-                .unwrap_or(&HashSet::new())
-                .clone()
+                .cloned()
+                .unwrap_or_default()
                 .deduplicate_and_sort();
 
             let mut subset = parties_by_round
@@ -270,7 +352,7 @@ pub mod test_helpers {
                 .collect();
             let mut outgoing_messages = HashMap::new();
 
-            if current_round == number_of_rounds || bench_separately {
+            if !needs_private_output && (current_round == number_of_rounds || bench_separately) {
                 let evaluation_party_id = subset.remove(0);
                 let private_input = current_round_private_inputs
                     .remove(&evaluation_party_id)
@@ -325,7 +407,7 @@ pub mod test_helpers {
                             malicious_parties, expected_malicious_parties,
                             "expected malicious parties {expected_malicious_parties:?} got {malicious_parties:?}");
 
-                        return (total_time, total_times, public_output);
+                        return (total_time, total_times, HashMap::new(), public_output);
                     }
                 }
             };
@@ -379,6 +461,49 @@ pub mod test_helpers {
             if !bench_separately {
                 total_time = measurement.add(&total_time, &result_times[0]);
                 total_times.push(result_times[0]);
+            }
+
+            // Check if this is the final round (any party finalized)
+            let is_final_round = results
+                .values()
+                .any(|res| matches!(res, AsynchronousRoundResult::Finalize { .. }));
+
+            if is_final_round {
+                // Collect all private outputs and extract the public output
+                let mut private_outputs = HashMap::new();
+                let mut public_output = None;
+
+                for (party_id, res) in results {
+                    match res {
+                        AsynchronousRoundResult::Finalize {
+                            malicious_parties,
+                            private_output,
+                            public_output: party_public_output,
+                        } => {
+                            assert_eq!(
+                                malicious_parties, expected_malicious_parties,
+                                "expected malicious parties {expected_malicious_parties:?} got {malicious_parties:?}"
+                            );
+
+                            private_outputs.insert(party_id, private_output);
+                            if public_output.is_none() {
+                                public_output = Some(party_public_output);
+                            }
+                        }
+                        AsynchronousRoundResult::Advance { .. } => {
+                            panic!(
+                                "party {party_id} did not finalize on round #{current_round} as expected"
+                            );
+                        }
+                    }
+                }
+
+                return (
+                    total_time,
+                    total_times,
+                    private_outputs,
+                    public_output.expect("no party produced public output"),
+                );
             }
 
             outgoing_messages = results

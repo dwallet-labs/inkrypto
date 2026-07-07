@@ -44,6 +44,8 @@ rayon = { workspace = true }
 default = ["randomized_decryption"]
 
 randomized_decryption = []
+# INSECURE test-only: short-circuit knowledge-of-decryption-key UC-proof verification.
+unsafe_mock = []
 threshold = ["dep:maurer"]
 
 parallel = ["dep:rayon", "mpc/parallel", "proof/parallel", "maurer/parallel"]
@@ -53,3 +55,6 @@ benchmarking = ["test_helpers", "mpc/parallel", "threshold", "dep:rayon"]
 [[bench]]
 name = "benches"
 harness = false
+
+[lints]
+workspace = true

@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 use crypto_bigint::{Encoding, Uint};
 use serde::{Deserialize, Serialize};
 
-use crate::{Error, SOUND_PROOFS_REPETITIONS};
+use crate::{Error, ErrorKind, SOUND_PROOFS_REPETITIONS};
 use group::bounded_natural_numbers_group::MAURER_RANDOMIZER_DIFF_BITS;
 use group::{
     bounded_natural_numbers_group, direct_product, GroupElement, KnownOrderGroupElement,
@@ -148,7 +148,7 @@ where
         is_verify: bool,
     ) -> crate::Result<Self::StatementSpaceGroupElement> {
         if SCALAR_LIMBS > PLAINTEXT_SPACE_SCALAR_LIMBS {
-            return Err(Error::InvalidPublicParameters);
+            return Err(Error::from(ErrorKind::InvalidPublicParameters));
         }
 
         let group_order = Uint::<PLAINTEXT_SPACE_SCALAR_LIMBS>::from(
@@ -161,17 +161,20 @@ where
             language_public_parameters.group_public_parameters(),
         )?;
 
-        let base_by_discrete_log = generator.scale(&witness.discrete_log().value());
+        let base_by_discrete_log = generator.scale(
+            &witness.discrete_log().value(),
+            language_public_parameters.group_public_parameters(),
+        );
 
         let encryption_key =
             EncryptionKey::new(&language_public_parameters.encryption_scheme_public_parameters)
-                .map_err(|_| Error::InvalidPublicParameters)?;
+                .map_err(|_| Error::from(ErrorKind::InvalidPublicParameters))?;
 
         let ciphertext = homomorphic_encryption::CiphertextSpaceGroupElement::<
             PLAINTEXT_SPACE_SCALAR_LIMBS,
             EncryptionKey,
         >::new(
-            language_public_parameters.ciphertext,
+            language_public_parameters.ciphertext.clone(),
             language_public_parameters
                 .encryption_scheme_public_parameters
                 .ciphertext_space_public_parameters(),
@@ -212,7 +215,7 @@ where
                 &language_public_parameters.encryption_scheme_public_parameters,
                 is_verify,
             )
-            .map_err(|_| Error::InvalidPublicParameters)?;
+            .map_err(|_| Error::from(ErrorKind::InvalidPublicParameters))?;
 
         Ok((scaled_ciphertext, base_by_discrete_log).into())
     }

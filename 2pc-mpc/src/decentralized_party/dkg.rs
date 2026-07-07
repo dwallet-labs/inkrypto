@@ -1,10 +1,13 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
+mod fifth_round;
 mod first_round;
 mod fourth_round;
 mod public_output;
 mod second_round;
+mod seventh_round;
+mod sixth_round;
 mod third_round;
 
 use crate::languages::{
@@ -12,23 +15,23 @@ use crate::languages::{
     EqualityOfDiscreteLogsInHiddenOrderGroupProof,
     EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters,
 };
-use crate::Error;
+use crate::{Error, ErrorKind};
 use class_groups::publicly_verifiable_secret_sharing::chinese_remainder_theorem::KnowledgeOfDiscreteLogUCProof;
 use class_groups::setup::DeriveFromPlaintextPublicParameters;
 use class_groups::{
     publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
-        CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS, CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, MAX_PRIMES,
+        CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, MAX_PRIMES,
     },
-    CompactIbqf, Curve25519SetupParameters, EquivalenceClass, RistrettoSetupParameters,
-    Secp256k1SetupParameters, Secp256r1SetupParameters, DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+    CiphertextSpaceValue, CompactIbqf, Curve25519SetupParameters, EquivalenceClass,
+    RistrettoSetupParameters, Secp256k1SetupParameters, Secp256r1SetupParameters,
+    DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
     SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS as FUNDAMENTAL_DISCRIMINANT_LIMBS,
     SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS as NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-    SECRET_KEY_SHARE_LIMBS, SECRET_KEY_SHARE_WITNESS_LIMBS,
+    SECRET_KEY_SHARE_LIMBS,
 };
 use commitment::CommitmentSizedNumber;
 use crypto_bigint::Uint;
 use group::direct_product::ThreeWayGroupElement;
-use group::secp256k1::{GroupElement, Scalar, SCALAR_LIMBS};
 use group::{
     bounded_integers_group, curve25519, direct_product, ristretto, secp256k1, secp256r1, CsRng,
     GroupElement as _, PartyID,
@@ -38,9 +41,70 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 use crate::BaseProtocolContext;
-pub use public_output::PublicOutput;
+pub use public_output::{PublicOutput, PublicOutputCore};
 
+#[cfg(not(feature = "unsafe_mock"))]
 pub struct Party {}
+/// INSECURE `unsafe_mock`: the real multi-round, multi-CRT-prime network DKG party is replaced by an
+/// instant mock that finalizes with the canonical `NETWORK_KEY_SEED` output.
+#[cfg(feature = "unsafe_mock")]
+pub use crate::mock::network_dkg::MockNetworkDKGParty as Party;
+
+/// Private input for the DKG protocol.
+///
+/// Contains the party's CRT decryption key for the class groups threshold decryption.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrivateInput {
+    /// Decryption key per CRT prime for class groups threshold decryption.
+    pub decryption_key_per_crt_prime: [Uint<
+        {
+            class_groups::publicly_verifiable_secret_sharing::chinese_remainder_theorem::CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS
+        },
+    >; MAX_PRIMES],
+}
+
+/// The deterministic output of CG DKG Round 4 computation.
+///
+/// All parties compute this identically from broadcast R1 and R3 messages.
+/// It is sent in the `VerifiedDealers` message and majority-voted in R5/R6.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct FourthRoundInternalOutput {
+    pub(crate) inner_protocol_public_output: class_groups::dkg::PublicOutput<
+        { secp256k1::SCALAR_LIMBS },
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    >,
+    pub(crate) ristretto_public_verification_keys:
+        HashMap<PartyID, CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+    pub(crate) ristretto_encryption_key: CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+    pub(crate) secp256r1_public_verification_keys:
+        HashMap<PartyID, CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+    pub(crate) secp256r1_encryption_key: CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+    pub(crate) secp256k1_encryption_of_secret_key_share_first_part:
+        CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+    pub(crate) secp256k1_encryption_of_secret_key_share_second_part:
+        CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+    pub(crate) secp256k1_public_key_share_first_part: secp256k1::group_element::Value,
+    pub(crate) secp256k1_public_key_share_second_part: secp256k1::group_element::Value,
+    pub(crate) ristretto_encryption_of_secret_key_share_first_part:
+        CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+    pub(crate) ristretto_encryption_of_secret_key_share_second_part:
+        CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+    pub(crate) ristretto_public_key_share_first_part: ristretto::GroupElement,
+    pub(crate) ristretto_public_key_share_second_part: ristretto::GroupElement,
+    pub(crate) curve25519_encryption_of_secret_key_share_first_part:
+        CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+    pub(crate) curve25519_encryption_of_secret_key_share_second_part:
+        CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+    pub(crate) curve25519_public_key_share_first_part: curve25519::Value,
+    pub(crate) curve25519_public_key_share_second_part: curve25519::Value,
+    pub(crate) secp256r1_encryption_of_secret_key_share_first_part:
+        CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+    pub(crate) secp256r1_encryption_of_secret_key_share_second_part:
+        CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+    pub(crate) secp256r1_public_key_share_first_part: secp256r1::group_element::Value,
+    pub(crate) secp256r1_public_key_share_second_part: secp256r1::group_element::Value,
+}
 
 pub const EQUALITY_OF_COEFFICIENTS_COMMITMENTS_PROOF_NAME: &str =
     "Equality of Coefficients Commitments Proof";
@@ -66,7 +130,7 @@ pub const EQUALITY_OF_COEFFICIENTS_COMMITMENTS_PROOF_NAME: &str =
 ///
 /// Verification keys will be computed as usual from the commitments to coefficients and the masked key.
 pub type EqualityOfCoefficientsCommitmentsProof = EqualityOfDiscreteLogsInHiddenOrderGroupProof<
-    SECRET_KEY_SHARE_WITNESS_LIMBS,
+    SECRET_KEY_SHARE_LIMBS,
     ThreeWayGroupElement<
         EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
         EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
@@ -92,7 +156,7 @@ pub type EqualityOfCoefficientsCommitmentsPublicParameters =
 pub enum Message {
     DealDecryptionKeyContributionAndProveCoefficientCommitments {
         deal_decryption_key_contribution_message: class_groups::dkg::Message<
-            SCALAR_LIMBS,
+            { secp256k1::SCALAR_LIMBS },
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
         >,
@@ -106,14 +170,14 @@ pub enum Message {
     },
     VerifiedDecryptionKeyContributionDealers(
         class_groups::dkg::Message<
-            SCALAR_LIMBS,
+            { secp256k1::SCALAR_LIMBS },
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
         >,
     ),
     EncryptDecryptionKeySharesAndSecretKeyShares {
         encrypt_decryption_key_shares_message: class_groups::dkg::Message<
-            SCALAR_LIMBS,
+            { secp256k1::SCALAR_LIMBS },
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
         >,
@@ -123,20 +187,71 @@ pub enum Message {
         curve25519_encryption_of_secret_key_shares_message: <crate::curve25519::class_groups::EncryptionOfSecretKeyShareParty as mpc::Party>::Message,
         secp256r1_encryption_of_secret_key_shares_message: <crate::secp256r1::class_groups::EncryptionOfSecretKeyShareParty as mpc::Party>::Message,
     },
+    VerifiedDealers {
+        fourth_round_output: FourthRoundInternalOutput,
+        threshold_encryption_of_secret_key_share_parts_to_sharing_dealing_message:
+            crate::decentralized_party::threshold_encryption_of_secret_key_share_parts_to_sharing::DealingRoundMessage,
+    },
+    AccusedDealers {
+        threshold_encryption_of_secret_key_share_parts_to_sharing_accusation_message:
+            crate::decentralized_party::threshold_encryption_of_secret_key_share_parts_to_sharing::AccusationRoundMessage,
+    },
+    ThresholdDecryptSecretKeyShares {
+        threshold_encryption_of_secret_key_share_parts_to_sharing_decryption_round_message:
+            crate::decentralized_party::threshold_encryption_of_secret_key_share_parts_to_sharing::ThresholdDecryptionRoundMessage,
+    },
 }
 
 /// The Public Input of the DKG party.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PublicInput {
+    pub access_structure: WeightedThresholdAccessStructure,
     class_groups_public_input: class_groups::dkg::PublicInput<
-        SCALAR_LIMBS,
+        { secp256k1::SCALAR_LIMBS },
         FUNDAMENTAL_DISCRIMINANT_LIMBS,
         NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-        group::PublicParameters<Scalar>,
+        group::PublicParameters<secp256k1::Scalar>,
     >,
     ristretto_setup_parameters: RistrettoSetupParameters,
     curve25519_setup_parameters: Curve25519SetupParameters,
     secp256r1_setup_parameters: Secp256r1SetupParameters,
+    // Protocol 0.1: PVSS encryption keys for randomizer dealing
+    secp256k1_pvss_encryption_keys_and_proofs: HashMap<
+        PartyID,
+        (
+            CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            class_groups::publicly_verifiable_secret_sharing::small_prime::encryption::KnowledgeOfDecryptionKeyUCProof<
+                {
+                    class_groups::publicly_verifiable_secret_sharing::chinese_remainder_theorem::CRT_DECRYPTION_KEY_WITNESS_LIMBS
+                },
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        ),
+    >,
+    ristretto_pvss_encryption_keys_and_proofs: HashMap<
+        PartyID,
+        (
+            CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            class_groups::publicly_verifiable_secret_sharing::small_prime::encryption::KnowledgeOfDecryptionKeyUCProof<
+                {
+                    class_groups::publicly_verifiable_secret_sharing::chinese_remainder_theorem::CRT_DECRYPTION_KEY_WITNESS_LIMBS
+                },
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        ),
+    >,
+    secp256r1_pvss_encryption_keys_and_proofs: HashMap<
+        PartyID,
+        (
+            CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            class_groups::publicly_verifiable_secret_sharing::small_prime::encryption::KnowledgeOfDecryptionKeyUCProof<
+                {
+                    class_groups::publicly_verifiable_secret_sharing::chinese_remainder_theorem::CRT_DECRYPTION_KEY_WITNESS_LIMBS
+                },
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        ),
+    >,
 }
 
 impl PublicInput {
@@ -148,6 +263,42 @@ impl PublicInput {
                 CompactIbqf<CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
                 KnowledgeOfDiscreteLogUCProof,
             ); MAX_PRIMES],
+        >,
+        secp256k1_pvss_encryption_keys_and_proofs: HashMap<
+            PartyID,
+            (
+                CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+                class_groups::publicly_verifiable_secret_sharing::small_prime::encryption::KnowledgeOfDecryptionKeyUCProof<
+                    {
+                        class_groups::publicly_verifiable_secret_sharing::chinese_remainder_theorem::CRT_DECRYPTION_KEY_WITNESS_LIMBS
+                    },
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                >,
+            ),
+        >,
+        ristretto_pvss_encryption_keys_and_proofs: HashMap<
+            PartyID,
+            (
+                CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+                class_groups::publicly_verifiable_secret_sharing::small_prime::encryption::KnowledgeOfDecryptionKeyUCProof<
+                    {
+                        class_groups::publicly_verifiable_secret_sharing::chinese_remainder_theorem::CRT_DECRYPTION_KEY_WITNESS_LIMBS
+                    },
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                >,
+            ),
+        >,
+        secp256r1_pvss_encryption_keys_and_proofs: HashMap<
+            PartyID,
+            (
+                CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+                class_groups::publicly_verifiable_secret_sharing::small_prime::encryption::KnowledgeOfDecryptionKeyUCProof<
+                    {
+                        class_groups::publicly_verifiable_secret_sharing::chinese_remainder_theorem::CRT_DECRYPTION_KEY_WITNESS_LIMBS
+                    },
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                >,
+            ),
         >,
     ) -> crate::Result<Self> {
         let ristretto_setup_parameters =
@@ -177,14 +328,19 @@ impl PublicInput {
             )?;
 
         Ok(Self {
+            access_structure: access_structure.clone(),
             class_groups_public_input,
             ristretto_setup_parameters,
             curve25519_setup_parameters,
             secp256r1_setup_parameters,
+            secp256k1_pvss_encryption_keys_and_proofs,
+            ristretto_pvss_encryption_keys_and_proofs,
+            secp256r1_pvss_encryption_keys_and_proofs,
         })
     }
 }
 
+#[cfg(not(feature = "unsafe_mock"))]
 impl mpc::Party for Party {
     type Error = Error;
     type PublicInput = PublicInput;
@@ -194,8 +350,9 @@ impl mpc::Party for Party {
     type Message = Message;
 }
 
+#[cfg(not(feature = "unsafe_mock"))]
 impl AsynchronouslyAdvanceable for Party {
-    type PrivateInput = [Uint<CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS>; MAX_PRIMES];
+    type PrivateInput = PrivateInput;
 
     fn advance(
         session_id: CommitmentSizedNumber,
@@ -209,6 +366,10 @@ impl AsynchronouslyAdvanceable for Party {
         AsynchronousRoundResult<Self::Message, Self::PrivateOutput, Self::PublicOutput>,
         Self::Error,
     > {
+        // Extract CRT decryption key from PrivateInput
+        let decryption_key_per_crt_prime_option =
+            private_input.map(|input| input.decryption_key_per_crt_prime);
+
         let (
             decryption_key_share_bits,
             decryption_key_per_crt_prime,
@@ -216,15 +377,15 @@ impl AsynchronouslyAdvanceable for Party {
             encryption_of_decryption_key_base_protocol_context,
             decryption_key_contribution_pvss_party,
         ) = class_groups::dkg::Party::<
-            SCALAR_LIMBS,
+            { secp256k1::SCALAR_LIMBS },
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            GroupElement,
+            secp256k1::GroupElement,
         >::prepare_advance(
             session_id,
             tangible_party_id,
             access_structure,
-            private_input,
+            decryption_key_per_crt_prime_option,
             &public_input.class_groups_public_input,
         )?;
 
@@ -318,7 +479,7 @@ impl AsynchronouslyAdvanceable for Party {
                     rng,
                 )
             }
-            [deal_randomizer_and_prove_coefficient_commitments_messages, _, threshold_decrypt_messages] => {
+            [deal_randomizer_and_prove_coefficient_commitments_messages, _, encrypt_messages] => {
                 Self::advance_fourth_round(
                     tangible_party_id,
                     session_id,
@@ -327,7 +488,7 @@ impl AsynchronouslyAdvanceable for Party {
                     public_input,
                     &decryption_key_contribution_pvss_party,
                     deal_randomizer_and_prove_coefficient_commitments_messages.clone(),
-                    threshold_decrypt_messages.clone(),
+                    encrypt_messages.clone(),
                     secp256k1_encryption_of_secret_key_share_base_protocol_context,
                     ristretto_encryption_of_secret_key_share_base_protocol_context,
                     curve25519_encryption_of_secret_key_share_base_protocol_context,
@@ -336,7 +497,36 @@ impl AsynchronouslyAdvanceable for Party {
                     rng,
                 )
             }
-            _ => Err(Error::InvalidParameters),
+            [_, _, _, verified_dealers_messages] => Self::advance_fifth_round(
+                tangible_party_id,
+                session_id,
+                access_structure,
+                public_input,
+                verified_dealers_messages.clone(),
+                rng,
+            ),
+            [_, _, _, verified_dealers_messages, accused_dealers_messages] => {
+                Self::advance_sixth_round(
+                    tangible_party_id,
+                    session_id,
+                    access_structure,
+                    public_input,
+                    verified_dealers_messages.clone(),
+                    accused_dealers_messages.clone(),
+                    decryption_key_per_crt_prime,
+                    rng,
+                )
+            }
+            [_, _, _, verified_dealers_messages, _, threshold_decrypt_messages] => {
+                Self::advance_seventh_round(
+                    access_structure,
+                    public_input,
+                    verified_dealers_messages.clone(),
+                    threshold_decrypt_messages.clone(),
+                    rng,
+                )
+            }
+            _ => Err(Error::from(ErrorKind::InvalidParameters)),
         }
     }
 
@@ -344,6 +534,9 @@ impl AsynchronouslyAdvanceable for Party {
         match failed_round {
             3 => Some(1),
             4 => Some(3),
+            5 => Some(4),
+            6 => Some(5),
+            7 => Some(6),
             _ => None,
         }
     }
@@ -362,7 +555,7 @@ impl Party {
         secp256r1_setup_parameters: &Secp256r1SetupParameters,
     ) -> crate::Result<
         EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters<
-            SECRET_KEY_SHARE_WITNESS_LIMBS,
+            SECRET_KEY_SHARE_LIMBS,
             ThreeWayGroupElement<
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
@@ -399,7 +592,7 @@ impl Party {
 
         let equality_of_discrete_logs_language_public_parameters =
             construct_equality_of_discrete_log_public_parameters::<
-                SECRET_KEY_SHARE_WITNESS_LIMBS,
+                SECRET_KEY_SHARE_LIMBS,
                 ThreeWayGroupElement<
                     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
                     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
@@ -413,32 +606,213 @@ impl Party {
 
         Ok(equality_of_discrete_logs_language_public_parameters)
     }
+
+    /// Performs a weighted majority vote on `FourthRoundInternalOutput` values.
+    ///
+    /// Groups parties by their output, selects the group with the highest total weight,
+    /// and returns the majority output along with the list of disagreeing (malicious) parties.
+    pub(crate) fn majority_vote_fourth_round_output(
+        outputs: HashMap<PartyID, FourthRoundInternalOutput>,
+        access_structure: &WeightedThresholdAccessStructure,
+    ) -> crate::Result<(FourthRoundInternalOutput, Vec<PartyID>)> {
+        let groups = outputs.into_iter().fold(
+            Vec::<(FourthRoundInternalOutput, Vec<PartyID>)>::new(),
+            |mut acc, (party_id, output)| {
+                match acc.iter_mut().find(|(ref_output, _)| *ref_output == output) {
+                    Some(group) => group.1.push(party_id),
+                    None => acc.push((output, vec![party_id])),
+                }
+                acc
+            },
+        );
+
+        let (majority_idx, _) = groups
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, (_, parties))| -> mpc::Weight {
+                parties
+                    .iter()
+                    .filter_map(|p| access_structure.party_to_weight.get(p).copied())
+                    .sum()
+            })
+            .ok_or_else(|| crate::Error::from(crate::ErrorKind::InternalError))?;
+
+        let malicious_parties: Vec<PartyID> = groups
+            .iter()
+            .enumerate()
+            .filter(|&(idx, _)| idx != majority_idx)
+            .flat_map(|(_, (_, parties))| parties.iter().copied())
+            .collect();
+
+        let majority_output = groups
+            .into_iter()
+            .nth(majority_idx)
+            .ok_or_else(|| crate::Error::from(crate::ErrorKind::InternalError))?
+            .0;
+
+        Ok((majority_output, malicious_parties))
+    }
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
+#[cfg(any(test, feature = "test_helpers"))]
+pub mod tests {
     use super::*;
     use class_groups::publicly_verifiable_secret_sharing::chinese_remainder_theorem::construct_setup_parameters_per_crt_prime;
+    #[cfg(test)]
+    use class_groups::publicly_verifiable_secret_sharing::small_prime::encryption::generate_and_prove_encryption_keypair;
     use class_groups::test_helpers::{
         get_setup_parameters_curve25519_112_bits_deterministic,
         get_setup_parameters_ristretto_112_bits_deterministic,
         get_setup_parameters_secp256r1_112_bits_deterministic, setup_dkg_secp256k1,
     };
+    use class_groups::DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER;
+    #[cfg(test)]
+    use group::OsCsRng;
+    #[cfg(test)]
+    use itertools::multiunzip;
     use mpc::test_helpers::asynchronous_session_terminates_successfully_internal;
 
     #[test]
     fn generates_universal_distributed_key() {
-        let threshold = 4;
-        let current_party_to_weight = HashMap::from([(1, 2), (2, 1), (3, 3)]);
+        let threshold = 3;
+        let number_of_parties = 5;
 
-        let access_structure =
-            WeightedThresholdAccessStructure::new(threshold, current_party_to_weight).unwrap();
+        let access_structure = WeightedThresholdAccessStructure::uniform(
+            threshold,
+            number_of_parties,
+            number_of_parties,
+            &mut OsCsRng,
+        )
+        .unwrap();
 
-        generates_universal_distributed_key_internal(access_structure);
+        let secp256k1_setup_parameters_for_pvss =
+            class_groups::Secp256k1SetupParameters::derive_from_plaintext_parameters::<
+                secp256k1::Scalar,
+            >(
+                secp256k1::scalar::PublicParameters::default(),
+                DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+            )
+            .unwrap();
+
+        let ristretto_setup_parameters_for_pvss =
+            class_groups::RistrettoSetupParameters::derive_from_plaintext_parameters::<
+                ristretto::Scalar,
+            >(
+                ristretto::scalar::PublicParameters::default(),
+                DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+            )
+            .unwrap();
+
+        let secp256r1_setup_parameters_for_pvss =
+            class_groups::Secp256r1SetupParameters::derive_from_plaintext_parameters::<
+                secp256r1::Scalar,
+            >(
+                secp256r1::scalar::PublicParameters::default(),
+                DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+            )
+            .unwrap();
+
+        let (
+            secp256k1_pvss_encryption_keys_and_proofs,
+            ristretto_pvss_encryption_keys_and_proofs,
+            secp256r1_pvss_encryption_keys_and_proofs,
+        ): (HashMap<_, _>, HashMap<_, _>, HashMap<_, _>) = multiunzip(
+            access_structure.party_to_weight.keys().map(|&party_id| {
+                let (secp256k1_key, secp256k1_proof, _) = generate_and_prove_encryption_keypair::<
+                    { secp256k1::SCALAR_LIMBS },
+                    { class_groups::SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crypto_bigint::U1024::LIMBS },
+                    { class_groups::SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crypto_bigint::U4096::LIMBS },
+                    {
+                        class_groups::publicly_verifiable_secret_sharing::chinese_remainder_theorem::CRT_DECRYPTION_KEY_WITNESS_LIMBS
+                    },
+                    secp256k1::GroupElement,
+                >(&secp256k1_setup_parameters_for_pvss, &mut OsCsRng)
+                .unwrap();
+
+                let (ristretto_key, ristretto_proof, _) =
+                    generate_and_prove_encryption_keypair::<
+                        { ristretto::SCALAR_LIMBS },
+                        { class_groups::RISTRETTO_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                        { crypto_bigint::U1024::LIMBS },
+                        { class_groups::RISTRETTO_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                        { crypto_bigint::U4096::LIMBS },
+                        {
+                            class_groups::publicly_verifiable_secret_sharing::chinese_remainder_theorem::CRT_DECRYPTION_KEY_WITNESS_LIMBS
+                        },
+                        ristretto::GroupElement,
+                    >(&ristretto_setup_parameters_for_pvss, &mut OsCsRng)
+                    .unwrap();
+
+                let (secp256r1_key, secp256r1_proof, _) =
+                    generate_and_prove_encryption_keypair::<
+                        { secp256r1::SCALAR_LIMBS },
+                        { class_groups::SECP256R1_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                        { crypto_bigint::U1024::LIMBS },
+                        { class_groups::SECP256R1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                        { crypto_bigint::U4096::LIMBS },
+                        {
+                            class_groups::publicly_verifiable_secret_sharing::chinese_remainder_theorem::CRT_DECRYPTION_KEY_WITNESS_LIMBS
+                        },
+                        secp256r1::GroupElement,
+                    >(&secp256r1_setup_parameters_for_pvss, &mut OsCsRng)
+                    .unwrap();
+
+                (
+                    (party_id, (secp256k1_key, secp256k1_proof)),
+                    (party_id, (ristretto_key, ristretto_proof)),
+                    (party_id, (secp256r1_key, secp256r1_proof)),
+                )
+            }),
+        );
+
+        generates_universal_distributed_key_internal(
+            access_structure,
+            secp256k1_pvss_encryption_keys_and_proofs,
+            ristretto_pvss_encryption_keys_and_proofs,
+            secp256r1_pvss_encryption_keys_and_proofs,
+        );
     }
 
-    pub(crate) fn generates_universal_distributed_key_internal(
+    pub fn generates_universal_distributed_key_internal(
         access_structure: WeightedThresholdAccessStructure,
+        secp256k1_pvss_encryption_keys_and_proofs: HashMap<
+            PartyID,
+            (
+                CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+                class_groups::publicly_verifiable_secret_sharing::small_prime::encryption::KnowledgeOfDecryptionKeyUCProof<
+                    {
+                        class_groups::publicly_verifiable_secret_sharing::chinese_remainder_theorem::CRT_DECRYPTION_KEY_WITNESS_LIMBS
+                    },
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                >,
+            ),
+        >,
+        ristretto_pvss_encryption_keys_and_proofs: HashMap<
+            PartyID,
+            (
+                CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+                class_groups::publicly_verifiable_secret_sharing::small_prime::encryption::KnowledgeOfDecryptionKeyUCProof<
+                    {
+                        class_groups::publicly_verifiable_secret_sharing::chinese_remainder_theorem::CRT_DECRYPTION_KEY_WITNESS_LIMBS
+                    },
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                >,
+            ),
+        >,
+        secp256r1_pvss_encryption_keys_and_proofs: HashMap<
+            PartyID,
+            (
+                CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+                class_groups::publicly_verifiable_secret_sharing::small_prime::encryption::KnowledgeOfDecryptionKeyUCProof<
+                    {
+                        class_groups::publicly_verifiable_secret_sharing::chinese_remainder_theorem::CRT_DECRYPTION_KEY_WITNESS_LIMBS
+                    },
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                >,
+            ),
+        >,
     ) -> PublicOutput {
         let ristretto_setup_parameters = get_setup_parameters_ristretto_112_bits_deterministic();
         let curve25519_setup_parameters = get_setup_parameters_curve25519_112_bits_deterministic();
@@ -448,16 +822,32 @@ pub(crate) mod tests {
             construct_setup_parameters_per_crt_prime(DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER)
                 .unwrap();
 
-        let (session_id, private_inputs, public_inputs) =
+        let (session_id, crt_private_inputs, public_inputs) =
             setup_dkg_secp256k1(&access_structure, setup_parameters_per_crt_prime, true);
 
         let class_groups_public_input = public_inputs.values().next().unwrap().clone();
+
+        let private_inputs: HashMap<PartyID, PrivateInput> = crt_private_inputs
+            .into_iter()
+            .map(|(party_id, decryption_key_per_crt_prime)| {
+                (
+                    party_id,
+                    PrivateInput {
+                        decryption_key_per_crt_prime,
+                    },
+                )
+            })
+            .collect();
 
         let public_input = PublicInput {
             class_groups_public_input,
             ristretto_setup_parameters,
             curve25519_setup_parameters,
             secp256r1_setup_parameters,
+            secp256k1_pvss_encryption_keys_and_proofs,
+            ristretto_pvss_encryption_keys_and_proofs,
+            secp256r1_pvss_encryption_keys_and_proofs,
+            access_structure: access_structure.clone(),
         };
 
         let public_inputs = access_structure
@@ -471,7 +861,7 @@ pub(crate) mod tests {
             &access_structure,
             private_inputs,
             public_inputs,
-            4,
+            7,
             HashMap::from([(
                 2,
                 HashSet::from_iter(

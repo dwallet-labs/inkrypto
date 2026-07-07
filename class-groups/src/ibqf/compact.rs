@@ -5,7 +5,7 @@ use std::ops::BitAnd;
 
 use crate::discriminant::Discriminant;
 use crate::ibqf::Ibqf;
-use crate::Error;
+use crate::{Error, ErrorKind};
 use crypto_bigint::subtle::{Choice, ConditionallySelectable, ConstantTimeEq, CtOption};
 use crypto_bigint::{Concat, Encoding, Int, Split, Uint};
 use serde::{Deserialize, Serialize};
@@ -79,7 +79,7 @@ where
                 Self(form.b().shl_vartime(Self::HALF_BITS).as_uint().bitor(&a))
             })
             .into_option()
-            .ok_or(Error::Unreduced)
+            .ok_or_else(|| Error::from(ErrorKind::Unreduced))
     }
 }
 
@@ -126,7 +126,7 @@ where
         CtOption::from(a.to_nz())
             .and_then(|a| Ibqf::new_is_reduced_vartime_discriminant(a, b, &discriminant))
             .into_option()
-            .ok_or(Error::CompactFormDiscriminantMismatch)
+            .ok_or_else(|| Error::from(ErrorKind::CompactFormDiscriminantMismatch))
     }
 }
 

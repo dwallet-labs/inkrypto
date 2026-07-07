@@ -24,7 +24,7 @@ use crate::reconfiguration::{Message, PublicInput, PublicOutput};
 use crate::setup::{DeriveFromPlaintextPublicParameters, SetupParameters};
 use crate::{
     equivalence_class, publicly_verifiable_secret_sharing, CompactIbqf, EquivalenceClass, Error,
-    Result, SecretKeyShareSizedInteger,
+    ErrorKind, Result, SecretKeyShareSizedInteger,
 };
 use crate::{
     RISTRETTO_FUNDAMENTAL_DISCRIMINANT_LIMBS, RISTRETTO_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -261,7 +261,7 @@ where
                     rng,
                 )
             }
-            _ => Err(Error::InvalidParameters),
+            _ => Err(Error::from(ErrorKind::InvalidParameters)),
         }
     }
 
@@ -333,7 +333,7 @@ where
         u32,
         BaseProtocolContext,
         BaseProtocolContext,
-        publicly_verifiable_secret_sharing::Party<
+        publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
@@ -343,13 +343,14 @@ where
             GroupElement,
         >,
     )> {
-        let decryption_key_shares = private_input.ok_or(Error::InvalidParameters)?;
+        let decryption_key_shares =
+            private_input.ok_or_else(|| Error::from(ErrorKind::InvalidParameters))?;
 
         let upcoming_party_id = public_input
             .current_tangible_party_id_to_upcoming
             .get(&tangible_party_id)
             .cloned()
-            .ok_or(Error::InvalidParameters)?;
+            .ok_or_else(|| Error::from(ErrorKind::InvalidParameters))?;
 
         let decryption_key_bits = public_input.setup_parameters.decryption_key_bits();
         let current_decryption_key_share_bits = secret_key_share_size_upper_bound(
@@ -403,7 +404,7 @@ where
         // This message includes a publicly verifiable sharing on an additive randomizer contribution. The shares are encrypted under the public keys of the upcoming quorum.
         // In addition, it contains an encryption of said contribution under the CRT encryption keys.
         let randomizer_contribution_to_upcoming_pvss_party =
-            publicly_verifiable_secret_sharing::Party::<
+            publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party::<
                 NUM_SECRET_SHARE_PRIMES,
                 SECRET_KEY_SHARE_LIMBS,
                 SECRET_KEY_SHARE_WITNESS_LIMBS,

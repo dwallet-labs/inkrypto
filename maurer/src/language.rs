@@ -7,7 +7,7 @@ use serde::Serialize;
 use group::{ComputationalSecuritySizedNumber, GroupElement, Samplable, Transcribeable};
 use proof::GroupsPublicParameters;
 
-use crate::{proof::BIT_SOUNDNESS_PROOFS_REPETITIONS, Error, Result};
+use crate::{proof::BIT_SOUNDNESS_PROOFS_REPETITIONS, Error, ErrorKind, Result};
 
 /// The maximum allowed repetitions
 pub const MAX_REPETITIONS: usize = ComputationalSecuritySizedNumber::BITS as usize;
@@ -50,7 +50,7 @@ pub trait Language<
     /// The number of bits to use for the challenge (per repetition).
     fn challenge_bits() -> Result<u32> {
         if REPETITIONS == 0 || REPETITIONS > ComputationalSecuritySizedNumber::BITS as usize {
-            return Err(Error::UnsupportedRepetitions);
+            return Err(Error::from(ErrorKind::UnsupportedRepetitions));
         }
 
         if REPETITIONS == BIT_SOUNDNESS_PROOFS_REPETITIONS {
@@ -128,6 +128,6 @@ pub(super) mod test_helpers {
     ) -> Lang::WitnessSpaceGroupElement {
         let witnesses = sample_witnesses::<REPETITIONS, Lang>(language_public_parameters, 1, rng);
 
-        *witnesses.first().unwrap()
+        witnesses.first().unwrap().clone()
     }
 }

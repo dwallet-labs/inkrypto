@@ -533,9 +533,7 @@ pub(crate) mod tests {
     #[rstest]
     #[case(2, 1)]
     #[case(3, 3)]
-    #[should_panic(
-        expected = "called `Result::unwrap()` on an `Err` value: MismatchingRangeProofMaurerCommitments([2])"
-    )]
+    #[should_panic(expected = "MismatchingRangeProofMaurerCommitments([2])")]
     fn party_mismatching_maurer_range_proof_statements_aborts_identifiably(
         #[case] number_of_parties: usize,
         #[case] batch_size: usize,
@@ -600,7 +598,7 @@ pub(crate) mod tests {
             witnesses,
         );
 
-        proof::aggregation::test_helpers::wrong_decommitment_aborts_session_identifiably(
+        proof_aggregation::test_helpers::wrong_decommitment_aborts_session_identifiably(
             commitment_round_parties,
         );
     }
@@ -655,7 +653,7 @@ pub(crate) mod tests {
             witnesses,
         );
 
-        proof::aggregation::test_helpers::failed_proof_share_verification_aborts_session_identifiably(
+        proof_aggregation::test_helpers::failed_proof_share_verification_aborts_session_identifiably(
             commitment_round_parties, wrong_commitment_round_parties,
         );
     }
@@ -694,7 +692,7 @@ pub(crate) mod tests {
             witnesses,
         );
 
-        proof::aggregation::test_helpers::unresponsive_parties_aborts_session_identifiably(
+        proof_aggregation::test_helpers::unresponsive_parties_aborts_session_identifiably(
             commitment_round_parties,
         );
     }
@@ -705,9 +703,10 @@ pub(crate) mod benches {
     use criterion::Criterion;
     use crypto_bigint::{Random, U256};
 
-    use group::{GroupElement, LinearlyCombinable, OsCsRng};
+    use group::{GroupElement, OsCsRng};
     use maurer::language::StatementSpaceGroupElement;
     use maurer::{Language, SOUND_PROOFS_REPETITIONS};
+    use proof::GroupsPublicParametersAccessors;
 
     use crate::encryption_of_tuple::test_helpers::*;
 
@@ -720,10 +719,12 @@ pub(crate) mod benches {
             ClassGroupsLang::homomorphose(&witness, &language_public_parameters, false, false)
                 .unwrap();
         let challenge = U256::random(&mut OsCsRng);
+        let statement_space_public_parameters =
+            language_public_parameters.statement_space_public_parameters();
         let mut g = c.benchmark_group("Linear Combination in statement space of encdh");
 
         g.bench_function("single exponentiation", |bench| {
-            bench.iter(|| statement.scale(&challenge));
+            bench.iter(|| statement.scale(&challenge, statement_space_public_parameters));
         });
 
         for batch_size in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024] {
@@ -734,7 +735,8 @@ pub(crate) mod benches {
                 |bench| {
                     bench.iter(|| {
                         StatementSpaceGroupElement::<SOUND_PROOFS_REPETITIONS, ClassGroupsLang>::linearly_combine(
-                            bases_and_multiplicands.clone()
+                            bases_and_multiplicands.clone(),
+                            statement_space_public_parameters,
                         ).unwrap()
                     });
                 },

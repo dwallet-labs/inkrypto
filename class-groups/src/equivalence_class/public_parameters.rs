@@ -4,7 +4,7 @@
 use crate::accelerator::MultiFoldNupowAccelerator;
 use crate::discriminant::Discriminant;
 use crate::ibqf::Ibqf;
-use crate::Error;
+use crate::{Error, ErrorKind};
 use crypto_bigint::{Encoding, Int, NonZeroInt, Uint};
 use group::Transcribeable;
 use itertools::Itertools;
@@ -42,7 +42,7 @@ where
         >,
     ) -> crate::Result<Self> {
         if form_to_accelerators.is_empty() || form_to_accelerators.values().any(|v| v.is_empty()) {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         Ok(Self::new(discriminant, form_to_accelerators))

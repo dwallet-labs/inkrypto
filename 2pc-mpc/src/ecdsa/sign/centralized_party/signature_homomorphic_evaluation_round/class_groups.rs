@@ -27,7 +27,7 @@ impl<
         const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         const MESSAGE_LIMBS: usize,
-        GroupElement: VerifyingKey<SCALAR_LIMBS>,
+        GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
     >
     Party<
         SCALAR_LIMBS,
@@ -283,7 +283,7 @@ impl<
         const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         const MESSAGE_LIMBS: usize,
-        GroupElement: VerifyingKey<SCALAR_LIMBS>,
+        GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
     > mpc::two_party::Round
     for Party<
         SCALAR_LIMBS,
@@ -409,12 +409,13 @@ where
             || public_input.presign != public_input.protocol_public_parameters
             || public_input.presign != public_input.dkg_output
         {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         let hashed_message = hash_to_scalar::<SCALAR_LIMBS, GroupElement>(
             &public_input.message,
             public_input.hash_type,
+            &public_input.hash_context,
             &public_input
                 .protocol_public_parameters
                 .scalar_group_public_parameters,

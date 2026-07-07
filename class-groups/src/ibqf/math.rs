@@ -15,7 +15,7 @@ use crypto_bigint::{
 use matrix::Matrix;
 
 use crate::helpers::vartime_mul::CheckedMulVartime;
-use crate::Error;
+use crate::{Error, ErrorKind};
 
 mod matrix;
 
@@ -377,11 +377,11 @@ pub(crate) fn three_way_mul_vartime<const LHS_LIMBS: usize, const RHS_LIMBS: usi
     let axbx = ax
         .checked_mul_vartime(&bx)
         .into_option()
-        .ok_or(Error::InternalError)?;
+        .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
     let ayby = ay
         .checked_mul_vartime(&by)
         .into_option()
-        .ok_or(Error::InternalError)?;
+        .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
     let axby_bxay = CtOption::from(ax.checked_add(&ay))
         .and_then(|ax_ay| {
             CtOption::from(bx.checked_add(&by)).and_then(|bx_by| ax_ay.checked_mul_vartime(&bx_by))
@@ -389,7 +389,7 @@ pub(crate) fn three_way_mul_vartime<const LHS_LIMBS: usize, const RHS_LIMBS: usi
         .and_then(|axbx_axby_aybx_ayby| axbx_axby_aybx_ayby.checked_sub(&axbx))
         .and_then(|axby_aybx_ayby| axby_aybx_ayby.checked_sub(&ayby))
         .into_option()
-        .ok_or(Error::InternalError)?;
+        .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
 
     Ok((axbx, axby_bxay, ayby))
 }

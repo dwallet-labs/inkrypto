@@ -7,7 +7,6 @@ pub use proof::{
     SOUND_PROOFS_REPETITIONS,
 };
 
-pub mod aggregation;
 pub mod commitment_of_discrete_log;
 pub mod discrete_log_ratio_of_committed_values;
 pub mod knowledge_of_decommitment;
@@ -28,25 +27,42 @@ pub mod vector_commitment_of_discrete_log;
 #[allow(unused_imports)]
 pub mod test_helpers {
     pub use crate::{
-        aggregation::test_helpers::*,
         language::test_helpers::*,
         proof::{fischlin::test_helpers::*, test_helpers::*},
     };
 }
 
-/// Maurer error.
+/// Maurer error wrapper that carries a backtrace captured at construction.
+///
+/// See `group::Error` for details.
+#[derive(thiserror::Error, Clone, Debug)]
+#[error("{kind}\n{backtrace}")]
+pub struct Error {
+    pub kind: ErrorKind,
+    pub backtrace: std::sync::Arc<std::backtrace::Backtrace>,
+}
+
+impl<E> From<E> for Error
+where
+    ErrorKind: From<E>,
+{
+    fn from(value: E) -> Self {
+        Self {
+            kind: ErrorKind::from(value),
+            backtrace: std::sync::Arc::new(std::backtrace::Backtrace::capture()),
+        }
+    }
+}
+
+/// Maurer error kind.
 #[derive(thiserror::Error, Debug, Clone)]
-pub enum Error {
+pub enum ErrorKind {
     #[error("group error")]
     Group(#[from] group::Error),
     #[error("proof error")]
     Proof(#[from] ::proof::Error),
     #[error("commitment error")]
     Commitment(#[from] commitment::Error),
-    #[error("mpc error")]
-    MPC(#[from] ::mpc::Error),
-    #[error("aggregation error")]
-    Aggregation(#[from] ::proof::aggregation::Error),
     #[error("unsupported repetitions")]
     UnsupportedRepetitions,
     #[error("invalid public parameters")]
@@ -61,7 +77,7 @@ pub enum Error {
 
 impl From<serde_json::Error> for Error {
     fn from(e: serde_json::Error) -> Self {
-        Error::Serialization(e.to_string())
+        Error::from(ErrorKind::Serialization(e.to_string()))
     }
 }
 
@@ -72,34 +88,12 @@ impl TryInto<::proof::Error> for Error {
     type Error = Error;
 
     fn try_into(self) -> std::result::Result<::proof::Error, Self::Error> {
-        match self {
-            Error::Proof(e) => Ok(e),
-            e => Err(e),
-        }
-    }
-}
-
-impl TryInto<::proof::aggregation::Error> for Error {
-    type Error = Error;
-
-    fn try_into(self) -> std::result::Result<::proof::aggregation::Error, Self::Error> {
-        match self {
-            Error::Aggregation(e) => Ok(e),
-            e => Err(e),
-        }
-    }
-}
-
-impl From<Error> for ::mpc::Error {
-    fn from(value: Error) -> Self {
-        match value {
-            Error::MPC(e) => e,
-            Error::Aggregation(e) => e.into(),
-            Error::Group(e) => mpc::Error::Group(e),
-            Error::InternalError => mpc::Error::InternalError,
-            Error::InvalidParameters => mpc::Error::InvalidParameters,
-            Error::InvalidPublicParameters => mpc::Error::InvalidParameters,
-            e => mpc::Error::Consumer(format!("maurer error {e:?}")),
+        match self.kind {
+            ErrorKind::Proof(e) => Ok(e),
+            kind => Err(Error {
+                kind,
+                backtrace: self.backtrace,
+            }),
         }
     }
 }
@@ -112,6 +106,5 @@ criterion::criterion_group!(
     commitment_of_discrete_log::benches::benchmark,
     vector_commitment_of_discrete_log::benches::benchmark,
     discrete_log_ratio_of_committed_values::benches::benchmark,
-    equality_between_commitments_with_different_public_parameters::benches::benchmark,
-    equality_of_discrete_logs::benches::benchmark
+    equality_between_commitments_with_different_public_parameters::benches::benchmark
 );

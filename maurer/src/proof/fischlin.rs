@@ -9,10 +9,10 @@ use merlin::Transcript;
 use serde::Serialize;
 
 use group::{ComputationalSecuritySizedNumber, CsRng, GroupElement};
-use proof::TranscriptProtocol;
+use proof::{GroupsPublicParametersAccessors, TranscriptProtocol};
 
 use crate::language::{WitnessSpaceValue, MAX_REPETITIONS};
-use crate::{language, Error, Result};
+use crate::{language, Error, ErrorKind, Result};
 
 /// The amount of repetitions used in Fischlin UC proofs.
 /// This affects the number of group elements sent in the proof, and also performance.
@@ -63,6 +63,32 @@ impl<
         ProtocolContext: Clone + Serialize + Debug + PartialEq + Eq + Send + Sync + Send + Sync,
     > Proof<REPETITIONS, Language, ProtocolContext>
 {
+    /// Construct a deterministic default UC proof from neutral (identity) group elements.
+    ///
+    /// Used for threshold mode where no centralized party exists: the default proof
+    /// provides deterministic bytes for Fiat-Shamir transcript consistency without
+    /// requiring actual proof generation or verification.
+    pub fn new_default(
+        witness_space_public_parameters: &crate::language::WitnessSpacePublicParameters<
+            REPETITIONS,
+            Language,
+        >,
+        statement_space_public_parameters: &crate::language::StatementSpacePublicParameters<
+            REPETITIONS,
+            Language,
+        >,
+    ) -> Result<Self> {
+        let maurer_proof = super::Proof::<REPETITIONS, Language, ProtocolContext>::new_default(
+            witness_space_public_parameters,
+            statement_space_public_parameters,
+        )?;
+
+        Ok(Self {
+            maurer_proof,
+            challenges: [ComputationalSecuritySizedNumber::ZERO; REPETITIONS],
+        })
+    }
+
     /// Prove a Universally Composable (UC) Extractable zero-knowledge (ZK) Maurer statement via Fischlin's transform.
     /// Implements [Chen and Lindell (2024)](https://eprint.iacr.org/2024/526.pdf), sections 2.2, 2.3.
     /// Returns the zero-knowledge proof.
@@ -73,7 +99,7 @@ impl<
         rng: &mut impl CsRng,
     ) -> Result<(Self, Language::StatementSpaceGroupElement)> {
         if REPETITIONS == 0 || REPETITIONS > MAX_REPETITIONS {
-            return Err(Error::UnsupportedRepetitions);
+            return Err(Error::from(ErrorKind::UnsupportedRepetitions));
         }
 
         let is_randomizer = false;
@@ -103,7 +129,7 @@ impl<
             ComputationalSecuritySizedNumber,
             WitnessSpaceValue<REPETITIONS, Language>,
         )>; REPETITIONS] = array::from_fn(|i| {
-            let randomizer = randomizers[i];
+            let randomizer = randomizers[i].clone();
 
             let mut challenge = ComputationalSecuritySizedNumber::ZERO; // $e_i$
             let mut response = randomizer; // $z_i$
@@ -120,18 +146,23 @@ impl<
                 // every iteration increases the challenge by `1` and the response by `witness`.
                 // This ensures that the response equals the randomizer plus the witness times the challenge:
                 // $z_i = \sigma_i + e_i \cdot w$ without requiring $t$ multiplications (only additions, which is cheaper).
-                response += &witness;
+                response = response.add_constant_time(
+                    &witness,
+                    language_public_parameters.witness_space_public_parameters(),
+                );
             }
 
             Ok((challenge, response.value()))
         });
 
         if challenges_and_responses.iter().any(|res| res.is_err()) {
-            return Err(Error::InternalError);
+            return Err(Error::from(ErrorKind::InternalError));
         }
         let challenges_and_responses = challenges_and_responses.map(|res| res.unwrap());
 
-        let challenges = challenges_and_responses.map(|(challenge, _)| challenge);
+        let challenges = challenges_and_responses
+            .each_ref()
+            .map(|(challenge, _)| *challenge);
 
         let responses = challenges_and_responses.map(|(_, response)| response);
 
@@ -154,7 +185,7 @@ impl<
         statement: Language::StatementSpaceGroupElement,
     ) -> Result<()> {
         if REPETITIONS == 0 || REPETITIONS > MAX_REPETITIONS {
-            return Err(Error::UnsupportedRepetitions);
+            return Err(Error::from(ErrorKind::UnsupportedRepetitions));
         }
 
         // $common-h$
@@ -168,7 +199,7 @@ impl<
         let hash_checks: Vec<_> = self
             .challenges
             .into_iter()
-            .zip(self.maurer_proof.responses)
+            .zip(self.maurer_proof.responses.clone())
             .enumerate()
             .map(|(i, (challenge, response))| {
                 Self::hash_hits_target(common_hash, i, challenge, &response)
@@ -176,13 +207,13 @@ impl<
             .collect();
 
         if hash_checks.iter().any(|res| res.is_err()) {
-            return Err(Error::InternalError);
+            return Err(Error::from(ErrorKind::InternalError));
         } else if hash_checks
             .into_iter()
             .map(|res| res.unwrap())
             .any(|is_target| !is_target)
         {
-            return Err(proof::Error::ProofVerification)?;
+            return Err(proof::Error::from(proof::ErrorKind::ProofVerification))?;
         }
 
         self.maurer_proof.verify_inner(
@@ -306,7 +337,7 @@ pub(crate) mod test_helpers {
             Language,
         >(language_public_parameters, vec![witness], rng);
 
-        let statement = statements[0];
+        let statement = statements[0].clone();
 
         let mut transcript =
             crate::proof::Proof::<REPETITIONS, Language, PhantomData<()>>::setup_transcript(
@@ -343,7 +374,13 @@ pub(crate) mod test_helpers {
                     .verify(&PhantomData, language_public_parameters, statement)
                     .err()
                     .unwrap(),
-                Error::Proof(proof::Error::ProofVerification),
+                Error {
+                    kind: ErrorKind::Proof(proof::Error {
+                        kind: proof::ErrorKind::ProofVerification,
+                        ..
+                    }),
+                    ..
+                },
             ),
             "proofs with incomplete transcripts (missing language name) should fail"
         );

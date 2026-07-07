@@ -41,8 +41,33 @@ impl TranscriptProtocol for Transcript {
     }
 }
 
-#[derive(thiserror::Error, Debug, PartialEq)]
-pub enum Error {
+#[derive(thiserror::Error, Debug, Clone)]
+#[error("{kind}\n{backtrace}")]
+pub struct Error {
+    pub kind: ErrorKind,
+    pub backtrace: std::sync::Arc<std::backtrace::Backtrace>,
+}
+
+impl PartialEq for Error {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+    }
+}
+
+impl<E> From<E> for Error
+where
+    ErrorKind: From<E>,
+{
+    fn from(value: E) -> Self {
+        Self {
+            kind: ErrorKind::from(value),
+            backtrace: std::sync::Arc::new(std::backtrace::Backtrace::capture()),
+        }
+    }
+}
+
+#[derive(thiserror::Error, Debug, PartialEq, Clone)]
+pub enum ErrorKind {
     #[error("Invalid Params")]
     InvalidParameters,
 

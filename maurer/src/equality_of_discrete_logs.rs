@@ -1,7 +1,5 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
-use std::ops::Mul;
-
 use serde::Serialize;
 
 use group::bounded_natural_numbers_group::MAURER_RANDOMIZER_DIFF_BITS;
@@ -30,8 +28,8 @@ pub type Language<const BATCH_SIZE: usize, Scalar, GroupElement> =
 impl<
         const BATCH_SIZE: usize,
         const REPETITIONS: usize,
-        Scalar: group::GroupElement + Samplable + Mul<GroupElement, Output = GroupElement> + Copy,
-        GroupElement: group::GroupElement + Scale<Scalar::Value>,
+        Scalar: group::GroupElement + Samplable + Copy,
+        GroupElement: group::GroupElement + Scale<group::Value<Scalar>>,
     > crate::Language<REPETITIONS> for Language<BATCH_SIZE, Scalar, GroupElement>
 {
     type WitnessSpaceGroupElement = Scalar;
@@ -54,6 +52,7 @@ impl<
     ) -> Result<Self::StatementSpaceGroupElement> {
         let bases = language_public_parameters
             .bases
+            .clone()
             .map(|base| {
                 GroupElement::new(
                     base,
@@ -67,7 +66,7 @@ impl<
 
         let bases_by_discrete_log = bases.map(|base| {
             if is_verify {
-                base.scale_vartime_accelerated(
+                base.scale_vartime_by(
                     &witness.value(),
                     &language_public_parameters
                         .statement_space_public_parameters()
@@ -83,15 +82,15 @@ impl<
                     }
                 })
             {
-                base.scale_randomized_bounded_accelerated(
+                base.scale_randomized_public_base_bounded_by(
                     &witness.value(),
+                    discrete_log_upper_bound_bits,
                     &language_public_parameters
                         .statement_space_public_parameters()
                         .0,
-                    discrete_log_upper_bound_bits,
                 )
             } else {
-                base.scale_randomized_accelerated(
+                base.scale_randomized_public_base_by(
                     &witness.value(),
                     &language_public_parameters
                         .statement_space_public_parameters()
@@ -138,12 +137,9 @@ where
         Scalar: group::GroupElement<PublicParameters = ScalarPublicParameters>
             + group::GroupElement
             + Samplable
-            + Mul<GroupElement, Output = GroupElement>
             + Copy,
-        GroupElement: group::GroupElement<
-            Value = GroupElementValue,
-            PublicParameters = GroupPublicParameters,
-        >,
+        GroupElement: group::GroupElement<Value = GroupElementValue, PublicParameters = GroupPublicParameters>
+            + Scale<group::Value<Scalar>>,
     {
         Self {
             groups_public_parameters: GroupsPublicParameters {
@@ -277,87 +273,15 @@ pub(super) mod private {
     }
 }
 
-#[cfg(any(test, feature = "test_helpers"))]
-pub mod test_helpers {
-    use crypto_bigint::U2048;
-
-    use group::{bounded_natural_numbers_group, GroupElement, OsCsRng};
-    use homomorphic_encryption::GroupsPublicParametersAccessors;
-    use tiresias::test_helpers::N;
-
-    use crate::language;
-
-    use super::*;
-
-    pub type TiresiasLang = Language<
-        2,
-        bounded_natural_numbers_group::GroupElement<
-            { tiresias::PaillierModulusSizedNumber::LIMBS },
-        >,
-        tiresias::CiphertextSpaceGroupElement,
-    >;
-
-    pub fn tiresias_language_public_parameters(
-    ) -> language::PublicParameters<SOUND_PROOFS_REPETITIONS, TiresiasLang> {
-        let paillier_public_parameters =
-            tiresias::encryption_key::PublicParameters::new(N).unwrap();
-
-        let scalar_public_parameters =
-            bounded_natural_numbers_group::PublicParameters::new_with_randomizer_upper_bound(
-                U2048::BITS,
-            )
-            .unwrap();
-
-        let ciphertext_space_public_parameters = paillier_public_parameters
-            .ciphertext_space_public_parameters()
-            .clone();
-
-        let first_base = tiresias::CiphertextSpaceGroupElement::sample(
-            &ciphertext_space_public_parameters,
-            &mut OsCsRng,
-        )
-        .unwrap();
-
-        let second_base = tiresias::CiphertextSpaceGroupElement::sample(
-            &ciphertext_space_public_parameters,
-            &mut OsCsRng,
-        )
-        .unwrap();
-
-        let discrete_log_sample_bits = Some(scalar_public_parameters.upper_bound_bits);
-        PublicParameters::new::<
-            bounded_natural_numbers_group::GroupElement<
-                { tiresias::PaillierModulusSizedNumber::LIMBS },
-            >,
-            tiresias::CiphertextSpaceGroupElement,
-        >(
-            scalar_public_parameters,
-            ciphertext_space_public_parameters,
-            [first_base.value(), second_base.value()],
-            discrete_log_sample_bits,
-        )
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use std::iter;
 
-    use crypto_bigint::{Concat, Uint, U2048, U256};
+    use crypto_bigint::U256;
     use rstest::rstest;
 
-    use class_groups::test_helpers::get_setup_parameters_secp256k1_112_bits_deterministic;
-    use class_groups::EquivalenceClass;
-    use group::{
-        bounded_natural_numbers_group, secp256k1, CyclicGroupElement, GroupElement, OsCsRng,
-        PartyID,
-    };
-    use mpc::secret_sharing::shamir::over_the_integers::SecretKeyShareSizedNumber;
-    use mpc::Weight;
+    use group::{secp256k1, CyclicGroupElement, GroupElement, OsCsRng};
 
-    use crate::equality_of_discrete_logs::test_helpers::tiresias_language_public_parameters;
-    use crate::equality_of_discrete_logs::test_helpers::TiresiasLang;
     use crate::language::StatementSpaceGroupElement;
     use crate::test_helpers::{batch_verifies, generate_valid_proof, sample_witnesses};
     use crate::{language, test_helpers};
@@ -391,42 +315,6 @@ mod tests {
         )
     }
 
-    const DISCRIMINANT_LIMBS: usize = U2048::LIMBS;
-    pub(crate) type ClassGroupsLang = Language<
-        2,
-        bounded_natural_numbers_group::GroupElement<{ SecretKeyShareSizedNumber::LIMBS }>,
-        EquivalenceClass<DISCRIMINANT_LIMBS>,
-    >;
-
-    pub(crate) fn class_groups_language_public_parameters(
-    ) -> language::PublicParameters<SOUND_PROOFS_REPETITIONS, ClassGroupsLang> {
-        let setup_parameters = get_setup_parameters_secp256k1_112_bits_deterministic();
-
-        let scalar_public_parameters = bounded_natural_numbers_group::PublicParameters::new(
-            Uint::<DISCRIMINANT_LIMBS>::BITS,
-            <Uint<DISCRIMINANT_LIMBS> as Concat>::Output::BITS,
-        )
-        .unwrap();
-
-        let group_public_parameters = setup_parameters
-            .equivalence_class_public_parameters()
-            .clone();
-
-        let first_base = setup_parameters.h;
-        let second_base = first_base + first_base + first_base;
-
-        let discrete_log_sample_bits = Some(scalar_public_parameters.sample_bits);
-        PublicParameters::new::<
-            bounded_natural_numbers_group::GroupElement<{ SecretKeyShareSizedNumber::LIMBS }>,
-            EquivalenceClass<DISCRIMINANT_LIMBS>,
-        >(
-            scalar_public_parameters,
-            group_public_parameters,
-            [first_base.value(), second_base.value()],
-            discrete_log_sample_bits,
-        )
-    }
-
     #[rstest]
     #[case(1)]
     #[case(2)]
@@ -435,21 +323,6 @@ mod tests {
         let language_public_parameters = language_public_parameters();
 
         test_helpers::valid_proof_verifies::<SOUND_PROOFS_REPETITIONS, Lang>(
-            &language_public_parameters,
-            batch_size,
-            &mut OsCsRng,
-        );
-
-        let language_public_parameters = tiresias_language_public_parameters();
-
-        test_helpers::valid_proof_verifies::<SOUND_PROOFS_REPETITIONS, TiresiasLang>(
-            &language_public_parameters,
-            batch_size,
-            &mut OsCsRng,
-        );
-
-        let language_public_parameters = class_groups_language_public_parameters();
-        test_helpers::valid_proof_verifies::<SOUND_PROOFS_REPETITIONS, ClassGroupsLang>(
             &language_public_parameters,
             batch_size,
             &mut OsCsRng,
@@ -468,72 +341,6 @@ mod tests {
             Vec<Vec<StatementSpaceGroupElement<SOUND_PROOFS_REPETITIONS, Lang>>>,
         ) = iter::repeat_with(|| {
             let witnesses = sample_witnesses::<SOUND_PROOFS_REPETITIONS, Lang>(
-                &language_public_parameters,
-                batch_size,
-                &mut OsCsRng,
-            );
-
-            generate_valid_proof(&language_public_parameters, witnesses, &mut OsCsRng)
-        })
-        .take(number_of_proofs)
-        .unzip();
-
-        batch_verifies(
-            proofs,
-            statements,
-            &language_public_parameters,
-            &mut OsCsRng,
-        );
-    }
-
-    #[rstest]
-    #[case(1, 1)]
-    #[case(2, 2)]
-    #[case(3, 1)]
-    fn valid_proofs_verifies_batch_tiresias(
-        #[case] number_of_proofs: usize,
-        #[case] batch_size: usize,
-    ) {
-        let language_public_parameters = tiresias_language_public_parameters();
-
-        let (proofs, statements): (
-            Vec<crate::Proof<SOUND_PROOFS_REPETITIONS, TiresiasLang, _>>,
-            Vec<Vec<StatementSpaceGroupElement<SOUND_PROOFS_REPETITIONS, TiresiasLang>>>,
-        ) = iter::repeat_with(|| {
-            let witnesses = sample_witnesses::<SOUND_PROOFS_REPETITIONS, TiresiasLang>(
-                &language_public_parameters,
-                batch_size,
-                &mut OsCsRng,
-            );
-
-            generate_valid_proof(&language_public_parameters, witnesses, &mut OsCsRng)
-        })
-        .take(number_of_proofs)
-        .unzip();
-
-        batch_verifies(
-            proofs,
-            statements,
-            &language_public_parameters,
-            &mut OsCsRng,
-        );
-    }
-
-    #[rstest]
-    #[case(1, 1)]
-    #[case(2, 2)]
-    #[case(3, 1)]
-    fn valid_proofs_verifies_batch_class_groups(
-        #[case] number_of_proofs: usize,
-        #[case] batch_size: usize,
-    ) {
-        let language_public_parameters = class_groups_language_public_parameters();
-
-        let (proofs, statements): (
-            Vec<crate::Proof<SOUND_PROOFS_REPETITIONS, ClassGroupsLang, _>>,
-            Vec<Vec<StatementSpaceGroupElement<SOUND_PROOFS_REPETITIONS, ClassGroupsLang>>>,
-        ) = iter::repeat_with(|| {
-            let witnesses = sample_witnesses::<SOUND_PROOFS_REPETITIONS, ClassGroupsLang>(
                 &language_public_parameters,
                 batch_size,
                 &mut OsCsRng,
@@ -631,118 +438,5 @@ mod tests {
             batch_size,
             &mut OsCsRng,
         )
-    }
-
-    #[rstest]
-    #[case(1, 1)]
-    #[case(1, 2)]
-    #[case(2, 1)]
-    #[case(2, 3)]
-    #[case(5, 2)]
-    fn aggregates(#[case] number_of_parties: usize, #[case] batch_size: usize) {
-        let language_public_parameters = language_public_parameters();
-
-        test_helpers::aggregates::<SOUND_PROOFS_REPETITIONS, Lang>(
-            &language_public_parameters,
-            number_of_parties,
-            batch_size,
-        );
-    }
-
-    #[rstest]
-    #[case(2, HashMap::from([(1, 1), (2, 1)]), 1)]
-    #[case(2, HashMap::from([(1, 1), (2, 1)]), 2)]
-    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), 1)]
-    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), 2)]
-    fn statement_aggregates_asynchronously(
-        #[case] threshold: PartyID,
-        #[case] party_to_weight: HashMap<PartyID, Weight>,
-        #[case] batch_size: usize,
-    ) {
-        let language_public_parameters = language_public_parameters();
-
-        test_helpers::statement_aggregates_asynchronously::<SOUND_PROOFS_REPETITIONS, Lang>(
-            &language_public_parameters,
-            threshold,
-            party_to_weight,
-            batch_size,
-            &mut OsCsRng,
-        );
-    }
-
-    #[rstest]
-    #[case(2, 1)]
-    #[case(3, 1)]
-    #[case(5, 2)]
-    fn unresponsive_parties_aborts_session_identifiably(
-        #[case] number_of_parties: usize,
-        #[case] batch_size: usize,
-    ) {
-        let language_public_parameters = language_public_parameters();
-
-        test_helpers::unresponsive_parties_aborts_session_identifiably::<
-            SOUND_PROOFS_REPETITIONS,
-            Lang,
-        >(&language_public_parameters, number_of_parties, batch_size);
-    }
-
-    #[rstest]
-    #[case(2, 1)]
-    #[case(3, 1)]
-    #[case(5, 2)]
-    fn wrong_decommitment_aborts_session_identifiably(
-        #[case] number_of_parties: usize,
-        #[case] batch_size: usize,
-    ) {
-        let language_public_parameters = language_public_parameters();
-
-        test_helpers::wrong_decommitment_aborts_session_identifiably::<
-            SOUND_PROOFS_REPETITIONS,
-            Lang,
-        >(&language_public_parameters, number_of_parties, batch_size);
-    }
-
-    #[rstest]
-    #[case(2, 1)]
-    #[case(3, 1)]
-    #[case(5, 2)]
-    fn failed_proof_share_verification_aborts_session_identifiably(
-        #[case] number_of_parties: usize,
-        #[case] batch_size: usize,
-    ) {
-        let language_public_parameters = language_public_parameters();
-
-        test_helpers::failed_proof_share_verification_aborts_session_identifiably::<
-            SOUND_PROOFS_REPETITIONS,
-            Lang,
-        >(&language_public_parameters, number_of_parties, batch_size);
-    }
-}
-
-#[cfg(feature = "benchmarking")]
-pub(crate) mod benches {
-    use criterion::Criterion;
-
-    use crate::equality_of_discrete_logs::test_helpers::{
-        tiresias_language_public_parameters, TiresiasLang,
-    };
-    use crate::{test_helpers, SOUND_PROOFS_REPETITIONS};
-
-    pub(crate) fn benchmark(_c: &mut Criterion) {
-        let maurer_language_public_parameters = tiresias_language_public_parameters();
-
-        test_helpers::benchmark_proof::<SOUND_PROOFS_REPETITIONS, TiresiasLang>(
-            &maurer_language_public_parameters,
-            None,
-            false,
-            None,
-        );
-
-        test_helpers::benchmark_aggregation::<SOUND_PROOFS_REPETITIONS, TiresiasLang>(
-            &maurer_language_public_parameters,
-            None,
-            false,
-            None,
-        );
     }
 }

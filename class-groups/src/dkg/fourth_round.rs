@@ -17,12 +17,11 @@ pub use crate::dkg::public_output::PublicOutput;
 use crate::dkg::{verify_encryptions_of_secrets_per_crt_prime, Message, Party, PublicInput};
 use crate::encryption_key::public_parameters::Instantiate;
 use crate::equivalence_class::EquivalenceClassOps;
+use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::compute_adjusted_lagrange_coefficients;
 use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
     NUM_ENCRYPTION_OF_DECRYPTION_KEY_PRIMES, NUM_SECRET_SHARE_PRIMES,
 };
-use crate::publicly_verifiable_secret_sharing::{
-    compute_adjusted_lagrange_coefficients, BaseProtocolContext,
-};
+use crate::publicly_verifiable_secret_sharing::BaseProtocolContext;
 use crate::setup::DeriveFromPlaintextPublicParameters;
 use crate::setup::SetupParameters;
 use crate::{
@@ -75,7 +74,7 @@ where
     >,
     GroupElement::Scalar: Default,
 {
-    /// The output of this round is an agreed upon subset of honest dealears along with the private shares gained by decrypting and summing over the agreed subset.
+    /// The output of this round is an agreed upon subset of honest dealers along with the private shares gained by decrypting and summing over the agreed subset.
     /// This round essentially finishes the implementation of $\mathcal{F}_{\textaf{ACS}}$.
     /// In addition, this allows the parties to compute the encryption of the secret key under itself per CRT prime $\textsf_{ct}_{\textsf{sk},Q'_{m'}}$ using interpolation.
     #[allow(clippy::too_many_arguments)]
@@ -90,7 +89,7 @@ where
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             group::PublicParameters<GroupElement::Scalar>,
         >,
-        pvss_party: &publicly_verifiable_secret_sharing::Party<
+        pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
@@ -156,7 +155,7 @@ where
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             group::PublicParameters<GroupElement::Scalar>,
         >,
-        pvss_party: &publicly_verifiable_secret_sharing::Party<
+        pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
@@ -225,6 +224,9 @@ where
             access_structure,
             malicious_decryption_key_contribution_dealers.clone(),
             reconstructed_commitments_to_sharing,
+            public_input
+                .setup_parameters
+                .equivalence_class_public_parameters(),
         );
 
         let threshold_encryption_key_per_crt_prime: [_; NUM_ENCRYPTION_OF_DECRYPTION_KEY_PRIMES] =
@@ -235,6 +237,7 @@ where
             >::compute_threshold_encryption_keys(
                 malicious_decryption_key_contribution_dealers.clone(),
                 threshold_encryption_key_shares_and_proofs,
+                &public_input.setup_parameters_per_crt_prime,
             )?;
 
         let threshold_encryption_scheme_public_parameters_per_crt_prime = array::from_fn(|i| {
@@ -336,6 +339,9 @@ where
         let public_output = PublicOutput::new::<GroupElement>(
             access_structure,
             public_input.setup_parameters_per_crt_prime.clone(),
+            public_input
+                .setup_parameters
+                .equivalence_class_public_parameters(),
             malicious_decryption_key_contribution_dealers.clone(),
             interpolation_subset,
             adjusted_lagrange_coefficients,

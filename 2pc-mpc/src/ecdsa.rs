@@ -5,7 +5,7 @@ pub mod presign;
 pub mod sign;
 
 use crate::sign::EncodableSignature;
-use crate::{Error, Result};
+use crate::{Error, ErrorKind, Result};
 use ecdsa::elliptic_curve::point::AffineCoordinates;
 use ecdsa::elliptic_curve::scalar::IsHigh;
 use ecdsa::signature::digest::Digest;
@@ -46,12 +46,14 @@ impl ECDSASecp256k1Signature {
     pub fn signature(&self) -> Result<k256::ecdsa::Signature> {
         let (_, signature_part) = self.0.split_at(1);
 
-        k256::ecdsa::Signature::try_from(signature_part).map_err(|_| Error::SignatureVerification)
+        k256::ecdsa::Signature::try_from(signature_part)
+            .map_err(|_| Error::from(ErrorKind::SignatureVerification))
     }
 
     /// Retrieve the recovery ID.
     pub fn recovery_id(&self) -> Result<RecoveryId> {
-        RecoveryId::from_byte(self.0[0]).ok_or(Error::SignatureVerification)
+        RecoveryId::from_byte(self.0[0])
+            .ok_or_else(|| Error::from(ErrorKind::SignatureVerification))
     }
 }
 
@@ -74,8 +76,8 @@ impl TryFrom<(secp256k1::GroupElement, secp256k1::Scalar)> for ECDSASecp256k1Sig
         let r: k256::Scalar = nonce_x_coordinate.into();
         let s: k256::Scalar = signature_s.into();
 
-        let signature =
-            k256::ecdsa::Signature::from_scalars(r, s).map_err(|_| Error::SignatureVerification)?;
+        let signature = k256::ecdsa::Signature::from_scalars(r, s)
+            .map_err(|_| Error::from(ErrorKind::SignatureVerification))?;
 
         // Compute recovery ID.
         let public_nonce: k256::AffinePoint = public_nonce.value().into();
@@ -114,7 +116,7 @@ impl VerifyingKey<{ secp256k1::SCALAR_LIMBS }> for secp256k1::GroupElement {
         signature: &Self::Signature,
     ) -> Result<()> {
         let verifying_key = k256::ecdsa::VerifyingKey::from_affine(self.value().into())
-            .map_err(|_| Error::SignatureVerification)?;
+            .map_err(|_| Error::from(ErrorKind::SignatureVerification))?;
 
         let signature = signature.signature()?;
 
@@ -127,7 +129,7 @@ impl VerifyingKey<{ secp256k1::SCALAR_LIMBS }> for secp256k1::GroupElement {
                     },
                     &signature,
                 )
-                .map_err(|_| Error::SignatureVerification),
+                .map_err(|_| Error::from(ErrorKind::SignatureVerification)),
             HashScheme::SHA256 => verifying_key
                 .verify_digest(
                     |hasher: &mut sha2::Sha256| {
@@ -136,7 +138,7 @@ impl VerifyingKey<{ secp256k1::SCALAR_LIMBS }> for secp256k1::GroupElement {
                     },
                     &signature,
                 )
-                .map_err(|_| Error::SignatureVerification),
+                .map_err(|_| Error::from(ErrorKind::SignatureVerification)),
             HashScheme::DoubleSHA256 => {
                 let mut hasher = sha2::Sha256::new();
 
@@ -151,9 +153,9 @@ impl VerifyingKey<{ secp256k1::SCALAR_LIMBS }> for secp256k1::GroupElement {
                         },
                         &signature,
                     )
-                    .map_err(|_| Error::SignatureVerification)
+                    .map_err(|_| Error::from(ErrorKind::SignatureVerification))
             }
-            _ => Err(Error::Nonstandard),
+            _ => Err(Error::from(ErrorKind::Nonstandard)),
         }
     }
 
@@ -178,12 +180,14 @@ impl ECDSASecp256r1Signature {
     pub fn signature(&self) -> Result<p256::ecdsa::Signature> {
         let (_, signature_part) = self.0.split_at(1);
 
-        p256::ecdsa::Signature::try_from(signature_part).map_err(|_| Error::SignatureVerification)
+        p256::ecdsa::Signature::try_from(signature_part)
+            .map_err(|_| Error::from(ErrorKind::SignatureVerification))
     }
 
     /// Retrieve the recovery ID.
     pub fn recovery_id(&self) -> Result<RecoveryId> {
-        RecoveryId::from_byte(self.0[0]).ok_or(Error::SignatureVerification)
+        RecoveryId::from_byte(self.0[0])
+            .ok_or_else(|| Error::from(ErrorKind::SignatureVerification))
     }
 }
 
@@ -206,8 +210,8 @@ impl TryFrom<(secp256r1::GroupElement, secp256r1::Scalar)> for ECDSASecp256r1Sig
         let r: p256::Scalar = nonce_x_coordinate.into();
         let s: p256::Scalar = signature_s.into();
 
-        let signature =
-            p256::ecdsa::Signature::from_scalars(r, s).map_err(|_| Error::SignatureVerification)?;
+        let signature = p256::ecdsa::Signature::from_scalars(r, s)
+            .map_err(|_| Error::from(ErrorKind::SignatureVerification))?;
 
         // Compute recovery ID.
         let public_nonce: p256::AffinePoint = public_nonce.value().into();
@@ -245,17 +249,17 @@ impl VerifyingKey<{ secp256r1::SCALAR_LIMBS }> for secp256r1::GroupElement {
         signature: &Self::Signature,
     ) -> Result<()> {
         if hash_type != HashScheme::SHA256 {
-            return Err(Error::Nonstandard);
+            return Err(Error::from(ErrorKind::Nonstandard));
         }
 
         let verifying_key = p256::ecdsa::VerifyingKey::from_affine(self.value().into())
-            .map_err(|_| Error::SignatureVerification)?;
+            .map_err(|_| Error::from(ErrorKind::SignatureVerification))?;
 
         let signature = signature.signature()?;
 
         verifying_key
             .verify(message, &signature)
-            .map_err(|_| Error::SignatureVerification)
+            .map_err(|_| Error::from(ErrorKind::SignatureVerification))
     }
 
     fn x_projected_to_scalar_field(&self) -> secp256r1::Scalar {

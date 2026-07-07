@@ -21,12 +21,13 @@ use crate::accelerator::MultiFoldNupowAccelerator;
 use crate::dkg::prove_encryption_of_discrete_log_per_crt_prime;
 use crate::equivalence_class::EquivalenceClassOps;
 use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
+    DealSecretMessage, DealtSecretShare, DealtSecretShareMessage,
+};
+use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
     CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, NUM_ENCRYPTION_OF_DECRYPTION_KEY_PRIMES,
     NUM_SECRET_SHARE_PRIMES,
 };
-use crate::publicly_verifiable_secret_sharing::{
-    BaseProtocolContext, DealSecretMessage, DealtSecretShare, DealtSecretShareMessage,
-};
+use crate::publicly_verifiable_secret_sharing::BaseProtocolContext;
 use crate::reconfiguration::party::RoundResult;
 use crate::reconfiguration::{
     Message, Party, PublicInput, RANDOMIZER_LIMBS, RANDOMIZER_WITNESS_LIMBS,
@@ -34,7 +35,7 @@ use crate::reconfiguration::{
 use crate::setup::{DeriveFromPlaintextPublicParameters, SetupParameters};
 use crate::{
     equivalence_class, publicly_verifiable_secret_sharing, CiphertextSpaceGroupElement,
-    CompactIbqf, EquivalenceClass, Error, Result,
+    CompactIbqf, EquivalenceClass, Error, ErrorKind, Result,
 };
 use crate::{SECRET_KEY_SHARE_LIMBS, SECRET_KEY_SHARE_WITNESS_LIMBS};
 
@@ -102,7 +103,7 @@ where
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             group::PublicParameters<GroupElement::Scalar>,
         >,
-        randomizer_contribution_to_upcoming_pvss_party: &publicly_verifiable_secret_sharing::Party<
+        randomizer_contribution_to_upcoming_pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
@@ -162,7 +163,7 @@ where
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             group::PublicParameters<GroupElement::Scalar>,
         >,
-        randomizer_contribution_to_upcoming_pvss_party: &publicly_verifiable_secret_sharing::Party<
+        randomizer_contribution_to_upcoming_pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
@@ -195,7 +196,7 @@ where
                 randomizer_contribution_bits,
                 randomizer_contribution_bits + 1,
             )
-            .map_err(|_| Error::InvalidPublicParameters)?;
+            .map_err(|_| Error::from(ErrorKind::InvalidPublicParameters))?;
 
         // Sample a randomizer contribution $r_{i}$ which will be used to statistically mask the secret key.
         let randomizer_contribution =
@@ -219,7 +220,7 @@ where
         let public_parameters = bounded_integers_group::PublicParameters::<
             RANDOMIZER_WITNESS_LIMBS,
         >::new_with_randomizer_upper_bound(randomizer_contribution_bits)
-            .map_err(|_| Error::InvalidPublicParameters)?;
+            .map_err(|_| Error::from(ErrorKind::InvalidPublicParameters))?;
 
         let randomizer_contribution = bounded_integers_group::GroupElement::new(
             Int::from(&randomizer_contribution),
@@ -291,7 +292,7 @@ where
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             >,
         >,
-        randomizer_contribution_to_upcoming_pvss_party: &publicly_verifiable_secret_sharing::Party<
+        randomizer_contribution_to_upcoming_pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
@@ -359,7 +360,7 @@ where
                             deal_randomizer_contribution_to_upcoming_parties_message,
                             threshold_encryption_of_randomizer_contribution_and_proof,
                         )),
-                        _ => Err(Error::InvalidParameters),
+                        _ => Err(Error::from(ErrorKind::InvalidParameters)),
                     };
 
                     (dealer_party_id, res)

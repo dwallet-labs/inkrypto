@@ -16,8 +16,8 @@ use group::{Reduce, Transcribeable};
 use homomorphic_encryption::{AdditivelyHomomorphicEncryptionKey, GroupsPublicParametersAccessors};
 use proof::GroupsPublicParameters;
 
-use crate::Error;
 use crate::SOUND_PROOFS_REPETITIONS;
+use crate::{Error, ErrorKind};
 
 /// Encryption of a Tuple Maurer Language
 ///
@@ -150,7 +150,7 @@ where
         is_verify: bool,
     ) -> crate::Result<Self::StatementSpaceGroupElement> {
         if SCALAR_LIMBS > PLAINTEXT_SPACE_SCALAR_LIMBS {
-            return Err(Error::InvalidPublicParameters);
+            return Err(Error::from(ErrorKind::InvalidPublicParameters));
         }
 
         let group_order = Uint::<PLAINTEXT_SPACE_SCALAR_LIMBS>::from(
@@ -161,13 +161,13 @@ where
 
         let encryption_key =
             EncryptionKey::new(&language_public_parameters.encryption_scheme_public_parameters)
-                .map_err(|_| crate::Error::InvalidPublicParameters)?;
+                .map_err(|_| crate::Error::from(crate::ErrorKind::InvalidPublicParameters))?;
 
         let ciphertext = homomorphic_encryption::CiphertextSpaceGroupElement::<
             PLAINTEXT_SPACE_SCALAR_LIMBS,
             EncryptionKey,
         >::new(
-            language_public_parameters.ciphertext,
+            language_public_parameters.ciphertext.clone(),
             language_public_parameters
                 .encryption_scheme_public_parameters
                 .ciphertext_space_public_parameters(),
@@ -179,8 +179,8 @@ where
                     .encryption_scheme_public_parameters
                     .plaintext_space_public_parameters(),
             );
-        let plaintext_group_order =
-            Option::<_>::from(NonZero::new(plaintext_group_order)).ok_or(Error::InternalError)?;
+        let plaintext_group_order = Option::<_>::from(NonZero::new(plaintext_group_order))
+            .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
         let multiplicand_value = witness
             .multiplicand()
             .value()
@@ -232,7 +232,7 @@ where
                 &language_public_parameters.encryption_scheme_public_parameters,
                 is_verify,
             )
-            .map_err(|_| crate::Error::InvalidPublicParameters)?;
+            .map_err(|_| crate::Error::from(crate::ErrorKind::InvalidPublicParameters))?;
 
         Ok([encryption_of_multiplicand, encryption_of_product].into())
     }

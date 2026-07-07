@@ -1,11 +1,13 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
+use itertools::multiunzip;
+
 use super::{EqualityOfCoefficientsCommitmentsProof, PublicInput};
 use crate::decentralized_party::reconfiguration::Message;
 use crate::decentralized_party::reconfiguration::PublicOutput;
 use crate::languages::EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters;
-use crate::{decentralized_party::dkg, Error, Result};
+use crate::{decentralized_party::dkg, Error, ErrorKind, Result};
 use class_groups::publicly_verifiable_secret_sharing::chinese_remainder_theorem::NUM_SECRET_SHARE_PRIMES;
 use class_groups::{
     publicly_verifiable_secret_sharing, EquivalenceClass, RistrettoSetupParameters,
@@ -16,7 +18,8 @@ use class_groups::{
 };
 use commitment::CommitmentSizedNumber;
 use group::direct_product::ThreeWayGroupElement;
-use group::secp256k1::{GroupElement, Scalar, SCALAR_LIMBS};
+use group::helpers::DeduplicateAndSort;
+use group::secp256k1::{GroupElement, SCALAR_LIMBS};
 use group::{CsRng, GroupElement as _, PartyID};
 use mpc::{AsynchronousRoundResult, HandleInvalidMessages};
 use std::collections::HashMap;
@@ -28,14 +31,14 @@ impl super::Party {
         randomizer_contribution_to_threshold_encryption_key_base_protocol_context: publicly_verifiable_secret_sharing::BaseProtocolContext,
         public_input: &PublicInput,
         equality_of_coefficients_commitments_language_public_parameters: EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters<
-            SECRET_KEY_SHARE_WITNESS_LIMBS,
+            SECRET_KEY_SHARE_LIMBS,
             ThreeWayGroupElement<
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
             >,
         >,
-        randomizer_contribution_to_upcoming_pvss_party: &publicly_verifiable_secret_sharing::Party<
+        randomizer_contribution_to_upcoming_pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
@@ -52,7 +55,7 @@ impl super::Party {
             tangible_party_id,
             session_id,
             randomizer_contribution_to_threshold_encryption_key_base_protocol_context,
-            &public_input.class_groups_public_input,
+            public_input,
             equality_of_coefficients_commitments_language_public_parameters,
             randomizer_contribution_to_upcoming_pvss_party,
             equality_of_coefficients_commitments_base_protocol_context,
@@ -71,21 +74,16 @@ impl super::Party {
         tangible_party_id: PartyID,
         session_id: CommitmentSizedNumber,
         randomizer_contribution_to_threshold_encryption_key_base_protocol_context: publicly_verifiable_secret_sharing::BaseProtocolContext,
-        class_groups_public_input: &class_groups::reconfiguration::PublicInput<
-            SCALAR_LIMBS,
-            FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            group::PublicParameters<Scalar>,
-        >,
+        public_input: &PublicInput,
         equality_of_coefficients_commitments_language_public_parameters: EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters<
-            SECRET_KEY_SHARE_WITNESS_LIMBS,
+            SECRET_KEY_SHARE_LIMBS,
             ThreeWayGroupElement<
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
             >,
         >,
-        randomizer_contribution_to_upcoming_pvss_party: &publicly_verifiable_secret_sharing::Party<
+        randomizer_contribution_to_upcoming_pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
@@ -98,6 +96,8 @@ impl super::Party {
         randomizer_contribution_bits: u32,
         rng: &mut impl CsRng,
     ) -> Result<(Vec<PartyID>, Message)> {
+        let class_groups_public_input = &public_input.class_groups_public_input;
+
         let (
             malicious_parties,
             coefficients_for_commitments,
@@ -129,6 +129,21 @@ impl super::Party {
                 rng,
             )?;
 
+        // Protocol 0.1: Deal randomizers for each curve using the wrapper function
+        let (dealing_malicious_parties, dealing_message) =
+            crate::decentralized_party::threshold_encryption_of_secret_key_share_parts_to_sharing::dealing::advance_dealing_round(
+                session_id,
+                tangible_party_id,
+                &public_input.threshold_encryption_of_secret_key_share_parts_to_sharing_public_input,
+                rng,
+            )?;
+
+        // Aggregate malicious parties from class groups reconfiguration and curve dealings
+        let malicious_parties = malicious_parties
+            .into_iter()
+            .chain(dealing_malicious_parties)
+            .deduplicate_and_sort();
+
         let message = Message::DealRandomizerContributionAndProveCoefficientCommitments {
             deal_randomizer_message: class_groups::reconfiguration::Message::DealRandomizer {
                 deal_randomizer_contribution_to_upcoming_parties_message,
@@ -136,6 +151,8 @@ impl super::Party {
             },
             equality_of_coefficients_commitments_proof,
             coefficients_commitments,
+            threshold_encryption_of_secret_key_share_parts_to_sharing_dealing_message:
+                dealing_message,
         };
 
         Ok((malicious_parties, message))
@@ -169,7 +186,12 @@ impl super::Party {
                 >,
             ),
         >,
-    )> {
+    // Protocol 0.1: Per-curve dealings for threshold_encryption_to_sharing
+        HashMap<
+            PartyID,
+            crate::decentralized_party::threshold_encryption_of_secret_key_share_parts_to_sharing::DealingRoundMessage,
+        >,
+    )>{
         // Make sure everyone sent the first round message.
         let (
             parties_sending_invalid_deal_randomizer_and_prove_coefficient_commitments_messages,
@@ -182,6 +204,8 @@ impl super::Party {
                         deal_randomizer_message,
                         equality_of_coefficients_commitments_proof,
                         coefficients_commitments,
+                        threshold_encryption_of_secret_key_share_parts_to_sharing_dealing_message:
+                            dealing,
                     } => {
                         if let class_groups::reconfiguration::Message::DealRandomizer {
                             deal_randomizer_contribution_to_upcoming_parties_message,
@@ -251,16 +275,17 @@ impl super::Party {
                                         deal_randomizer_message,
                                         equality_of_coefficients_commitments_proof,
                                         coefficients_commitments,
+                                        dealing,
                                     )
                                 })
                             } else {
-                                Err(Error::InvalidMessage)
+                                Err(Error::from(ErrorKind::InvalidMessage))
                             }
                         } else {
-                            Err(Error::InvalidMessage)
+                            Err(Error::from(ErrorKind::InvalidMessage))
                         }
                     }
-                    _ => Err(Error::InvalidMessage),
+                    _ => Err(Error::from(ErrorKind::InvalidMessage)),
                 };
 
                 (dealer_party_id, res)
@@ -269,39 +294,21 @@ impl super::Party {
 
         let (
             deal_randomizer_messages,
-            equality_of_coefficients_commitments_proofs_and_statements
-        ): (HashMap<_, _>, HashMap<_, _>) = deal_randomizer_and_prove_coefficient_commitments_messages
-            .into_iter()
-            .map(
-                |(
-                     dealer_tangible_party_id,
-                     (
-                         deal_randomizer_message,
-                         equality_of_coefficients_commitments_proof,
-                         coefficient_commitments
-                     ),
-                 )| {
-                    (
-                        (
-                            dealer_tangible_party_id,
-                            deal_randomizer_message,
-                        ),
-                        (
-                            dealer_tangible_party_id,
-                            (
-                                equality_of_coefficients_commitments_proof,
-                                  coefficient_commitments
-                            ),
-                        ),
-                    )
-                },
-            )
-            .unzip();
+            equality_of_coefficients_commitments_proofs_and_statements,
+            dealing_round_messages,
+        ): (HashMap<_, _>, HashMap<_, _>, HashMap<_, _>) = multiunzip(
+            deal_randomizer_and_prove_coefficient_commitments_messages
+                .into_iter()
+                .map(|(id, (deal_msg, proof, coeffs, dealing))| {
+                    ((id, deal_msg), (id, (proof, coeffs)), (id, dealing))
+                }),
+        );
 
         Ok((
             parties_sending_invalid_deal_randomizer_and_prove_coefficient_commitments_messages,
             deal_randomizer_messages,
             equality_of_coefficients_commitments_proofs_and_statements,
+            dealing_round_messages,
         ))
     }
 }

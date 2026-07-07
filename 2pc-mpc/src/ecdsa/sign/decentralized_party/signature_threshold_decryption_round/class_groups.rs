@@ -22,7 +22,6 @@ use mpc::secret_sharing::shamir::over_the_integers::AdjustedLagrangeCoefficientS
 use super::*;
 use crate::class_groups::{DKGDecentralizedPartyVersionedOutput, DecryptionShare};
 use crate::class_groups::{DecryptionKeySharePublicParameters, PartialDecryptionProof};
-use crate::ecdsa::sign::centralized_party::message::class_groups::Message;
 use crate::ecdsa::VerifyingKey;
 
 impl Party {
@@ -33,8 +32,7 @@ impl Party {
         const SCALAR_LIMBS: usize,
         const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
-        const MESSAGE_LIMBS: usize,
-        GroupElement: VerifyingKey<SCALAR_LIMBS>,
+        GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
     >(
         expected_decrypters: HashSet<PartyID>,
         decryption_shares: HashMap<
@@ -48,12 +46,15 @@ impl Party {
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             GroupElement,
         >,
-        sign_message: Message<
-            SCALAR_LIMBS,
-            FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            MESSAGE_LIMBS,
-            GroupElement,
+        // $R$
+        public_signature_nonce: GroupElement::Value,
+        // $\textsf{ct}_A$
+        encryption_of_partial_signature_value: group::Value<
+            CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+        >,
+        // $\textsf{ct}_{\alpha,\beta}$
+        encryption_of_displaced_decentralized_party_nonce_share_value: group::Value<
+            CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
         >,
         decryption_key_share_public_parameters: &DecryptionKeySharePublicParameters<
             SCALAR_LIMBS,
@@ -158,11 +159,10 @@ impl Party {
             LagrangeCoefficient = AdjustedLagrangeCoefficientSizedNumber,
             Error = ::class_groups::Error,
         >,
-        Uint<MESSAGE_LIMBS>: Encoding,
     {
         let encryption_of_partial_signature =
             CiphertextSpaceGroupElement::<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>::new(
-                sign_message.encryption_of_partial_signature,
+                encryption_of_partial_signature_value,
                 protocol_public_parameters
                     .encryption_scheme_public_parameters
                     .ciphertext_space_public_parameters(),
@@ -170,7 +170,7 @@ impl Party {
 
         let encryption_of_displaced_decentralized_party_nonce_share =
             CiphertextSpaceGroupElement::<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>::new(
-                sign_message.encryption_of_displaced_decentralized_party_nonce_share,
+                encryption_of_displaced_decentralized_party_nonce_share_value,
                 protocol_public_parameters
                     .encryption_scheme_public_parameters
                     .ciphertext_space_public_parameters(),
@@ -199,7 +199,7 @@ impl Party {
             decryption_shares,
             encryption_of_partial_signature,
             encryption_of_displaced_decentralized_party_nonce_share,
-            sign_message.public_signature_nonce,
+            public_signature_nonce,
             decryption_key_share_public_parameters,
             protocol_public_parameters,
             access_structure,
@@ -215,8 +215,7 @@ impl Party {
         const SCALAR_LIMBS: usize,
         const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
-        const MESSAGE_LIMBS: usize,
-        GroupElement: VerifyingKey<SCALAR_LIMBS>,
+        GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
     >(
         expected_decrypters: HashSet<PartyID>,
         invalid_semi_honest_decryption_shares: HashMap<
@@ -237,12 +236,15 @@ impl Party {
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             GroupElement,
         >,
-        sign_message: Message<
-            SCALAR_LIMBS,
-            FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            MESSAGE_LIMBS,
-            GroupElement,
+        // $R$
+        public_signature_nonce: GroupElement::Value,
+        // $\textsf{ct}_A$
+        encryption_of_partial_signature_value: group::Value<
+            CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+        >,
+        // $\textsf{ct}_{\alpha,\beta}$
+        encryption_of_displaced_decentralized_party_nonce_share_value: group::Value<
+            CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
         >,
         decryption_key_share_public_parameters: &DecryptionKeySharePublicParameters<
             SCALAR_LIMBS,
@@ -348,11 +350,10 @@ impl Party {
             LagrangeCoefficient = AdjustedLagrangeCoefficientSizedNumber,
             Error = ::class_groups::Error,
         >,
-        Uint<MESSAGE_LIMBS>: Encoding,
     {
         let encryption_of_partial_signature =
             CiphertextSpaceGroupElement::<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>::new(
-                sign_message.encryption_of_partial_signature,
+                encryption_of_partial_signature_value,
                 protocol_public_parameters
                     .encryption_scheme_public_parameters
                     .ciphertext_space_public_parameters(),
@@ -360,7 +361,7 @@ impl Party {
 
         let encryption_of_displaced_decentralized_party_nonce_share =
             CiphertextSpaceGroupElement::<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>::new(
-                sign_message.encryption_of_displaced_decentralized_party_nonce_share,
+                encryption_of_displaced_decentralized_party_nonce_share_value,
                 protocol_public_parameters
                     .encryption_scheme_public_parameters
                     .ciphertext_space_public_parameters(),
@@ -390,7 +391,7 @@ impl Party {
             decryption_shares_and_proofs,
             encryption_of_partial_signature,
             encryption_of_displaced_decentralized_party_nonce_share,
-            sign_message.public_signature_nonce,
+            public_signature_nonce,
             decryption_key_share_public_parameters,
             protocol_public_parameters,
             access_structure,

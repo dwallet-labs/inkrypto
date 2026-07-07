@@ -7,13 +7,39 @@ use std::{collections::HashMap, fmt::Debug};
 use crypto_bigint::{subtle::CtOption, Uint};
 use serde::{Deserialize, Serialize};
 
-use group::{
-    CsRng, GroupElement, KnownOrderScalar, LinearlyCombinable, PartyID, Samplable, Transcribeable,
-};
+use group::{CsRng, GroupElement, KnownOrderScalar, PartyID, Samplable, Transcribeable};
 
-/// An error in encryption-related operations.
+/// Homomorphic-encryption error wrapper that carries a backtrace captured at construction.
+///
+/// See `group::Error` for details.
+#[derive(thiserror::Error, Clone, Debug)]
+#[error("{kind}\n{backtrace}")]
+pub struct Error {
+    pub kind: ErrorKind,
+    pub backtrace: std::sync::Arc<std::backtrace::Backtrace>,
+}
+
+impl PartialEq for Error {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+    }
+}
+
+impl<E> From<E> for Error
+where
+    ErrorKind: From<E>,
+{
+    fn from(value: E) -> Self {
+        Self {
+            kind: ErrorKind::from(value),
+            backtrace: std::sync::Arc::new(std::backtrace::Backtrace::capture()),
+        }
+    }
+}
+
+/// An error kind in encryption-related operations.
 #[derive(thiserror::Error, Clone, Debug, PartialEq)]
-pub enum Error {
+pub enum ErrorKind {
     #[error("group error")]
     Group(#[from] group::Error),
     #[error("zero dimension: cannot evaluate a zero-dimension linear combination")]
@@ -35,8 +61,8 @@ pub trait AdditivelyHomomorphicEncryptionKey<const PLAINTEXT_SPACE_SCALAR_LIMBS:
     PartialEq + Clone + Debug + Eq + Send + Sync
 {
     type PlaintextSpaceGroupElement: KnownOrderScalar<PLAINTEXT_SPACE_SCALAR_LIMBS>;
-    type RandomnessSpaceGroupElement: GroupElement + Samplable;
-    type CiphertextSpaceGroupElement: GroupElement;
+    type RandomnessSpaceGroupElement: GroupElement + Samplable + Copy;
+    type CiphertextSpaceGroupElement: GroupElement + Copy;
 
     /// The public parameters of the encryption scheme.
     ///
@@ -113,24 +139,29 @@ pub trait AdditivelyHomomorphicEncryptionKey<const PLAINTEXT_SPACE_SCALAR_LIMBS:
         coefficients: &[Uint<MESSAGE_LIMBS>; DIMENSION],
         coefficient_upper_bound_bits: u32,
         ciphertexts: &[Self::CiphertextSpaceGroupElement; DIMENSION],
-        _public_parameters: &Self::PublicParameters,
+        public_parameters: &Self::PublicParameters,
         is_vartime: bool,
     ) -> Result<Self::CiphertextSpaceGroupElement> {
         let bases_and_multiplicands = ciphertexts
             .iter()
-            .copied()
+            .cloned()
             .zip(coefficients.iter().copied())
             .collect();
+
+        let ciphertext_space_public_parameters =
+            public_parameters.ciphertext_space_public_parameters();
 
         let linear_combination = if is_vartime {
             Self::CiphertextSpaceGroupElement::linearly_combine_bounded_vartime(
                 bases_and_multiplicands,
                 coefficient_upper_bound_bits,
+                ciphertext_space_public_parameters,
             )?
         } else {
             Self::CiphertextSpaceGroupElement::linearly_combine_bounded(
                 bases_and_multiplicands,
                 coefficient_upper_bound_bits,
+                ciphertext_space_public_parameters,
             )?
         };
 
@@ -777,9 +808,18 @@ pub mod test_helpers {
             .encrypt(&seven, public_parameters, true, rng)
             .unwrap();
 
-        let evaluated_ciphertext = encryption_of_five.scale(&U64::from(1u64))
-            + encryption_of_seven.scale(&U64::from(0u64))
-            + encryption_of_two.scale(&U64::from(73u64));
+        let ciphertext_space_public_parameters =
+            public_parameters.ciphertext_space_public_parameters();
+        let evaluated_ciphertext = encryption_of_five
+            .scale(&U64::from(1u64), ciphertext_space_public_parameters)
+            .add_vartime(
+                &encryption_of_seven.scale(&U64::from(0u64), ciphertext_space_public_parameters),
+                ciphertext_space_public_parameters,
+            )
+            .add_vartime(
+                &encryption_of_two.scale(&U64::from(73u64), ciphertext_space_public_parameters),
+                ciphertext_space_public_parameters,
+            );
 
         let expected_evaluation_result: Uint<PLAINTEXT_SPACE_SCALAR_LIMBS> =
             (&U64::from(1u64 * 5 + 0 * 7 + 73 * 2)).into();
@@ -871,16 +911,22 @@ pub mod test_helpers {
         let (second_zero_encryption_randomness, second_encryption_of_zero) = encryption_key
             .encrypt(&zero, public_parameters, true, rng)
             .unwrap();
+        let randomness_space_public_parameters =
+            public_parameters.randomness_space_public_parameters();
         let encryption_of_zero_with_sum_randomness = encryption_key.encrypt_with_randomness(
             &zero,
-            &(first_zero_encryption_randomness + second_zero_encryption_randomness),
+            &first_zero_encryption_randomness.add_vartime(
+                &second_zero_encryption_randomness,
+                randomness_space_public_parameters,
+            ),
             public_parameters,
             true,
         );
 
         assert_eq!(
             encryption_of_zero_with_sum_randomness,
-            first_encryption_of_zero + second_encryption_of_zero,
+            first_encryption_of_zero
+                .add_vartime(&second_encryption_of_zero, ciphertext_space_public_parameters),
             "encryptions of zero with randomnesses r1, r2 should sum up to be an encryption of zero with randomness r1 + r2"
         );
 
@@ -920,7 +966,8 @@ pub mod test_helpers {
             .encrypt(&m2, public_parameters, true, rng)
             .unwrap();
 
-        let evaluated_ciphertext = encryption_of_m1 + encryption_of_m2;
+        let evaluated_ciphertext =
+            encryption_of_m1.add_vartime(&encryption_of_m2, ciphertext_space_public_parameters);
 
         let m1_scalar =
             EvaluationGroupElement::new(m1_value.into(), evaluation_group_public_parameters)
@@ -929,7 +976,8 @@ pub mod test_helpers {
             EvaluationGroupElement::new(m2_value.into(), evaluation_group_public_parameters)
                 .unwrap();
 
-        let expected_evaluation_result: EvaluationGroupElement = m1_scalar + m2_scalar;
+        let expected_evaluation_result: EvaluationGroupElement =
+            m1_scalar.add_vartime(&m2_scalar, evaluation_group_public_parameters);
 
         let decrypted = decryption_key
             .decrypt(&evaluated_ciphertext, public_parameters)
@@ -951,12 +999,15 @@ pub mod test_helpers {
             "randomly sampled ciphertexts should be added properly"
         );
 
-        let evaluted_ciphertext = encryption_of_m1.scale(&s) + encryption_of_m2;
+        let evaluted_ciphertext = encryption_of_m1
+            .scale(&s, ciphertext_space_public_parameters)
+            .add_vartime(&encryption_of_m2, ciphertext_space_public_parameters);
 
         let s_scalar =
             EvaluationGroupElement::new(s.into(), evaluation_group_public_parameters).unwrap();
 
-        let expected_evaluation_result: EvaluationGroupElement = (s_scalar * m1_scalar) + m2_scalar;
+        let expected_evaluation_result: EvaluationGroupElement =
+            (s_scalar * m1_scalar).add_vartime(&m2_scalar, evaluation_group_public_parameters);
 
         let decrypted = decryption_key
             .decrypt(&evaluted_ciphertext, public_parameters)
@@ -982,7 +1033,7 @@ pub mod test_helpers {
 
         let s_value: Uint<EVALUATION_GROUP_SCALAR_LIMBS> = s_scalar.value().into();
         let s: Uint<PLAINTEXT_SPACE_SCALAR_LIMBS> = (&s_value).into();
-        let evaluated_ciphertext = encryption_of_m1.scale(&s);
+        let evaluated_ciphertext = encryption_of_m1.scale(&s, ciphertext_space_public_parameters);
         let s = EncryptionKey::PlaintextSpaceGroupElement::new(
             s.into(),
             public_parameters.plaintext_space_public_parameters(),
@@ -1009,6 +1060,7 @@ pub mod test_helpers {
         );
 
         let mask = mask.neutral();
+        let ciphertexts_and_encoded_messages_upper_bounds = [(encryption_of_m1, evaluation_order)];
         let privately_evaluted_ciphertext = encryption_key
             .securely_evaluate_linear_combination_with_randomness(
                 &[s.value().into()],
@@ -1042,7 +1094,12 @@ pub mod test_helpers {
 
         let expected_evaluation_result = encryption_key.encrypt_with_randomness(
             &pt,
-            &((m1_encryption_randomness.scale(&s_value)) + secure_evaluation_randomness),
+            &m1_encryption_randomness
+                .scale(&s_value, randomness_space_public_parameters)
+                .add_vartime(
+                    &secure_evaluation_randomness,
+                    randomness_space_public_parameters,
+                ),
             public_parameters,
             true,
         );

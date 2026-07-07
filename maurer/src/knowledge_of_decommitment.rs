@@ -57,6 +57,9 @@ where
         Ok(commitment_scheme.commit(
             witness.commitment_message(),
             witness.commitment_randomness(),
+            language_public_parameters
+                .commitment_scheme_public_parameters
+                .commitment_space_public_parameters(),
         ))
     }
 }
@@ -326,13 +329,11 @@ pub mod test_helpers {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use std::iter;
 
     use rstest::rstest;
 
-    use group::{OsCsRng, PartyID};
-    use mpc::Weight;
+    use group::OsCsRng;
 
     use crate::language::StatementSpaceGroupElement;
     use crate::test_helpers::{batch_verifies, generate_valid_proof, sample_witnesses};
@@ -489,99 +490,6 @@ mod tests {
             Lang<SOUND_PROOFS_REPETITIONS, 1>,
         >(&language_public_parameters, batch_size, &mut OsCsRng)
     }
-
-    #[rstest]
-    #[case(1, 1)]
-    #[case(1, 2)]
-    #[case(2, 1)]
-    #[case(2, 3)]
-    #[case(5, 2)]
-    fn aggregates(#[case] number_of_parties: usize, #[case] batch_size: usize) {
-        let language_public_parameters =
-            language_public_parameters::<SOUND_PROOFS_REPETITIONS, 1>();
-
-        test_helpers::aggregates::<SOUND_PROOFS_REPETITIONS, Lang<SOUND_PROOFS_REPETITIONS, 1>>(
-            &language_public_parameters,
-            number_of_parties,
-            batch_size,
-        );
-    }
-
-    #[rstest]
-    #[case(2, HashMap::from([(1, 1), (2, 1)]), 1)]
-    #[case(2, HashMap::from([(1, 1), (2, 1)]), 2)]
-    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), 1)]
-    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), 2)]
-    fn statement_aggregates_asynchronously(
-        #[case] threshold: PartyID,
-        #[case] party_to_weight: HashMap<PartyID, Weight>,
-        #[case] batch_size: usize,
-    ) {
-        let language_public_parameters =
-            language_public_parameters::<SOUND_PROOFS_REPETITIONS, 1>();
-
-        test_helpers::statement_aggregates_asynchronously::<
-            SOUND_PROOFS_REPETITIONS,
-            Lang<SOUND_PROOFS_REPETITIONS, 1>,
-        >(
-            &language_public_parameters,
-            threshold,
-            party_to_weight,
-            batch_size,
-            &mut OsCsRng,
-        );
-    }
-
-    #[rstest]
-    #[case(2, 1)]
-    #[case(3, 1)]
-    #[case(5, 2)]
-    fn unresponsive_parties_aborts_session_identifiably(
-        #[case] number_of_parties: usize,
-        #[case] batch_size: usize,
-    ) {
-        let language_public_parameters =
-            language_public_parameters::<SOUND_PROOFS_REPETITIONS, 1>();
-
-        test_helpers::unresponsive_parties_aborts_session_identifiably::<
-            SOUND_PROOFS_REPETITIONS,
-            Lang<SOUND_PROOFS_REPETITIONS, 1>,
-        >(&language_public_parameters, number_of_parties, batch_size);
-    }
-
-    #[rstest]
-    #[case(2, 1)]
-    #[case(3, 1)]
-    #[case(5, 2)]
-    fn wrong_decommitment_aborts_session_identifiably(
-        #[case] number_of_parties: usize,
-        #[case] batch_size: usize,
-    ) {
-        let language_public_parameters =
-            language_public_parameters::<SOUND_PROOFS_REPETITIONS, 1>();
-
-        test_helpers::wrong_decommitment_aborts_session_identifiably::<
-            SOUND_PROOFS_REPETITIONS,
-            Lang<SOUND_PROOFS_REPETITIONS, 1>,
-        >(&language_public_parameters, number_of_parties, batch_size);
-    }
-
-    #[rstest]
-    #[case(2, 1)]
-    #[case(3, 1)]
-    #[case(5, 2)]
-    fn failed_proof_share_verification_aborts_session_identifiably(
-        #[case] number_of_parties: usize,
-        #[case] batch_size: usize,
-    ) {
-        let language_public_parameters =
-            language_public_parameters::<SOUND_PROOFS_REPETITIONS, 1>();
-
-        test_helpers::failed_proof_share_verification_aborts_session_identifiably::<
-            SOUND_PROOFS_REPETITIONS,
-            Lang<SOUND_PROOFS_REPETITIONS, 1>,
-        >(&language_public_parameters, number_of_parties, batch_size);
-    }
 }
 
 #[cfg(feature = "benchmarking")]
@@ -613,11 +521,6 @@ pub(crate) mod benches {
         test_helpers::benchmark_fischlin_proof::<16, Lang<16, 1>>(
             &fischlin_language_public_parameters16,
         );
-
-        test_helpers::benchmark_aggregation::<
-            SOUND_PROOFS_REPETITIONS,
-            Lang<SOUND_PROOFS_REPETITIONS, 1>,
-        >(&sound_language_public_parameters, None, false, None);
 
         let language_public_parameters1 =
             language_public_parameters::<BIT_SOUNDNESS_PROOFS_REPETITIONS, 1>();
@@ -723,71 +626,6 @@ pub(crate) mod benches {
             Some(vec![
                 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192,
             ]),
-        );
-
-        test_helpers::benchmark_aggregation::<
-            BIT_SOUNDNESS_PROOFS_REPETITIONS,
-            Lang<BIT_SOUNDNESS_PROOFS_REPETITIONS, 1>,
-        >(
-            &language_public_parameters1,
-            Some("1".to_string()),
-            true,
-            Some(vec![1, 2, 4, 8, 16, 32, 64]),
-        );
-        test_helpers::benchmark_aggregation::<
-            BIT_SOUNDNESS_PROOFS_REPETITIONS,
-            Lang<BIT_SOUNDNESS_PROOFS_REPETITIONS, 2>,
-        >(
-            &language_public_parameters2,
-            Some("2".to_string()),
-            true,
-            Some(vec![1, 2, 4, 8, 16, 32, 64]),
-        );
-        test_helpers::benchmark_aggregation::<
-            BIT_SOUNDNESS_PROOFS_REPETITIONS,
-            Lang<BIT_SOUNDNESS_PROOFS_REPETITIONS, 4>,
-        >(
-            &language_public_parameters4,
-            Some("4".to_string()),
-            true,
-            Some(vec![1, 2, 4, 8, 16, 32, 64]),
-        );
-        test_helpers::benchmark_aggregation::<
-            BIT_SOUNDNESS_PROOFS_REPETITIONS,
-            Lang<BIT_SOUNDNESS_PROOFS_REPETITIONS, 8>,
-        >(
-            &language_public_parameters8,
-            Some("8".to_string()),
-            true,
-            Some(vec![1, 2, 4, 8, 16, 32, 64]),
-        );
-        test_helpers::benchmark_aggregation::<
-            BIT_SOUNDNESS_PROOFS_REPETITIONS,
-            Lang<BIT_SOUNDNESS_PROOFS_REPETITIONS, 16>,
-        >(
-            &language_public_parameters16,
-            Some("16".to_string()),
-            true,
-            Some(vec![1, 2, 4, 8, 16, 32, 64]),
-        );
-        test_helpers::benchmark_aggregation::<
-            BIT_SOUNDNESS_PROOFS_REPETITIONS,
-            Lang<BIT_SOUNDNESS_PROOFS_REPETITIONS, 32>,
-        >(
-            &language_public_parameters32,
-            Some("32".to_string()),
-            true,
-            Some(vec![1, 2, 4, 8, 16, 32, 64]),
-        );
-
-        test_helpers::benchmark_aggregation::<
-            BIT_SOUNDNESS_PROOFS_REPETITIONS,
-            Lang<BIT_SOUNDNESS_PROOFS_REPETITIONS, 64>,
-        >(
-            &language_public_parameters64,
-            Some("64".to_string()),
-            true,
-            Some(vec![1, 2, 4, 8, 16, 32, 64]),
         );
     }
 }

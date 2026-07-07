@@ -176,7 +176,7 @@ pub(crate) mod tests {
         );
 
         let (.., (proof, statements)) =
-            proof::aggregation::test_helpers::aggregates(commitment_round_parties);
+            proof_aggregation::test_helpers::aggregates(commitment_round_parties);
 
         assert!(
             proof
@@ -235,6 +235,6 @@ pub(crate) mod tests {
             .witnesses = witnesses;
         commitment_round_parties.insert(malicious_party_id, malicious_commitment_round_party);
 
-        proof::aggregation::test_helpers::aggregates(commitment_round_parties);
+        proof_aggregation::test_helpers::aggregates(commitment_round_parties);
     }
 }

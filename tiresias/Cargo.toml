@@ -41,3 +41,6 @@ test_helpers = ["dep:rstest", "group/os_rng", "mpc/test_helpers", "dep:rand"]
 [[bench]]
 name = "benches"
 harness = false
+
+[lints]
+workspace = true

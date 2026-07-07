@@ -17,9 +17,31 @@ pub mod language;
 pub mod proof;
 pub mod scaling_of_discrete_log;
 
-/// Maurer error.
+/// Enhanced-maurer error wrapper that carries a backtrace captured at construction.
+///
+/// See `group::Error` for details.
+#[derive(thiserror::Error, Clone, Debug)]
+#[error("{kind}\n{backtrace}")]
+pub struct Error {
+    pub kind: ErrorKind,
+    pub backtrace: std::sync::Arc<std::backtrace::Backtrace>,
+}
+
+impl<E> From<E> for Error
+where
+    ErrorKind: From<E>,
+{
+    fn from(value: E) -> Self {
+        Self {
+            kind: ErrorKind::from(value),
+            backtrace: std::sync::Arc::new(std::backtrace::Backtrace::capture()),
+        }
+    }
+}
+
+/// Enhanced-maurer error kind.
 #[derive(thiserror::Error, Debug, Clone)]
-pub enum Error {
+pub enum ErrorKind {
     #[error("group error")]
     Group(#[from] group::Error),
     #[error("proof error")]
@@ -27,9 +49,13 @@ pub enum Error {
     #[error("mpc error")]
     MPC(#[from] ::mpc::Error),
     #[error("proof error")]
-    ProofAggregation(#[from] ::proof::aggregation::Error),
+    ProofAggregation(#[from] proof_aggregation::Error),
+    #[error("synchronous proof aggregation error")]
+    SynchronousProofAggregation(#[from] proof_aggregation::synchronous::Error),
     #[error("maurer error")]
     Maurer(#[from] maurer::Error),
+    #[error("maurer aggregation error")]
+    MaurerAggregation(#[from] maurer_aggregation::Error),
     #[error("serialization/deserialization error: {0:?}")]
     Serialization(String),
     #[error("randomizer(s) out of range: proof verification failed")]
@@ -48,7 +74,7 @@ pub enum Error {
 
 impl From<serde_json::Error> for Error {
     fn from(e: serde_json::Error) -> Self {
-        Error::Serialization(e.to_string())
+        Error::from(ErrorKind::Serialization(e.to_string()))
     }
 }
 
@@ -59,39 +85,63 @@ impl TryInto<::proof::Error> for Error {
     type Error = Error;
 
     fn try_into(self) -> std::result::Result<::proof::Error, Self::Error> {
-        match self {
-            Error::Proof(e) => Ok(e),
-            e => Err(e),
+        match self.kind {
+            ErrorKind::Proof(e) => Ok(e),
+            kind => Err(Error {
+                kind,
+                backtrace: self.backtrace,
+            }),
         }
     }
 }
 
-impl TryInto<::proof::aggregation::Error> for Error {
+impl TryInto<proof_aggregation::synchronous::Error> for Error {
     type Error = Error;
 
-    fn try_into(self) -> std::result::Result<::proof::aggregation::Error, Self::Error> {
-        match self {
-            Error::Proof(::proof::Error::Aggregation(e)) => Ok(e),
-            Error::Maurer(maurer::Error::Aggregation(e)) => Ok(e),
-            Error::MismatchingRangeProofMaurerCommitments(malicious_parties) => {
-                Ok(mpc::Error::MaliciousMessage(malicious_parties).into())
+    fn try_into(self) -> std::result::Result<proof_aggregation::synchronous::Error, Self::Error> {
+        match self.kind {
+            ErrorKind::ProofAggregation(proof_aggregation::Error {
+                kind: proof_aggregation::ErrorKind::SynchronousAggregation(e),
+                ..
+            }) => Ok(e),
+            ErrorKind::SynchronousProofAggregation(e) => Ok(e),
+            ErrorKind::MaurerAggregation(maurer_aggregation::Error {
+                kind: maurer_aggregation::ErrorKind::Aggregation(e),
+                ..
+            }) => Ok(e),
+            ErrorKind::MismatchingRangeProofMaurerCommitments(malicious_parties) => {
+                Ok(mpc::Error::from(mpc::ErrorKind::MaliciousMessage(malicious_parties)).into())
             }
-            e => Err(e),
+            kind => Err(Error {
+                kind,
+                backtrace: self.backtrace,
+            }),
         }
     }
 }
 
 impl From<Error> for ::mpc::Error {
     fn from(value: Error) -> Self {
-        match value {
-            Error::MPC(e) => e,
-            Error::Proof(::proof::Error::Aggregation(e)) => e.into(),
-            Error::Maurer(maurer::Error::Aggregation(e)) => e.into(),
-            Error::Group(e) => mpc::Error::Group(e),
-            Error::InternalError => mpc::Error::InternalError,
-            Error::InvalidParameters => mpc::Error::InvalidParameters,
-            Error::InvalidPublicParameters => mpc::Error::InvalidParameters,
-            e => mpc::Error::Consumer(format!("enhanced maurer error {e:?}")),
+        match value.kind {
+            ErrorKind::MPC(e) => e,
+            ErrorKind::SynchronousProofAggregation(e) => e.into(),
+            ErrorKind::ProofAggregation(proof_aggregation::Error {
+                kind: proof_aggregation::ErrorKind::SynchronousAggregation(e),
+                ..
+            }) => e.into(),
+            ErrorKind::MaurerAggregation(maurer_aggregation::Error {
+                kind: maurer_aggregation::ErrorKind::Aggregation(e),
+                ..
+            }) => e.into(),
+            ErrorKind::Group(e) => mpc::Error::from(mpc::ErrorKind::Group(e)),
+            ErrorKind::InternalError => mpc::Error::from(mpc::ErrorKind::InternalError),
+            ErrorKind::InvalidParameters => mpc::Error::from(mpc::ErrorKind::InvalidParameters),
+            ErrorKind::InvalidPublicParameters => {
+                mpc::Error::from(mpc::ErrorKind::InvalidParameters)
+            }
+            kind => mpc::Error::from(mpc::ErrorKind::Consumer(format!(
+                "enhanced maurer error {kind:?}"
+            ))),
         }
     }
 }

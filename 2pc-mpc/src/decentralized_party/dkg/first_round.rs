@@ -7,7 +7,7 @@ use crate::decentralized_party::dkg::PublicOutput;
 use crate::languages::{
     prove_equality_of_discrete_log, EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters,
 };
-use crate::{Error, Result};
+use crate::{Error, ErrorKind, Result};
 use class_groups::publicly_verifiable_secret_sharing::chinese_remainder_theorem::NUM_SECRET_SHARE_PRIMES;
 use class_groups::{
     publicly_verifiable_secret_sharing, CompactIbqf, EquivalenceClass, RistrettoSetupParameters,
@@ -18,8 +18,7 @@ use class_groups::{
 };
 use commitment::CommitmentSizedNumber;
 use group::direct_product::ThreeWayGroupElement;
-use group::secp256k1::{GroupElement, Scalar, SCALAR_LIMBS};
-use group::{bounded_integers_group, direct_product, CsRng, GroupElement as _, PartyID};
+use group::{bounded_integers_group, direct_product, secp256k1, CsRng, GroupElement as _, PartyID};
 use mpc::{AsynchronousRoundResult, HandleInvalidMessages};
 use std::collections::HashMap;
 
@@ -30,21 +29,21 @@ impl super::Party {
         equality_of_discrete_log_in_hidden_order_group_base_protocol_context: publicly_verifiable_secret_sharing::BaseProtocolContext,
         public_input: &PublicInput,
         equality_of_coefficients_commitments_language_public_parameters: EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters<
-            SECRET_KEY_SHARE_WITNESS_LIMBS,
+            SECRET_KEY_SHARE_LIMBS,
             ThreeWayGroupElement<
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
             >,
         >,
-        pvss_party: &publicly_verifiable_secret_sharing::Party<
+        pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
-            SCALAR_LIMBS,
+            { secp256k1::SCALAR_LIMBS },
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            GroupElement,
+            secp256k1::GroupElement,
         >,
         equality_of_coefficients_commitments_base_protocol_context: crate::BaseProtocolContext,
         rng: &mut impl CsRng,
@@ -72,27 +71,27 @@ impl super::Party {
         session_id: CommitmentSizedNumber,
         equality_of_discrete_log_in_hidden_order_group_base_protocol_context: publicly_verifiable_secret_sharing::BaseProtocolContext,
         class_groups_public_input: &class_groups::dkg::PublicInput<
-            SCALAR_LIMBS,
+            { secp256k1::SCALAR_LIMBS },
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            group::PublicParameters<Scalar>,
+            group::PublicParameters<secp256k1::Scalar>,
         >,
         equality_of_coefficients_commitments_language_public_parameters: EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters<
-            SECRET_KEY_SHARE_WITNESS_LIMBS,
+            SECRET_KEY_SHARE_LIMBS,
             ThreeWayGroupElement<
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
             >,
         >,
-        pvss_party: &publicly_verifiable_secret_sharing::Party<
+        pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
-            SCALAR_LIMBS,
+            { secp256k1::SCALAR_LIMBS },
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            GroupElement,
+            secp256k1::GroupElement,
         >,
         equality_of_coefficients_commitments_base_protocol_context: crate::BaseProtocolContext,
         rng: &mut impl CsRng,
@@ -103,10 +102,10 @@ impl super::Party {
             deal_secret_message,
             share_threshold_encryption_key_message,
         ) = class_groups::dkg::Party::<
-            SCALAR_LIMBS,
+            { secp256k1::SCALAR_LIMBS },
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            GroupElement,
+            secp256k1::GroupElement,
         >::advance_first_round_internal(
             tangible_party_id,
             session_id,
@@ -145,7 +144,7 @@ impl super::Party {
         session_id: CommitmentSizedNumber,
         equality_of_coefficients_commitments_base_protocol_context: crate::BaseProtocolContext,
         equality_of_coefficients_commitments_language_public_parameters: EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters<
-            SECRET_KEY_SHARE_WITNESS_LIMBS,
+            SECRET_KEY_SHARE_LIMBS,
             ThreeWayGroupElement<
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
@@ -214,7 +213,7 @@ impl super::Party {
         HashMap<
             PartyID,
             class_groups::dkg::Message<
-                SCALAR_LIMBS,
+                { secp256k1::SCALAR_LIMBS },
                 FUNDAMENTAL_DISCRIMINANT_LIMBS,
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             >,
@@ -316,13 +315,13 @@ impl super::Party {
                                     )
                                 })
                             } else {
-                                Err(Error::InvalidMessage)
+                                Err(Error::from(ErrorKind::InvalidMessage))
                             }
                         } else {
-                            Err(Error::InvalidMessage)
+                            Err(Error::from(ErrorKind::InvalidMessage))
                         }
                     }
-                    _ => Err(Error::InvalidMessage),
+                    _ => Err(Error::from(ErrorKind::InvalidMessage)),
                 };
 
                 (dealer_party_id, res)

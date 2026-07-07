@@ -3,8 +3,11 @@
 
 use super::PublicInput;
 
-use crate::decentralized_party::reconfiguration::{Message, PublicOutput};
-use crate::{Error, Result};
+use crate::decentralized_party::reconfiguration::{Message, PublicOutput, PublicOutputCore};
+use crate::decentralized_party::threshold_encryption_of_secret_key_share_parts_to_sharing::{
+    self, DealingRoundMessage, ThresholdDecryptionRoundMessage,
+};
+use crate::{Error, ErrorKind, Result};
 use class_groups::publicly_verifiable_secret_sharing::chinese_remainder_theorem::NUM_SECRET_SHARE_PRIMES;
 use class_groups::publicly_verifiable_secret_sharing::BaseProtocolContext;
 use class_groups::{
@@ -29,7 +32,7 @@ impl super::Party {
         current_access_structure: &WeightedThresholdAccessStructure,
         equality_of_discrete_log_in_hidden_order_group_base_protocol_context: BaseProtocolContext,
         public_input: &PublicInput,
-        randomizer_contribution_to_upcoming_pvss_party: &publicly_verifiable_secret_sharing::Party<
+        randomizer_contribution_to_upcoming_pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
@@ -50,6 +53,8 @@ impl super::Party {
             ristretto_encryption_key,
             secp256r1_reconstructed_commitments_to_randomizer_contribution_sharing,
             secp256r1_encryption_key,
+            dealing_round_messages,
+            decryption_messages,
         ) = Self::advance_fourth_round_internal(
             tangible_party_id,
             session_id,
@@ -65,7 +70,25 @@ impl super::Party {
             rng,
         )?;
 
-        let public_output = PublicOutput::new(
+        // Step 3: Use pre-computed threshold encryption to sharing PublicInput for aggregation
+        let threshold_encryption_of_secret_key_share_parts_to_sharing_public_input = public_input
+            .threshold_encryption_of_secret_key_share_parts_to_sharing_public_input
+            .clone();
+
+        // Step 4: Call aggregation::advance to recover masked secrets and compute polynomial
+        // commitments through the protocol abstraction
+        let (
+            aggregation_malicious_parties,
+            threshold_encryption_of_secret_key_share_parts_to_sharing_public_output,
+        ) = threshold_encryption_of_secret_key_share_parts_to_sharing::aggregation::advance(
+            &threshold_encryption_of_secret_key_share_parts_to_sharing_public_input,
+            &dealing_round_messages,
+            &decryption_messages,
+            rng,
+        )?;
+
+        // Step 5: Construct PublicOutput with the threshold_encryption_to_sharing_output
+        let core = PublicOutputCore::new(
             inner_protocol_public_output,
             public_input.secp256k1_encryption_of_secret_key_share_first_part,
             public_input.secp256k1_encryption_of_secret_key_share_second_part,
@@ -92,7 +115,22 @@ impl super::Party {
             &public_input
                 .class_groups_public_input
                 .upcoming_access_structure,
+            public_input
+                .class_groups_public_input
+                .setup_parameters
+                .equivalence_class_public_parameters(),
         )?;
+
+        let public_output = PublicOutput {
+            core,
+            threshold_encryption_to_sharing_output:
+                threshold_encryption_of_secret_key_share_parts_to_sharing_public_output,
+        };
+
+        let malicious_parties = malicious_parties
+            .into_iter()
+            .chain(aggregation_malicious_parties)
+            .deduplicate_and_sort();
 
         Ok(AsynchronousRoundResult::Finalize {
             malicious_parties,
@@ -101,6 +139,7 @@ impl super::Party {
         })
     }
 
+    #[allow(clippy::type_complexity)]
     pub(crate) fn advance_fourth_round_internal(
         tangible_party_id: PartyID,
         session_id: CommitmentSizedNumber,
@@ -114,7 +153,7 @@ impl super::Party {
         >,
         ristretto_setup_parameters: &RistrettoSetupParameters,
         secp256r1_setup_parameters: &Secp256r1SetupParameters,
-        randomizer_contribution_to_upcoming_pvss_party: &publicly_verifiable_secret_sharing::Party<
+        randomizer_contribution_to_upcoming_pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
@@ -138,11 +177,14 @@ impl super::Party {
         EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
         HashMap<PartyID, HashMap<PartyID, EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>>,
         EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+        HashMap<PartyID, DealingRoundMessage>,
+        HashMap<PartyID, ThresholdDecryptionRoundMessage>,
     )> {
         let (
             parties_sending_invalid_deal_randomizer_and_prove_coefficient_commitments_messages,
             deal_randomizer_messages,
             equality_of_coefficients_commitments_proofs_and_statements,
+            dealing_round_messages,
         ) = Self::handle_first_round_messages(
             &class_groups_public_input.setup_parameters,
             ristretto_setup_parameters,
@@ -157,11 +199,15 @@ impl super::Party {
             secp256r1_randomizer_contribution_commitments,
             secp256r1_reconstructed_commitments_to_randomizer_contribution_sharing,
             threshold_decrypt_messages,
+            decryption_round_messages,
         ) = Self::handle_third_round_messages(
             current_access_structure,
             &class_groups_public_input.upcoming_access_structure,
             threshold_decrypt_messages,
             equality_of_coefficients_commitments_proofs_and_statements,
+            class_groups_public_input
+                .setup_parameters
+                .equivalence_class_public_parameters(),
         )?;
 
         let (inner_protocol_malicious_parties, masked_decryption_key, inner_protocol_public_output) =
@@ -211,6 +257,8 @@ impl super::Party {
             ristretto_encryption_key,
             secp256r1_reconstructed_commitments_to_randomizer_contribution_sharing,
             secp256r1_encryption_key,
+            dealing_round_messages,
+            decryption_round_messages,
         ))
     }
 
@@ -226,14 +274,15 @@ impl super::Party {
         >,
     ) -> Result<EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>> {
         let masked_decryption_key_commitment = public_verification_key_base
-            .scale_vartime_accelerated(&masked_decryption_key, equivalence_class_public_parameters);
+            .scale_vartime_by(&masked_decryption_key, equivalence_class_public_parameters);
 
         let randomizer_commitment = randomizer_contribution_commitments
             .into_values()
-            .reduce(|a, b| a.add_vartime(&b))
-            .ok_or(Error::InternalError)?;
+            .reduce(|a, b| a.add_vartime(&b, equivalence_class_public_parameters))
+            .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
 
-        let encryption_key = masked_decryption_key_commitment - randomizer_commitment;
+        let encryption_key = masked_decryption_key_commitment
+            .sub_vartime(&randomizer_commitment, equivalence_class_public_parameters);
 
         Ok(encryption_key)
     }

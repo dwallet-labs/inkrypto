@@ -73,8 +73,9 @@ impl AdditivelyHomomorphicDecryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS, Encryption
         _plaintext_space_public_parameters: PlaintextSpacePublicParameters,
         rng: &mut impl CsRng,
     ) -> homomorphic_encryption::Result<Self> {
-        let (_, decryption_key) = Self::generate_keypair(rng)
-            .map_err(|_| homomorphic_encryption::Error::InternalError)?;
+        let (_, decryption_key) = Self::generate_keypair(rng).map_err(|_| {
+            homomorphic_encryption::Error::from(homomorphic_encryption::ErrorKind::InternalError)
+        })?;
 
         Ok(decryption_key)
     }
@@ -92,8 +93,11 @@ impl AdditivelyHomomorphicDecryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS, Encryption
 
         // $D(c,d)=\left(\frac{(c^{d}\mod(N^{2}))-1}{N}\right)\mod(N)$
         let plaintext: PaillierModulusSizedNumber =
-            (crate::PaillierModulusSizedNumber::from(ciphertext.scale(&self.secret_key))
-                .wrapping_sub(&PaillierModulusSizedNumber::ONE)
+            (crate::PaillierModulusSizedNumber::from(ciphertext.scale(
+                &self.secret_key,
+                public_parameters.ciphertext_space_public_parameters(),
+            ))
+            .wrapping_sub(&PaillierModulusSizedNumber::ONE)
                 / n)
                 % n;
 

@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 
 use commitment::{pedersen, CommitmentSizedNumber, HomomorphicCommitmentScheme, Pedersen};
 use group::{
-    CsRng, GroupElement as _, HashScheme, Invert, Samplable, StatisticalSecuritySizedNumber,
+    CsRng, GroupElement as _, HashContext, HashScheme, Invert, Samplable,
+    StatisticalSecuritySizedNumber,
 };
 use homomorphic_encryption::AdditivelyHomomorphicEncryptionKey;
 
@@ -23,14 +24,16 @@ use crate::languages::{
     VectorCommitmentOfDiscreteLogProof,
 };
 use crate::Party::CentralizedParty;
-use crate::{dkg, ecdsa::presign, ecdsa::sign, languages, Error, ProtocolContext, Result};
+use crate::{
+    dkg, ecdsa::presign, ecdsa::sign, languages, Error, ErrorKind, ProtocolContext, Result,
+};
 
 mod class_groups;
 
 pub struct Party<
     const SCALAR_LIMBS: usize,
     const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
-    GroupElement: VerifyingKey<SCALAR_LIMBS>,
+    GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
     EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
     SignMessage,
     ProtocolPublicParameters,
@@ -44,7 +47,7 @@ pub struct Party<
 impl<
         const SCALAR_LIMBS: usize,
         const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
-        GroupElement: VerifyingKey<SCALAR_LIMBS>,
+        GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
         EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
         SignMessage,
         ProtocolPublicParameters,
@@ -118,7 +121,7 @@ where
         VectorCommitmentOfDiscreteLogProof<SCALAR_LIMBS, GroupElement>,
     )> {
         if presign.public_key != centralized_party_dkg_public_output.public_key {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         let protocol_public_parameters = protocol_public_parameters.as_ref();
@@ -178,7 +181,7 @@ where
         ) = Self::commit_to_witness(
             signature_nonce_share,
             &commitment_scheme_public_parameters.with_altered_message_generators([
-                centralized_party_dkg_public_output.public_key_share,
+                centralized_party_dkg_public_output.public_key_share.clone(),
             ]),
             protocol_public_parameters,
             rng,
@@ -189,7 +192,7 @@ where
         let inverted_signature_nonce_share = signature_nonce_share.invert();
         if inverted_signature_nonce_share.is_none().into() {
             // This has negligible probability of failing.
-            return Err(Error::InternalError);
+            return Err(Error::from(ErrorKind::InternalError));
         }
         let inverted_signature_nonce_share = inverted_signature_nonce_share.unwrap();
 
@@ -209,7 +212,9 @@ where
         let (non_zero_commitment_to_signature_nonce_share_proof, _) =
             languages::prove_knowledge_of_decommitment(
                 inverted_signature_nonce_share,
-                (-inverted_signature_nonce_share) * signature_nonce_share_commitment_randomness,
+                inverted_signature_nonce_share
+                    .neg_constant_time(&protocol_public_parameters.scalar_group_public_parameters)
+                    * signature_nonce_share_commitment_randomness,
                 commitment_scheme_public_parameters
                     .with_altered_message_generators([signature_nonce_share_commitment.value()])
                     .clone(),
@@ -221,7 +226,7 @@ where
         let inverted_alpha_displacer = alpha_displacer.invert();
         if inverted_alpha_displacer.is_none().into() {
             // This has negligible probability of failing.
-            return Err(Error::InternalError);
+            return Err(Error::from(ErrorKind::InternalError));
         }
         let inverted_alpha_displacer = inverted_alpha_displacer.unwrap();
 
@@ -230,7 +235,9 @@ where
         let (non_zero_commitment_to_alpha_displacer_share_proof, _) =
             languages::prove_knowledge_of_decommitment(
                 inverted_alpha_displacer,
-                (-inverted_alpha_displacer) * alpha_displacer_commitment_randomness,
+                inverted_alpha_displacer
+                    .neg_constant_time(&protocol_public_parameters.scalar_group_public_parameters)
+                    * alpha_displacer_commitment_randomness,
                 commitment_scheme_public_parameters
                     .with_altered_message_generators([alpha_displacer_commitment.value()])
                     .clone(),
@@ -347,12 +354,18 @@ where
 
         // (e) iv. $ a_1=r\cdot k_A\cdot x_\A+m\cdot k_A $
         let first_coefficient = (nonce_x_coordinate * signature_nonce_share * secret_key_share)
-            + (hashed_message * signature_nonce_share);
+            .add_constant_time(
+                &(hashed_message * signature_nonce_share),
+                &protocol_public_parameters.scalar_group_public_parameters,
+            );
 
         // (f) v. $ \rho_3\cdot r+\rho_0\cdot m $
         let first_coefficient_commitment_randomness = (nonce_x_coordinate
             * signature_nonce_share_by_secret_share_commitment_randomness)
-            + (hashed_message * signature_nonce_share_commitment_randomness);
+            .add_constant_time(
+                &(hashed_message * signature_nonce_share_commitment_randomness),
+                &protocol_public_parameters.scalar_group_public_parameters,
+            );
 
         // (e) iv. $ a_2=r\cdot k_A$
         let second_coefficient = nonce_x_coordinate * signature_nonce_share;
@@ -452,7 +465,11 @@ where
                 commitment_scheme_public_parameters,
             )?;
 
-        let commitment = commitment_scheme.commit(&[witness].into(), &randomness);
+        let commitment = commitment_scheme.commit(
+            &[witness].into(),
+            &randomness,
+            &protocol_public_parameters.group_public_parameters,
+        );
 
         Ok((randomness, commitment))
     }
@@ -532,6 +549,7 @@ fn generate_protocol_context<GroupElementValue: Serialize>(
 pub struct PublicInput<DKGOutput, Presign, ProtocolPublicParameters> {
     pub message: Vec<u8>,
     pub hash_type: HashScheme,
+    pub hash_context: HashContext,
     pub dkg_output: DKGOutput,
     pub presign: Presign,
     pub protocol_public_parameters: ProtocolPublicParameters,
@@ -541,15 +559,17 @@ impl<DKGOutput, Presign, ProtocolPublicParameters>
     From<(
         Vec<u8>,
         HashScheme,
+        HashContext,
         DKGOutput,
         Presign,
         ProtocolPublicParameters,
     )> for PublicInput<DKGOutput, Presign, ProtocolPublicParameters>
 {
     fn from(
-        (message, hash_type, dkg_output, presign, protocol_public_parameters): (
+        (message, hash_type, hash_context, dkg_output, presign, protocol_public_parameters): (
             Vec<u8>,
             HashScheme,
+            HashContext,
             DKGOutput,
             Presign,
             ProtocolPublicParameters,
@@ -558,6 +578,7 @@ impl<DKGOutput, Presign, ProtocolPublicParameters>
         Self {
             message,
             hash_type,
+            hash_context,
             dkg_output,
             presign,
             protocol_public_parameters,
@@ -568,7 +589,7 @@ impl<DKGOutput, Presign, ProtocolPublicParameters>
 impl<
         const SCALAR_LIMBS: usize,
         const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
-        GroupElement: VerifyingKey<SCALAR_LIMBS>,
+        GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
         EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
         SignMessage: Serialize + for<'a> Deserialize<'a> + Clone + Serialize + Debug + PartialEq + Eq,
         ProtocolPublicParameters: Clone + Serialize + Debug + PartialEq + Eq + Send + Sync,

@@ -5,7 +5,7 @@
 #![allow(clippy::too_many_arguments)]
 
 use crate::{
-    AsynchronousRoundResult, AsynchronouslyAdvanceable, Error, HandleInvalidMessages,
+    AsynchronousRoundResult, AsynchronouslyAdvanceable, Error, ErrorKind, HandleInvalidMessages,
     WeightedThresholdAccessStructure,
 };
 use commitment::CommitmentSizedNumber;
@@ -85,7 +85,7 @@ pub struct AdvanceRequest<M> {
     pub consensus_round_at_advance: Option<u64>,
     /// The MPC round we are advancing.
     pub mpc_round_number: u64,
-    /// The total attempt number, starting from `1` and increasing for each failed attempt on [`Error::ThresholdNotReached`], for any MPC round.
+    /// The total attempt number, starting from `1` and increasing for each failed attempt on [`ErrorKind::ThresholdNotReached`], for any MPC round.
     pub attempt_number: u64,
     /// The messages to pass to `advance()`.
     messages_to_advance: Vec<HashMap<PartyID, M>>,
@@ -96,7 +96,7 @@ impl<M> AdvanceRequest<M> {
         let messages_of_round = self
             .messages_to_advance
             .get(round - 1)
-            .ok_or(Error::InvalidParameters)?;
+            .ok_or_else(|| Error::from(ErrorKind::InvalidParameters))?;
 
         Ok(messages_of_round.keys().copied().collect())
     }
@@ -141,10 +141,10 @@ pub trait GuaranteesOutputDelivery<P: AsynchronouslyAdvanceable>: Sized {
     /// However, let's say that party `2` was malicious and sent a wrong proof.
     /// Then, `advance()` would verify the proofs, and filter the malicious parties,
     /// and call `WeightedThresholdAccessStructure::is_authorized_subset()` with the now-honest subset of `1, 4`,
-    /// which would fail, as `2 < 3`. In this scenario, an [`Error::ThresholdNotReached`] is returned by `is_authorized_subset()`
+    /// which would fail, as `2 < 3`. In this scenario, an [`ErrorKind::ThresholdNotReached`] is returned by `is_authorized_subset()`
     /// and later by the inner `advance()` function that we wrap.
     ///
-    /// Upon [`Error::ThresholdNotReached`], we send a [`Message::ThresholdNotReached`]
+    /// Upon [`ErrorKind::ThresholdNotReached`], we send a [`Message::ThresholdNotReached`]
     /// to signify that we have to wait for more messages to be sent from a previous round and retry
     /// (in our example: until a time `T2` in which the slow party `3` sends its message.)
     ///
@@ -193,7 +193,7 @@ pub trait GuaranteesOutputDelivery<P: AsynchronouslyAdvanceable>: Sized {
     ///    such as the previous rounds messages were accounted for to compute that message, which we take from our own previous messages.
     ///  - We begin by performing a majority vote to decide which messages were being used in every round and filter these before
     ///    calling the actual protocol logic with [`Self::advance()`].
-    ///    We do not filter messages if they can cause an [`Error::ThresholdNotReached`] error,
+    ///    We do not filter messages if they can cause an [`ErrorKind::ThresholdNotReached`] error,
     ///    i.e. *we add messages if available as long as they can potentially help guarantee output delivery.*
     ///
     ///    This *guarantees that subsequent rounds see the same messages for every round, unless it is safe given the above requirement*.
@@ -506,8 +506,8 @@ impl<P: AsynchronouslyAdvanceable> GuaranteesOutputDelivery<P> for Party<P> {
 
             Err(e) => {
                 let mpc_error: Error = e.clone().into();
-                match mpc_error {
-                    Error::ThresholdNotReached => Self::advance_threshold_not_reached_message(
+                match mpc_error.kind {
+                    ErrorKind::ThresholdNotReached => Self::advance_threshold_not_reached_message(
                         advance_request.consensus_round_at_advance,
                     ),
                     _ => Err(e),
@@ -518,11 +518,12 @@ impl<P: AsynchronouslyAdvanceable> GuaranteesOutputDelivery<P> for Party<P> {
 }
 
 impl<P: AsynchronouslyAdvanceable> Party<P> {
-    /// Handle `Error::ThresholdNotReached` errors by sending a `Message::ThresholdNotReached` message.
+    /// Handle `ErrorKind::ThresholdNotReached` errors by sending a `Message::ThresholdNotReached` message.
     fn advance_threshold_not_reached_message(
         consensus_round_at_advance: Option<u64>,
     ) -> Result<RoundResult, P::Error> {
-        let consensus_round_number = consensus_round_at_advance.ok_or(Error::InternalError)?;
+        let consensus_round_number =
+            consensus_round_at_advance.ok_or_else(|| Error::from(ErrorKind::InternalError))?;
 
         let message: Message<P::Message> = Message::ThresholdNotReached {
             consensus_round_number,
@@ -797,7 +798,7 @@ impl<P: AsynchronouslyAdvanceable> Party<P> {
             .deduplicate_and_sort()
             != (1..(current_mpc_round - 1)).collect::<Vec<_>>()
         {
-            Err(Error::InternalError)?;
+            Err(Error::from(ErrorKind::InternalError))?;
         }
 
         // Sort the messages by the round number, ignore the inactive/ignored senders,
@@ -841,7 +842,7 @@ impl<P: AsynchronouslyAdvanceable> Party<P> {
                         .collect();
 
                     if !non_ignored_senders.is_superset(&non_ignored_senders_at_advance) {
-                        Err(Error::InvalidParameters)?;
+                        Err(Error::from(ErrorKind::InvalidParameters))?;
                     }
                 }
 
@@ -859,7 +860,7 @@ impl<P: AsynchronouslyAdvanceable> Party<P> {
                     Ok(messages)
                 } else {
                     // Can only happen in case of a bug.
-                    Err(Error::InternalError)
+                    Err(Error::from(ErrorKind::InternalError))
                 }
             })
             .collect::<Result<_, Error>>()?;
@@ -1860,7 +1861,7 @@ mod tests {
                             let m = if number_smaller_than_100 < 100 {
                                 Ok(number_smaller_than_100)
                             } else {
-                                Err(Error::InvalidParameters)
+                                Err(Error::from(ErrorKind::InvalidParameters))
                             };
 
                             (other_party_id, m)
@@ -1898,7 +1899,7 @@ mod tests {
                             let m = if number_smaller_than_100 < 100 {
                                 Ok(number_smaller_than_100)
                             } else {
-                                Err(Error::InvalidParameters)
+                                Err(Error::from(ErrorKind::InvalidParameters))
                             };
 
                             (other_party_id, m)
@@ -1919,7 +1920,7 @@ mod tests {
                                 let m = if message <= (5 * first_round_messages_sum) {
                                     Ok(message)
                                 } else {
-                                    Err(Error::InvalidParameters)
+                                    Err(Error::from(ErrorKind::InvalidParameters))
                                 };
 
                                 (other_party_id, m)
@@ -2322,7 +2323,7 @@ mod tests {
                                 if is_valid {
                                     Ok(val)
                                 } else {
-                                    Err(Error::InvalidParameters)
+                                    Err(Error::from(ErrorKind::InvalidParameters))
                                 },
                             )
                         })
@@ -2338,7 +2339,7 @@ mod tests {
                                 if is_valid {
                                     Ok(val)
                                 } else {
-                                    Err(Error::InvalidParameters)
+                                    Err(Error::from(ErrorKind::InvalidParameters))
                                 },
                             )
                         })
@@ -2395,7 +2396,7 @@ mod tests {
                                 if is_valid {
                                     Ok(val)
                                 } else {
-                                    Err(Error::InvalidParameters)
+                                    Err(Error::from(ErrorKind::InvalidParameters))
                                 },
                             )
                         })
@@ -2411,7 +2412,7 @@ mod tests {
                                 if is_valid {
                                     Ok(val)
                                 } else {
-                                    Err(Error::InvalidParameters)
+                                    Err(Error::from(ErrorKind::InvalidParameters))
                                 },
                             )
                         })
@@ -2427,7 +2428,7 @@ mod tests {
                                 if is_valid {
                                     Ok(val)
                                 } else {
-                                    Err(Error::InvalidParameters)
+                                    Err(Error::from(ErrorKind::InvalidParameters))
                                 },
                             )
                         })
@@ -2443,7 +2444,7 @@ mod tests {
                                 if is_valid {
                                     Ok(val)
                                 } else {
-                                    Err(Error::InvalidParameters)
+                                    Err(Error::from(ErrorKind::InvalidParameters))
                                 },
                             )
                         })

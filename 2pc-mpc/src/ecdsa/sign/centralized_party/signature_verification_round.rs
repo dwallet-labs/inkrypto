@@ -12,7 +12,7 @@ impl Party {
     pub fn verify_signature<
         const SCALAR_LIMBS: usize,
         const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
-        GroupElement: VerifyingKey<SCALAR_LIMBS>,
+        GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
         EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
     >(
         // $m$
@@ -39,7 +39,14 @@ impl Party {
             &protocol_public_parameters.group_public_parameters,
         )?;
 
-        verify_signature(nonce_x_coordinate, signature_s, hashed_message, public_key)?;
+        verify_signature(
+            nonce_x_coordinate,
+            signature_s,
+            hashed_message,
+            public_key,
+            &protocol_public_parameters.group_public_parameters,
+            &protocol_public_parameters.scalar_group_public_parameters,
+        )?;
 
         Ok(())
     }

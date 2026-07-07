@@ -1,7 +1,7 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
-use crate::{self_product, Error, GroupElement};
+use crate::{self_product, Error, ErrorKind, GroupElement};
 use itertools::Itertools;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -31,7 +31,7 @@ where
 
         res.and_then(|vec| {
             vec.try_into()
-                .map_err(|_| E::from(Error::InvalidParameters))
+                .map_err(|_| E::from(Error::from(ErrorKind::InvalidParameters)))
         })
     }
 }
@@ -74,7 +74,7 @@ impl<K: Eq + Hash + Ord, G: GroupElement, I: IntoIterator<Item = (K, G)>> Normal
 
 /// Normalize the values of a map, transitioning from an instantiated element to its value.
 /// Useful for protocols in which a mapping should be sent across the wire, thus needing to be serializable.
-pub trait NormalizeConstGenericValues<const N: usize, K: Eq + Hash + Ord, G: GroupElement>:
+pub trait NormalizeConstGenericValues<const N: usize, K: Eq + Hash + Ord, G: GroupElement + Copy>:
     IntoIterator<Item = (K, [G; N])> + Sized
 {
     /// Normalize the values of a map.
@@ -98,8 +98,12 @@ pub trait NormalizeConstGenericValues<const N: usize, K: Eq + Hash + Ord, G: Gro
     }
 }
 
-impl<const N: usize, K: Eq + Hash + Ord, G: GroupElement, I: IntoIterator<Item = (K, [G; N])>>
-    NormalizeConstGenericValues<N, K, G> for I
+impl<
+        const N: usize,
+        K: Eq + Hash + Ord,
+        G: GroupElement + Copy,
+        I: IntoIterator<Item = (K, [G; N])>,
+    > NormalizeConstGenericValues<N, K, G> for I
 {
 }
 

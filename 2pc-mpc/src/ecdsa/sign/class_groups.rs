@@ -5,6 +5,7 @@
 
 use crypto_bigint::{ConcatMixed, Encoding, Int, Uint};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 use ::class_groups::{decryption_key_share, SecretKeyShareSizedInteger};
 use ::class_groups::{
@@ -17,7 +18,7 @@ use class_groups::encryption_key::public_parameters::Instantiate;
 use class_groups::equivalence_class::EquivalenceClassOps;
 use class_groups::setup::{DeriveFromPlaintextPublicParameters, SetupParameters};
 use class_groups::MultiFoldNupowAccelerator;
-use group::{hash_to_scalar, CsRng, HashScheme, StatisticalSecuritySizedNumber};
+use group::{hash_to_scalar, CsRng, HashScheme, PartyID, StatisticalSecuritySizedNumber};
 use homomorphic_encryption::{
     AdditivelyHomomorphicDecryptionKey, AdditivelyHomomorphicDecryptionKeyShare,
     AdditivelyHomomorphicEncryptionKey,
@@ -26,16 +27,18 @@ use mpc::secret_sharing::shamir::over_the_integers::AdjustedLagrangeCoefficientS
 use sign::decentralized_party::signature_partial_decryption_round;
 
 use crate::class_groups::{ecdsa::asynchronous::Protocol, DecryptionKeySharePublicParameters};
-use crate::ecdsa::sign::centralized_party::message::class_groups::Message;
+use crate::ecdsa::sign::centralized_party::message::class_groups::{
+    Message, SignData, VerifiedSignData,
+};
 use crate::ecdsa::{sign, VerifyingKey};
-use crate::{dkg, Error};
+use crate::{dkg, Error, ErrorKind};
 
 impl<
         const SCALAR_LIMBS: usize,
         const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         const MESSAGE_LIMBS: usize,
-        GroupElement: VerifyingKey<SCALAR_LIMBS>,
+        GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
     > super::Protocol
     for Protocol<
         SCALAR_LIMBS,
@@ -174,19 +177,26 @@ where
     GroupElement::Scalar: Serialize + for<'a> Deserialize<'a>,
 {
     type Signature = GroupElement::Signature;
-    type DecryptionKeyShare = SecretKeyShareSizedInteger;
-    type DecryptionKeySharePublicParameters = DecryptionKeySharePublicParameters<
-        SCALAR_LIMBS,
-        FUNDAMENTAL_DISCRIMINANT_LIMBS,
-        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-        GroupElement,
-    >;
+    type SignDecentralizedPartyPrivateInput = HashMap<PartyID, SecretKeyShareSizedInteger>;
+    type VerifiedSignData =
+        VerifiedSignData<SCALAR_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>;
     type SignDecentralizedPartyPublicInput = super::decentralized_party::PublicInput<
-        Self::DecentralizedPartyDKGOutput,
+        <Self::DKGProtocol as dkg::Protocol>::DecentralizedPartyDKGOutput,
         Self::Presign,
-        Self::SignMessage,
-        Self::DecryptionKeySharePublicParameters,
-        Self::ProtocolPublicParameters,
+        SignData<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MESSAGE_LIMBS,
+            GroupElement,
+        >,
+        DecryptionKeySharePublicParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >,
+        <Self::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
     >;
     type SignDecentralizedParty = super::decentralized_party::class_groups::asynchronous::Party<
         SCALAR_LIMBS,
@@ -196,11 +206,22 @@ where
         GroupElement,
     >;
     type DKGSignDecentralizedPartyPublicInput = super::decentralized_party::DKGSignPublicInput<
-        Self::DKGDecentralizedPartyPublicInput,
+        <Self::DKGProtocol as dkg::Protocol>::DKGDecentralizedPartyPublicInput,
         Self::Presign,
-        Self::SignMessage,
-        Self::DecryptionKeySharePublicParameters,
-        Self::ProtocolPublicParameters,
+        SignData<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MESSAGE_LIMBS,
+            GroupElement,
+        >,
+        DecryptionKeySharePublicParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >,
+        <Self::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
     >;
     type DKGSignDecentralizedParty =
         super::decentralized_party::class_groups::asynchronous::DKGSignParty<
@@ -212,9 +233,9 @@ where
         >;
     type SignCentralizedPartyPublicInput =
         super::centralized_party::signature_homomorphic_evaluation_round::PublicInput<
-            Self::CentralizedPartyDKGOutput,
+            <Self::DKGProtocol as dkg::Protocol>::CentralizedPartyDKGOutput,
             Self::Presign,
-            Self::ProtocolPublicParameters,
+            <Self::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
         >;
     type SignMessage = Message<
         SCALAR_LIMBS,
@@ -235,28 +256,30 @@ where
                 GroupElement,
             >,
             Self::SignMessage,
-            Self::ProtocolPublicParameters,
+            <Self::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
         >;
 
     fn verify_centralized_party_partial_signature(
         message: &[u8],
         hash_type: HashScheme,
-        dkg_output: Self::DecentralizedPartyDKGOutput,
+        hash_context: &group::HashContext,
+        dkg_output: <Self::DKGProtocol as dkg::Protocol>::DecentralizedPartyDKGOutput,
         presign: Self::Presign,
         sign_message: Self::SignMessage,
-        protocol_public_parameters: &Self::ProtocolPublicParameters,
+        protocol_public_parameters: &<Self::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
         _rng: &mut impl CsRng,
-    ) -> crate::Result<()> {
+    ) -> crate::Result<Self::VerifiedSignData> {
         if &dkg_output != protocol_public_parameters
             || &presign != protocol_public_parameters
             || presign != dkg_output
         {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         let hashed_message = hash_to_scalar::<SCALAR_LIMBS, GroupElement>(
             message,
             hash_type,
+            hash_context,
             &protocol_public_parameters.scalar_group_public_parameters,
         )?;
 
@@ -270,6 +293,15 @@ where
 
         let dkg_output = dkg::decentralized_party::Output::from(dkg_output);
 
-        signature_partial_decryption_round::Party::verify_encryption_of_signature_parts_prehash_class_groups(protocol_public_parameters, dkg_output, targeted_presign, sign_message, hashed_message)
+        signature_partial_decryption_round::Party::verify_encryption_of_signature_parts_prehash_class_groups(protocol_public_parameters, dkg_output, targeted_presign, sign_message.clone(), hashed_message)?;
+
+        Ok(
+            crate::ecdsa::sign::centralized_party::message::class_groups::VerifiedSignDataRaw {
+                public_signature_nonce: sign_message.public_signature_nonce,
+                encryption_of_partial_signature: sign_message.encryption_of_partial_signature,
+                encryption_of_displaced_decentralized_party_nonce_share: sign_message
+                    .encryption_of_displaced_decentralized_party_nonce_share,
+            },
+        )
     }
 }

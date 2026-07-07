@@ -9,7 +9,7 @@ use rand::Rng;
 
 use serde::{Deserialize, Serialize};
 
-use crate::Error;
+use crate::{Error, ErrorKind};
 use group::helpers::DeduplicateAndSort;
 use group::{CsRng, PartyID};
 
@@ -35,21 +35,21 @@ impl Threshold {
         let total_weight = party_to_weight
             .values()
             .try_fold(0 as Weight, |acc, &x| acc.checked_add(x))
-            .ok_or(Error::InvalidParameters)?;
+            .ok_or_else(|| Error::from(ErrorKind::InvalidParameters))?;
         let number_of_tangible_parties: PartyID = party_to_weight
             .len()
             .try_into()
-            .map_err(|_| Error::InvalidParameters)?;
+            .map_err(|_| Error::from(ErrorKind::InvalidParameters))?;
         if threshold == 0
             || threshold > total_weight
             || party_to_weight.values().any(|&weight| weight == 0)
         {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         let tangible_parties: HashSet<PartyID> = party_to_weight.keys().copied().collect();
         if tangible_parties != (1..=number_of_tangible_parties).collect() {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         Ok(Self {
@@ -112,13 +112,13 @@ impl Threshold {
             != party_to_weight
                 .values()
                 .try_fold(0 as Weight, |acc, &x| acc.checked_add(x))
-                .ok_or(Error::InternalError)?
+                .ok_or_else(|| Error::from(ErrorKind::InternalError))?
         {
             let party_id = rng.random_range(1..=number_of_tangible_parties);
             let new_weight = party_to_weight
                 .get(&party_id)
                 .and_then(|weight| weight.checked_add(1))
-                .ok_or(Error::InternalError)?;
+                .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
             party_to_weight.insert(party_id, new_weight);
         }
 
@@ -166,7 +166,7 @@ impl Threshold {
         tangible_parties: HashSet<PartyID>,
     ) -> crate::Result<HashSet<PartyID>> {
         if !tangible_parties.is_subset(&self.party_to_weight.keys().copied().collect()) {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         let party_to_virtual_parties = self.party_to_virtual_parties();
@@ -186,13 +186,13 @@ impl Threshold {
     pub fn is_authorized_subset(&self, tangible_parties: &HashSet<PartyID>) -> crate::Result<()> {
         let known_parties = self.party_to_weight.keys().copied().collect();
         if !tangible_parties.is_subset(&known_parties) {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         let subset_total_weight = self.subset_total_weight(tangible_parties)?;
 
         if subset_total_weight < self.threshold {
-            return Err(Error::ThresholdNotReached);
+            return Err(Error::from(ErrorKind::ThresholdNotReached));
         }
 
         Ok(())
@@ -204,7 +204,7 @@ impl Threshold {
     ) -> crate::Result<Weight> {
         let known_parties = self.party_to_weight.keys().copied().collect();
         if !tangible_parties.is_subset(&known_parties) {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         let subset_total_weight: Weight = self
@@ -265,7 +265,7 @@ impl Threshold {
         let active_parties_total_weight = self.subset_total_weight(active_parties)?;
 
         if active_parties_total_weight < target_weight {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         };
 
         let parties: Vec<_> = active_parties.clone().deduplicate_and_sort();
@@ -275,17 +275,27 @@ impl Threshold {
             .iter()
             .map(|party_id| *self.party_to_weight.get(party_id).unwrap())
             .collect();
-        let distribution = WeightedIndex::new(weights).map_err(|_| Error::InternalError)?;
+        let distribution =
+            WeightedIndex::new(weights).map_err(|_| Error::from(ErrorKind::InternalError))?;
         let mut subset = HashSet::new();
 
         while self.subset_total_weight(&subset)? < target_weight {
             let party_id = *parties
                 .get(distribution.sample(rng))
-                .ok_or(Error::InternalError)?;
+                .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
             subset.insert(party_id);
         }
 
         Ok(subset)
+    }
+
+    /// Returns true if the access structure is uniform, i.e. every tangible party has weight 1
+    /// and thus maps to a virtual subset containing its own party ID.
+    pub fn is_uniform(&self) -> bool {
+        let party_to_virtual = self.party_to_virtual_parties();
+        party_to_virtual
+            .iter()
+            .all(|(&tangible_id, virtual_subset)| virtual_subset == &HashSet::from([tangible_id]))
     }
 
     /// Returns the tangible party ID for which this virtual party ID belongs to.

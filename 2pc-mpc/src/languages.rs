@@ -3,12 +3,12 @@
 
 #![allow(clippy::type_complexity, clippy::too_many_arguments)]
 
-use crate::{Error, ProtocolContext, Result};
+use crate::{Error, ErrorKind, ProtocolContext, Result};
 use commitment::{MultiPedersen, Pedersen};
+use crypto_bigint::subtle::ConditionallySelectable;
 use crypto_bigint::{Encoding, Int, Uint};
 use group::{
-    bounded_integers_group, self_product, CsRng, GroupElement, KnownOrderGroupElement,
-    PrimeGroupElement, Scale,
+    bounded_integers_group, self_product, CsRng, KnownOrderGroupElement, PrimeGroupElement, Scale,
 };
 use maurer::{
     commitment_of_discrete_log, encryption_of_discrete_log, encryption_of_tuple,
@@ -18,7 +18,6 @@ use maurer::{
     SOUND_PROOFS_REPETITIONS,
 };
 use maurer::{extended_encryption_of_tuple, UC_PROOFS_REPETITIONS};
-use proof::GroupsPublicParametersAccessors;
 
 pub mod class_groups;
 
@@ -320,7 +319,7 @@ pub type EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters<
 /// Construct $L_{\textsf{DCom}}$ language parameters.
 pub fn construct_knowledge_of_decommitment_public_parameters<
     const SCALAR_LIMBS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
 >(
     commitment_scheme_public_parameters: commitment::PublicParameters<
         SCALAR_LIMBS,
@@ -338,7 +337,7 @@ pub fn construct_knowledge_of_decommitment_public_parameters<
 /// Run the protocols $\Pi_{\textsf{zk}}^{L_{\textsf{Dcom}[G,H]}}(G;w,\rho)$
 pub fn prove_knowledge_of_decommitment<
     const SCALAR_LIMBS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
 >(
     witness: GroupElement::Scalar,
     randomness: GroupElement::Scalar,
@@ -364,7 +363,9 @@ pub fn prove_knowledge_of_decommitment<
         rng,
     )?;
 
-    let statement = *statement.first().ok_or(Error::InternalError)?;
+    let statement = *statement
+        .first()
+        .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
 
     Ok((proof, statement))
 }
@@ -373,7 +374,7 @@ pub fn prove_knowledge_of_decommitment<
 /// Verify $\Pi_{\textsf{zk}}^{L_{\textsf{Dcom}[G,H]}}(G;w,\rho)$
 pub fn verify_knowledge_of_decommitment<
     const SCALAR_LIMBS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
 >(
     commitment: GroupElement,
     commitment_scheme_public_parameters: commitment::PublicParameters<
@@ -400,7 +401,7 @@ pub fn verify_knowledge_of_decommitment<
 /// Construct $L_{\textsf{DCom}}$ language parameters.
 pub fn construct_uc_knowledge_of_decommitment_public_parameters<
     const SCALAR_LIMBS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
 >(
     commitment_scheme_public_parameters: commitment::PublicParameters<
         SCALAR_LIMBS,
@@ -418,7 +419,7 @@ pub fn construct_uc_knowledge_of_decommitment_public_parameters<
 /// Run the protocols $\Pi_{\textsf{zk-uc}}^{L_{\textsf{Dcom}[G,H]}}(G;w,\rho)$
 pub fn uc_prove_knowledge_of_decommitment<
     const SCALAR_LIMBS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
 >(
     witness: GroupElement::Scalar,
     randomness: GroupElement::Scalar,
@@ -451,7 +452,7 @@ pub fn uc_prove_knowledge_of_decommitment<
 /// Verify $\Pi_{\textsf{zk-uc}}^{L_{\textsf{Dcom}[G,H]}}(G;w,\rho)$
 pub fn verify_uc_knowledge_of_decommitment<
     const SCALAR_LIMBS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
 >(
     commitment: GroupElement,
     commitment_scheme_public_parameters: commitment::PublicParameters<
@@ -474,7 +475,7 @@ pub fn verify_uc_knowledge_of_decommitment<
 /// Construct $L_{\textsf{DCom}}$ language parameters.
 pub fn construct_knowledge_of_discrete_log_public_parameters<
     const SCALAR_LIMBS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
 >(
     scalar_group_public_parameters: group::PublicParameters<GroupElement::Scalar>,
     group_public_parameters: GroupElement::PublicParameters,
@@ -492,7 +493,7 @@ pub fn construct_knowledge_of_discrete_log_public_parameters<
 /// Run the protocols $\Pi_{\textsf{zk}}^{L_{\sf{DL}}[(\mathbb{G}, G,q)]}(x\cdot G;x)$
 pub fn prove_knowledge_of_discrete_log<
     const SCALAR_LIMBS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
 >(
     discrete_log: GroupElement::Scalar,
     scalar_group_public_parameters: group::PublicParameters<GroupElement::Scalar>,
@@ -515,7 +516,9 @@ pub fn prove_knowledge_of_discrete_log<
         rng,
     )?;
 
-    let base_by_discrete_log = *statement.first().ok_or(Error::InternalError)?;
+    let base_by_discrete_log = *statement
+        .first()
+        .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
 
     Ok((proof, base_by_discrete_log))
 }
@@ -523,7 +526,7 @@ pub fn prove_knowledge_of_discrete_log<
 /// Verify $\Pi_{\textsf{zk}}^{L_{\sf{DL}}[(\mathbb{G}, G,q)]}(x\cdot G;x)$
 pub fn verify_knowledge_of_discrete_log<
     const SCALAR_LIMBS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
 >(
     base_by_discrete_log: GroupElement,
     scalar_group_public_parameters: group::PublicParameters<GroupElement::Scalar>,
@@ -548,7 +551,7 @@ pub fn verify_knowledge_of_discrete_log<
 /// Construct $L_{\textsf{DCom}}$ language parameters.
 pub fn construct_uc_knowledge_of_discrete_log_public_parameters<
     const SCALAR_LIMBS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
 >(
     scalar_group_public_parameters: group::PublicParameters<GroupElement::Scalar>,
     group_public_parameters: GroupElement::PublicParameters,
@@ -567,7 +570,7 @@ pub fn construct_uc_knowledge_of_discrete_log_public_parameters<
 /// Run the protocols $\Pi_{\textsf{zk-uc}}^{L_{\sf{DL}}[(\mathbb{G}, G,q)]}(x\cdot G;x)$
 pub fn uc_prove_knowledge_of_discrete_log<
     const SCALAR_LIMBS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
 >(
     discrete_log: GroupElement::Scalar,
     scalar_group_public_parameters: group::PublicParameters<GroupElement::Scalar>,
@@ -598,7 +601,7 @@ pub fn uc_prove_knowledge_of_discrete_log<
 /// Verify $\Pi_{\textsf{zk-uc}}^{L_{\sf{DL}}[(\mathbb{G}, G,q)]}(x\cdot G;x)$
 pub fn verify_uc_knowledge_of_discrete_log<
     const SCALAR_LIMBS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
 >(
     base_by_discrete_log: GroupElement,
     scalar_group_public_parameters: group::PublicParameters<GroupElement::Scalar>,
@@ -623,7 +626,7 @@ pub fn verify_uc_knowledge_of_discrete_log<
 /// Construct $L_{\textsf{DComDL}}$ language parameters.
 pub fn construct_commitment_of_discrete_log_public_parameters<
     const SCALAR_LIMBS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
 >(
     base: GroupElement::Value,
     commitment_scheme_public_parameters: commitment::PublicParameters<
@@ -651,7 +654,7 @@ pub fn construct_commitment_of_discrete_log_public_parameters<
 /// k, \rho_0)$.
 pub fn prove_commitment_of_discrete_log<
     const SCALAR_LIMBS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
 >(
     signature_nonce_share: GroupElement::Scalar,
     signature_nonce_share_commitment_randomness: GroupElement::Scalar,
@@ -688,8 +691,10 @@ pub fn prove_commitment_of_discrete_log<
         rng,
     )?;
 
-    let [first_commitment, second_commitment] =
-        (*statement.first().ok_or(Error::InternalError)?).into();
+    let [first_commitment, second_commitment] = (*statement
+        .first()
+        .ok_or_else(|| Error::from(ErrorKind::InternalError))?)
+    .into();
 
     Ok((proof, first_commitment, second_commitment))
 }
@@ -699,7 +704,7 @@ pub fn prove_commitment_of_discrete_log<
 /// k, \rho_0)$.
 pub fn verify_commitment_of_discrete_log<
     const SCALAR_LIMBS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
 >(
     base: GroupElement::Value,
     commitment_of_discrete_log: GroupElement,
@@ -736,7 +741,7 @@ pub fn verify_commitment_of_discrete_log<
 /// Construct $L_{\textsf{DcomEq}}$ language parameters.
 pub fn construct_equality_between_commitments_with_different_public_parameters_public_parameters<
     const SCALAR_LIMBS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
 >(
     first_commitment_scheme_public_parameters: commitment::PublicParameters<
         SCALAR_LIMBS,
@@ -764,7 +769,7 @@ pub fn construct_equality_between_commitments_with_different_public_parameters_p
 /// C_w,\hat{C_w};w,\rho_0,\rho_3)$
 pub fn prove_equality_between_commitments_with_different_public_parameters<
     const SCALAR_LIMBS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
 >(
     commitment_message: GroupElement::Scalar,
     first_commitment_randomness: GroupElement::Scalar,
@@ -807,8 +812,10 @@ pub fn prove_equality_between_commitments_with_different_public_parameters<
         rng,
     )?;
 
-    let [first_commitment, second_commitment] =
-        (*statement.first().ok_or(Error::InternalError)?).into();
+    let [first_commitment, second_commitment] = (*statement
+        .first()
+        .ok_or_else(|| Error::from(ErrorKind::InternalError))?)
+    .into();
 
     Ok((proof, first_commitment, second_commitment))
 }
@@ -818,7 +825,7 @@ pub fn prove_equality_between_commitments_with_different_public_parameters<
 /// C_w,\hat{C_w};w,\RandomCom_0,\RandomCom_1)$
 pub fn verify_equality_between_commitments_with_different_public_parameters<
     const SCALAR_LIMBS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
 >(
     first_commitment: GroupElement,
     second_commitment: GroupElement,
@@ -857,7 +864,7 @@ pub fn verify_equality_between_commitments_with_different_public_parameters<
 /// Construct $L_VecDComDL$ language parameters.
 pub fn construct_vector_commitment_of_discrete_log_public_parameters<
     const SCALAR_LIMBS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
 >(
     base: GroupElement::Value,
     commitment_scheme_public_parameters: commitment::PublicParameters<
@@ -888,7 +895,7 @@ pub fn construct_vector_commitment_of_discrete_log_public_parameters<
 /// \rho_1,\rho_2)$.
 pub fn prove_vector_commitment_of_discrete_log<
     const SCALAR_LIMBS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
 >(
     alpha_displacer: GroupElement::Scalar,
     alpha_displacer_commitment_randomness: GroupElement::Scalar,
@@ -935,7 +942,7 @@ pub fn prove_vector_commitment_of_discrete_log<
 
     let decentralized_party_nonce_public_share = *statements
         .first()
-        .ok_or(crate::Error::InternalError)?
+        .ok_or_else(|| crate::Error::from(crate::ErrorKind::InternalError))?
         .linear_combination_of_discrete_logs();
 
     Ok((proof, decentralized_party_nonce_public_share))
@@ -947,7 +954,7 @@ pub fn prove_vector_commitment_of_discrete_log<
 /// \RandomCom_0,\RandomCom_1)$.
 pub fn verify_vector_commitment_of_discrete_log<
     const SCALAR_LIMBS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
 >(
     base: GroupElement::Value,
     commitment_of_first_discrete_log: GroupElement,
@@ -1005,7 +1012,10 @@ pub fn construct_equality_of_discrete_log_public_parameters<
 where
     Int<DISCRETE_LOG_WITNESS_LIMBS>: Encoding,
     Uint<DISCRETE_LOG_WITNESS_LIMBS>: Encoding,
-    HiddenOrderGroupElement: group::GroupElement + Scale<Int<DISCRETE_LOG_WITNESS_LIMBS>>,
+    HiddenOrderGroupElement: group::GroupElement
+        + Copy
+        + ConditionallySelectable
+        + Scale<Int<DISCRETE_LOG_WITNESS_LIMBS>>,
 {
     let upper_bound_bits = Some(discrete_log_group_public_parameters.sample_bits);
 
@@ -1022,8 +1032,7 @@ where
 
 /// Prove equality between the discrete logs $(g_1,g_1^x_i), (g_2,g_2^x_i), ..., (g_n,g_n^x_i)$
 /// under different hidden order groups $g_1\in G_1, g_2 \in G_2,...,g_n \in G_n$ for a batch $ {x_i}_i $.
-pub fn prove_equality_of_discrete_log<
-    const DISCRETE_LOG_LIMBS: usize,
+pub fn prove_equality_of_discrete_log_backward_compatible<
     const DISCRETE_LOG_WITNESS_LIMBS: usize,
     HiddenOrderGroupElement,
 >(
@@ -1031,7 +1040,7 @@ pub fn prove_equality_of_discrete_log<
         DISCRETE_LOG_WITNESS_LIMBS,
         HiddenOrderGroupElement,
     >,
-    discrete_logs: Vec<bounded_integers_group::GroupElement<DISCRETE_LOG_LIMBS>>,
+    discrete_logs: Vec<bounded_integers_group::GroupElement<DISCRETE_LOG_WITNESS_LIMBS>>,
     protocol_context: &ProtocolContext,
     rng: &mut impl CsRng,
 ) -> Result<(
@@ -1042,27 +1051,51 @@ pub fn prove_equality_of_discrete_log<
     Vec<HiddenOrderGroupElement>,
 )>
 where
-    Int<DISCRETE_LOG_LIMBS>: Encoding,
-    Uint<DISCRETE_LOG_LIMBS>: Encoding,
     Int<DISCRETE_LOG_WITNESS_LIMBS>: Encoding,
     Uint<DISCRETE_LOG_WITNESS_LIMBS>: Encoding,
     HiddenOrderGroupElement: group::GroupElement + Scale<Int<DISCRETE_LOG_WITNESS_LIMBS>>,
 {
-    if DISCRETE_LOG_WITNESS_LIMBS < DISCRETE_LOG_LIMBS {
-        return Err(Error::InvalidParameters);
-    }
+    let (proof, base_by_discrete_logs) = EqualityOfDiscreteLogsInHiddenOrderGroupProof::<
+        DISCRETE_LOG_WITNESS_LIMBS,
+        HiddenOrderGroupElement,
+    >::prove(
+        protocol_context,
+        &language_public_parameters,
+        discrete_logs,
+        rng,
+    )?;
 
-    let discrete_logs = discrete_logs
-        .into_iter()
-        .map(|discrete_log| {
-            let discrete_log = discrete_log.value();
-            bounded_integers_group::GroupElement::new(
-                Int::from(&discrete_log),
-                language_public_parameters.witness_space_public_parameters(),
-            )
-        })
-        .collect::<group::Result<_>>()?;
+    Ok((proof, base_by_discrete_logs))
+}
 
+/// Prove equality between the discrete logs $(g_1,g_1^x_i), (g_2,g_2^x_i), ..., (g_n,g_n^x_i)$
+/// under different hidden order groups $g_1\in G_1, g_2 \in G_2,...,g_n \in G_n$ for a batch $ {x_i}_i $.
+pub fn prove_equality_of_discrete_log<
+    const DISCRETE_LOG_WITNESS_LIMBS: usize,
+    HiddenOrderGroupElement,
+>(
+    language_public_parameters: EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters<
+        DISCRETE_LOG_WITNESS_LIMBS,
+        HiddenOrderGroupElement,
+    >,
+    discrete_logs: Vec<bounded_integers_group::GroupElement<DISCRETE_LOG_WITNESS_LIMBS>>,
+    protocol_context: &ProtocolContext,
+    rng: &mut impl CsRng,
+) -> Result<(
+    EqualityOfDiscreteLogsInHiddenOrderGroupProof<
+        DISCRETE_LOG_WITNESS_LIMBS,
+        HiddenOrderGroupElement,
+    >,
+    Vec<HiddenOrderGroupElement>,
+)>
+where
+    Int<DISCRETE_LOG_WITNESS_LIMBS>: Encoding,
+    Uint<DISCRETE_LOG_WITNESS_LIMBS>: Encoding,
+    HiddenOrderGroupElement: group::GroupElement
+        + Copy
+        + ConditionallySelectable
+        + Scale<Int<DISCRETE_LOG_WITNESS_LIMBS>>,
+{
     let (proof, base_by_discrete_logs) = EqualityOfDiscreteLogsInHiddenOrderGroupProof::<
         DISCRETE_LOG_WITNESS_LIMBS,
         HiddenOrderGroupElement,
@@ -1095,7 +1128,10 @@ pub fn verify_equality_of_discrete_log_proof<
 where
     Int<DISCRETE_LOG_WITNESS_LIMBS>: Encoding,
     Uint<DISCRETE_LOG_WITNESS_LIMBS>: Encoding,
-    HiddenOrderGroupElement: group::GroupElement + Scale<Int<DISCRETE_LOG_WITNESS_LIMBS>>,
+    HiddenOrderGroupElement: group::GroupElement
+        + Copy
+        + ConditionallySelectable
+        + Scale<Int<DISCRETE_LOG_WITNESS_LIMBS>>,
 {
     proof.verify(
         protocol_context,

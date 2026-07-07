@@ -12,7 +12,7 @@ use mpc::secret_sharing::shamir::over_the_integers::secret_key_share_size_upper_
 
 use crate::{
     batch_verification::batch_verification,
-    proofs::{Error, Result, TranscriptProtocol},
+    proofs::{Error, ErrorKind, Result, TranscriptProtocol},
     AsNaturalNumber, AsRingElement, ComputationalSecuritySizedNumber, PaillierModulusSizedNumber,
     PaillierRingElement, ProofOfEqualityOfDiscreteLogsRandomnessSizedNumber,
     SecretKeyShareSizedNumber,
@@ -236,7 +236,7 @@ impl ProofOfEqualityOfDiscreteLogs {
             || self.base_randomizer == PaillierModulusSizedNumber::ZERO
             || self.decryption_share_base_randomizer == PaillierModulusSizedNumber::ZERO
         {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         let challenge: ComputationalSecuritySizedNumber = Self::compute_challenge(
@@ -284,7 +284,7 @@ impl ProofOfEqualityOfDiscreteLogs {
         {
             return Ok(());
         }
-        Err(Error::ProofVerificationError())
+        Err(Error::from(ErrorKind::ProofVerificationError()))
     }
 
     fn setup_protocol(
@@ -483,7 +483,7 @@ impl ProofOfEqualityOfDiscreteLogs {
         Transcript,
     )> {
         if decryption_shares_and_bases.is_empty() {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         let (base, public_verification_key, decryption_shares_and_bases, mut transcript) =
@@ -791,7 +791,7 @@ mod tests {
                 )
                 .err()
                 .unwrap(),
-            Error::ProofVerificationError()
+            Error::from(ErrorKind::ProofVerificationError())
         );
 
         assert_eq!(
@@ -807,7 +807,7 @@ mod tests {
                 )
                 .err()
                 .unwrap(),
-            Error::ProofVerificationError()
+            Error::from(ErrorKind::ProofVerificationError())
         );
 
         let witness = WITNESS;
@@ -857,7 +857,7 @@ mod tests {
                 )
                 .err()
                 .unwrap(),
-            Error::InvalidParameters
+            Error::from(ErrorKind::InvalidParameters)
         );
 
         assert_eq!(
@@ -873,7 +873,7 @@ mod tests {
                 )
                 .err()
                 .unwrap(),
-            Error::InvalidParameters
+            Error::from(ErrorKind::InvalidParameters)
         );
 
         let two_n: PaillierModulusSizedNumber = N
@@ -901,7 +901,7 @@ mod tests {
                 )
                 .err()
                 .unwrap(),
-            Error::InvalidParameters
+            Error::from(ErrorKind::InvalidParameters)
         );
 
         assert_eq!(
@@ -917,7 +917,7 @@ mod tests {
                 )
                 .err()
                 .unwrap(),
-            Error::InvalidParameters
+            Error::from(ErrorKind::InvalidParameters)
         );
 
         // Now generate a valid proof, and make sure that if we change any field it fails
@@ -960,7 +960,7 @@ mod tests {
                 )
                 .err()
                 .unwrap(),
-            Error::ProofVerificationError()
+            Error::from(ErrorKind::ProofVerificationError())
         );
 
         assert_eq!(
@@ -976,7 +976,7 @@ mod tests {
                 )
                 .err()
                 .unwrap(),
-            Error::ProofVerificationError()
+            Error::from(ErrorKind::ProofVerificationError())
         );
 
         assert_eq!(
@@ -993,7 +993,7 @@ mod tests {
                 )
                 .err()
                 .unwrap(),
-            Error::ProofVerificationError()
+            Error::from(ErrorKind::ProofVerificationError())
         );
 
         assert_eq!(
@@ -1009,7 +1009,7 @@ mod tests {
                 )
                 .err()
                 .unwrap(),
-            Error::ProofVerificationError()
+            Error::from(ErrorKind::ProofVerificationError())
         );
 
         assert_eq!(
@@ -1026,7 +1026,7 @@ mod tests {
                 )
                 .err()
                 .unwrap(),
-            Error::ProofVerificationError()
+            Error::from(ErrorKind::ProofVerificationError())
         );
 
         assert_eq!(
@@ -1042,7 +1042,7 @@ mod tests {
                 )
                 .err()
                 .unwrap(),
-            Error::ProofVerificationError()
+            Error::from(ErrorKind::ProofVerificationError())
         );
 
         assert_eq!(
@@ -1059,7 +1059,7 @@ mod tests {
                 )
                 .err()
                 .unwrap(),
-            Error::ProofVerificationError()
+            Error::from(ErrorKind::ProofVerificationError())
         );
 
         assert_eq!(
@@ -1075,7 +1075,7 @@ mod tests {
                 )
                 .err()
                 .unwrap(),
-            Error::ProofVerificationError()
+            Error::from(ErrorKind::ProofVerificationError())
         );
 
         let mut invalid_proof = valid_proof.clone();
@@ -1094,7 +1094,7 @@ mod tests {
                 )
                 .err()
                 .unwrap(),
-            Error::ProofVerificationError()
+            Error::from(ErrorKind::ProofVerificationError())
         );
 
         let mut invalid_batched_proof = valid_batched_proof.clone();
@@ -1112,7 +1112,7 @@ mod tests {
                 )
                 .err()
                 .unwrap(),
-            Error::ProofVerificationError()
+            Error::from(ErrorKind::ProofVerificationError())
         );
 
         invalid_proof = valid_proof.clone();
@@ -1131,7 +1131,7 @@ mod tests {
                 )
                 .err()
                 .unwrap(),
-            Error::ProofVerificationError()
+            Error::from(ErrorKind::ProofVerificationError())
         );
 
         invalid_batched_proof = valid_batched_proof.clone();
@@ -1149,7 +1149,7 @@ mod tests {
                 )
                 .err()
                 .unwrap(),
-            Error::ProofVerificationError()
+            Error::from(ErrorKind::ProofVerificationError())
         );
 
         invalid_proof = valid_proof;
@@ -1168,7 +1168,7 @@ mod tests {
                 )
                 .err()
                 .unwrap(),
-            Error::ProofVerificationError()
+            Error::from(ErrorKind::ProofVerificationError())
         );
 
         invalid_batched_proof = valid_batched_proof;
@@ -1186,7 +1186,7 @@ mod tests {
                 )
                 .err()
                 .unwrap(),
-            Error::ProofVerificationError()
+            Error::from(ErrorKind::ProofVerificationError())
         );
     }
 }

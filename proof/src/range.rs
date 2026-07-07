@@ -1,19 +1,14 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
-use std::{
-    collections::{HashMap, HashSet},
-    fmt::Debug,
-};
+use std::fmt::Debug;
 
 use merlin::Transcript;
 
 use serde::{Deserialize, Serialize};
 
 use commitment::{GroupsPublicParametersAccessors, HomomorphicCommitmentScheme};
-use group::{self_product, CsRng, NumbersGroupElement, PartyID, Transcribeable};
-
-use crate::aggregation;
+use group::{self_product, CsRng, NumbersGroupElement, Transcribeable};
 
 #[cfg(feature = "bulletproofs")]
 pub mod bulletproofs;
@@ -33,7 +28,7 @@ pub trait RangeProof<
 
     /// An element of the group from which the range proof's commitment scheme message space is composed,
     /// used to prove a single range claim.
-    type RangeClaimGroupElement: NumbersGroupElement<COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS>;
+    type RangeClaimGroupElement: NumbersGroupElement<COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS> + Copy;
 
     /// The commitment scheme used for the range proof
     type CommitmentScheme<const NUM_RANGE_CLAIMS: usize>: HomomorphicCommitmentScheme<COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS, MessageSpaceGroupElement=self_product::GroupElement<NUM_RANGE_CLAIMS, Self::RangeClaimGroupElement>>;
@@ -71,142 +66,6 @@ pub trait RangeProof<
         rng: &mut impl CsRng,
     ) -> crate::Result<()>;
 }
-
-/// An aggregatable range proof over `Self::CommitmentScheme`, capable of proving an aggregated
-/// range proof over `Self::RANGE_CLAIM_BITS` bits.
-pub trait AggregatableRangeProof<
-    // The commitment scheme's message space scalar size in limbs
-    const COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS: usize,
->: RangeProof<COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS> {
-    /// The commitment round party of the range proof aggregation protocol.
-    type AggregationCommitmentRoundParty<const NUM_RANGE_CLAIMS: usize>: aggregation::CommitmentRoundParty<AggregationOutput<NUM_RANGE_CLAIMS, COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS, Self>>;
-
-    /// Initiate a new proof aggregation session, by returning its commitment round party instance.
-    fn new_session<const NUM_RANGE_CLAIMS: usize>(party_id: PartyID,
-                                                  provers: HashSet<PartyID>, initial_transcript: Transcript, public_parameters: &Self::PublicParameters<NUM_RANGE_CLAIMS>,
-                                                  witnesses: Vec<CommitmentSchemeMessageSpaceGroupElement<COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS, NUM_RANGE_CLAIMS, Self>>,
-                                                  commitments_randomness: Vec<CommitmentSchemeRandomnessSpaceGroupElement<COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS, NUM_RANGE_CLAIMS, Self>>, ) -> Self::AggregationCommitmentRoundParty<NUM_RANGE_CLAIMS>;
-
-    /// Extracts the individual commitments made by each party (used for identifiable abort).
-    fn individual_commitments<const NUM_RANGE_CLAIMS: usize>(proof_aggregation_round_party: &ProofAggregationRoundParty<NUM_RANGE_CLAIMS, COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS, Self>, batch_size: usize) -> crate::Result<HashMap<PartyID, Vec<CommitmentSchemeCommitmentSpaceGroupElement<COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS, NUM_RANGE_CLAIMS, Self>>>>;
-}
-
-/// The output of the range proof aggregation protocol.
-pub type AggregationOutput<
-    const NUM_RANGE_CLAIMS: usize,
-    const COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS: usize,
-    RangeProof,
-> = (
-    RangeProof,
-    Vec<
-        commitment::CommitmentSpaceGroupElement<
-            COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
-            CommitmentScheme<
-                COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
-                NUM_RANGE_CLAIMS,
-                RangeProof,
-            >,
-        >,
-    >,
-);
-
-/// The commitment round party of the range proof aggregation protocol.
-pub type CommitmentRoundParty<
-    const NUM_RANGE_CLAIMS: usize,
-    const COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS: usize,
-    RangeProof,
-> = <RangeProof as AggregatableRangeProof<COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS>>::AggregationCommitmentRoundParty<NUM_RANGE_CLAIMS>;
-
-/// The decommitment round party of the range proof aggregation protocol.
-pub type AggregationError<
-    const NUM_RANGE_CLAIMS: usize,
-    const COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS: usize,
-    RangeProof,
-> = <CommitmentRoundParty<
-    NUM_RANGE_CLAIMS,
-    COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
-    RangeProof,
-> as aggregation::CommitmentRoundParty<
-    AggregationOutput<NUM_RANGE_CLAIMS, COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS, RangeProof>,
->>::Error;
-
-/// The commitment of the range proof aggregation protocol.
-pub type Commitment<
-    const NUM_RANGE_CLAIMS: usize,
-    const COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS: usize,
-    RangeProof,
-> = <CommitmentRoundParty<
-    NUM_RANGE_CLAIMS,
-    COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
-    RangeProof,
-> as aggregation::CommitmentRoundParty<
-    AggregationOutput<NUM_RANGE_CLAIMS, COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS, RangeProof>,
->>::Commitment;
-
-/// The decommitment round party of the range proof aggregation protocol.
-pub type DecommitmentRoundParty<
-    const NUM_RANGE_CLAIMS: usize,
-    const COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS: usize,
-    RangeProof,
-> = <CommitmentRoundParty<
-    NUM_RANGE_CLAIMS,
-    COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
-    RangeProof,
-> as aggregation::CommitmentRoundParty<
-    AggregationOutput<NUM_RANGE_CLAIMS, COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS, RangeProof>,
->>::DecommitmentRoundParty;
-
-/// The decommitment of the range proof aggregation protocol.
-pub type Decommitment<
-    const NUM_RANGE_CLAIMS: usize,
-    const COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS: usize,
-    RangeProof,
-> = <DecommitmentRoundParty<
-    NUM_RANGE_CLAIMS,
-    COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
-    RangeProof,
-> as aggregation::DecommitmentRoundParty<
-    AggregationOutput<NUM_RANGE_CLAIMS, COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS, RangeProof>,
->>::Decommitment;
-
-/// The proof share round party of the range proof aggregation protocol.
-pub type ProofShareRoundParty<
-    const NUM_RANGE_CLAIMS: usize,
-    const COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS: usize,
-    RangeProof,
-> = <DecommitmentRoundParty<
-    NUM_RANGE_CLAIMS,
-    COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
-    RangeProof,
-> as aggregation::DecommitmentRoundParty<
-    AggregationOutput<NUM_RANGE_CLAIMS, COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS, RangeProof>,
->>::ProofShareRoundParty;
-
-/// The proof share of the range proof aggregation protocol.
-pub type ProofShare<
-    const NUM_RANGE_CLAIMS: usize,
-    const COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS: usize,
-    RangeProof,
-> = <ProofShareRoundParty<
-    NUM_RANGE_CLAIMS,
-    COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
-    RangeProof,
-> as aggregation::ProofShareRoundParty<
-    AggregationOutput<NUM_RANGE_CLAIMS, COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS, RangeProof>,
->>::ProofShare;
-
-/// The proof aggregation round party of the range proof aggregation protocol.
-pub type ProofAggregationRoundParty<
-    const NUM_RANGE_CLAIMS: usize,
-    const COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS: usize,
-    RangeProof,
-> = <ProofShareRoundParty<
-    NUM_RANGE_CLAIMS,
-    COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
-    RangeProof,
-> as aggregation::ProofShareRoundParty<
-    AggregationOutput<NUM_RANGE_CLAIMS, COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS, RangeProof>,
->>::ProofAggregationRoundParty;
 
 pub trait PublicParametersAccessors<
     'a,

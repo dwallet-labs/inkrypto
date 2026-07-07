@@ -13,7 +13,7 @@ pub mod asynchronous {
         construct_encryption_of_discrete_log_public_parameters, EncryptionOfDiscreteLogProof,
         EncryptionOfDiscreteLogPublicParameters,
     };
-    use crate::Error;
+    use crate::{Error, ErrorKind};
     use ::class_groups::equivalence_class::EquivalenceClassOps;
     use ::class_groups::MultiFoldNupowAccelerator;
     use ::class_groups::{encryption_key, CiphertextSpaceGroupElement, EncryptionKey};
@@ -42,7 +42,7 @@ pub mod asynchronous {
             const SCALAR_LIMBS: usize,
             const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
             const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
-            GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+            GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
         > mpc::Party
         for Party<
             SCALAR_LIMBS,
@@ -119,7 +119,7 @@ pub mod asynchronous {
             GroupElement,
         >; 2];
         type PublicOutput = Self::PublicOutputValue;
-        type Message = proof::aggregation::asynchronous::Message<
+        type Message = proof_aggregation::asynchronous::Message<
             EncryptionOfDiscreteLogProof<
                 SCALAR_LIMBS,
                 FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -134,7 +134,7 @@ pub mod asynchronous {
             const SCALAR_LIMBS: usize,
             const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
             const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
-            GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+            GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
         > AsynchronouslyAdvanceable
         for Party<
             SCALAR_LIMBS,
@@ -227,7 +227,7 @@ pub mod asynchronous {
                         public_output,
                     },
                 ),
-                _ => Err(Error::InternalError),
+                _ => Err(Error::from(ErrorKind::InternalError)),
             }
         }
 
@@ -243,7 +243,7 @@ pub mod asynchronous {
             const SCALAR_LIMBS: usize,
             const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
             const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
-            GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+            GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
         >
         Party<
             SCALAR_LIMBS,
@@ -318,7 +318,7 @@ pub mod asynchronous {
                     >,
                 >,
             >,
-        ) -> proof::aggregation::asynchronous::PublicInput<
+        ) -> proof_aggregation::asynchronous::PublicInput<
             ProtocolContext,
             EncryptionOfDiscreteLogPublicParameters<
                 SCALAR_LIMBS,
@@ -338,7 +338,7 @@ pub mod asynchronous {
                 public_input.encryption_scheme_public_parameters.clone(),
             );
 
-            proof::aggregation::asynchronous::PublicInput {
+            proof_aggregation::asynchronous::PublicInput {
                 protocol_context: public_input
                     .base_protocol_context
                     .with_session_id(session_id),
@@ -382,7 +382,7 @@ pub mod asynchronous {
 
             let aggregation_public_input = Self::aggregation_public_input(session_id, public_input);
 
-            let (proof, statement_values) = proof::aggregation::asynchronous::Party::<
+            let (proof, statement_values) = proof_aggregation::asynchronous::Party::<
                 EncryptionOfDiscreteLogProof<
                     SCALAR_LIMBS,
                     FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -423,7 +423,7 @@ pub mod asynchronous {
             let aggregation_public_input = Self::aggregation_public_input(session_id, public_input);
 
             let (malicious_parties, aggregated_statements) =
-                proof::aggregation::asynchronous::Party::<
+                proof_aggregation::asynchronous::Party::<
                     EncryptionOfDiscreteLogProof<
                         SCALAR_LIMBS,
                         FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -446,7 +446,7 @@ pub mod asynchronous {
 
                     Ok((malicious_parties, public_output))
                 }
-                _ => Err(Error::InternalError),
+                _ => Err(Error::from(ErrorKind::InternalError)),
             }
         }
     }

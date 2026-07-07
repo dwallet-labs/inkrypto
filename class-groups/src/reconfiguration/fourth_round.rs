@@ -16,25 +16,24 @@ use mpc::{AsynchronousRoundResult, WeightedThresholdAccessStructure};
 use crate::accelerator::MultiFoldNupowAccelerator;
 use crate::dkg::{verify_equality_of_discrete_log_proofs, ProveEqualityOfDiscreteLog};
 use crate::equivalence_class::EquivalenceClassOps;
+use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::DealtSecretShare;
 use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
-    SecretKeyShareCRTPrimeDecryptionKeyShare,
+    reconstruct_integer, SecretKeyShareCRTPrimeDecryptionKeyShare,
     SecretKeyShareCRTPrimeDecryptionKeySharePublicParameters,
     SecretKeyShareCRTPrimeEncryptionSchemePublicParameters, SecretKeyShareCRTPrimeGroupElement,
     CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, ENCRYPTION_OF_DECRYPTION_KEY_CRT_COEFFICIENTS,
     ENCRYPTION_OF_DECRYPTION_KEY_CRT_PRIMES_PRODUCT, NUM_ENCRYPTION_OF_DECRYPTION_KEY_PRIMES,
     NUM_SECRET_SHARE_PRIMES,
 };
-use crate::publicly_verifiable_secret_sharing::{
-    chinese_remainder_theorem, BaseProtocolContext, DealtSecretShare,
-};
+use crate::publicly_verifiable_secret_sharing::{self, BaseProtocolContext};
 use crate::reconfiguration::party::RoundResult;
 use crate::reconfiguration::{
     Message, Party, PublicInput, PublicOutput, RANDOMIZER_LIMBS, RANDOMIZER_WITNESS_LIMBS,
 };
 use crate::setup::{DeriveFromPlaintextPublicParameters, SetupParameters};
 use crate::{
-    equivalence_class, publicly_verifiable_secret_sharing, CiphertextSpaceGroupElement,
-    CompactIbqf, EquivalenceClass, Error, Result,
+    equivalence_class, CiphertextSpaceGroupElement, CompactIbqf, EquivalenceClass, Error,
+    ErrorKind, Result,
 };
 use crate::{SECRET_KEY_SHARE_LIMBS, SECRET_KEY_SHARE_WITNESS_LIMBS};
 
@@ -105,7 +104,7 @@ where
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             >,
         >,
-        randomizer_contribution_to_upcoming_pvss_party: &publicly_verifiable_secret_sharing::Party<
+        randomizer_contribution_to_upcoming_pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
@@ -170,7 +169,7 @@ where
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             >,
         >,
-        randomizer_contribution_to_upcoming_pvss_party: &publicly_verifiable_secret_sharing::Party<
+        randomizer_contribution_to_upcoming_pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
@@ -249,7 +248,7 @@ where
                             (Some(dealer_virtual_party_id), public_verification_key),
                         )
                     })
-                    .ok_or(Error::InternalError)
+                    .ok_or_else(|| Error::from(ErrorKind::InternalError))
             })
             .collect::<Result<Vec<_>>>()?
             .into_iter()
@@ -374,7 +373,7 @@ where
             let masked_decryption_key = masked_decryption_key
                 .first()
                 .copied()
-                .ok_or(Error::InternalError)?
+                .ok_or_else(|| Error::from(ErrorKind::InternalError))?
                 .value();
 
             malicious_decrypters.extend(&current_malicious_decrypters);
@@ -384,14 +383,12 @@ where
         .flat_map_results()?;
 
         // The parties reconstruct $r+s$ over the integers using CRT. This works as the CRT primes are chosen to have a large enough multiplication.
-        let masked_decryption_key = chinese_remainder_theorem::reconstruct_integer::<
-            NUM_ENCRYPTION_OF_DECRYPTION_KEY_PRIMES,
-            RANDOMIZER_LIMBS,
-        >(
-            ENCRYPTION_OF_DECRYPTION_KEY_CRT_COEFFICIENTS,
-            ENCRYPTION_OF_DECRYPTION_KEY_CRT_PRIMES_PRODUCT,
-            masked_decryption_key_per_crt_prime,
-        )?;
+        let masked_decryption_key =
+            reconstruct_integer::<NUM_ENCRYPTION_OF_DECRYPTION_KEY_PRIMES, RANDOMIZER_LIMBS>(
+                ENCRYPTION_OF_DECRYPTION_KEY_CRT_COEFFICIENTS,
+                ENCRYPTION_OF_DECRYPTION_KEY_CRT_PRIMES_PRODUCT,
+                masked_decryption_key_per_crt_prime,
+            )?;
         // The masked decryption key is multiplied by $n_{new}!$ which is the values that will be used both for generation of the new shares and the new public keys.
         let upcoming_parties_n_factorial = factorial(
             public_input
@@ -419,6 +416,12 @@ where
                 })
                 .collect();
 
+        let ciphertext_space_public_parameters = group::self_product::PublicParameters(
+            public_input.setup_parameters_per_crt_prime[0]
+                .groups_public_parameters
+                .ciphertext_space_public_parameters
+                .clone(),
+        );
         let public_output = PublicOutput::<
             PLAINTEXT_SPACE_SCALAR_LIMBS,
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -436,6 +439,10 @@ where
                 .value(),
             public_input.setup_parameters.h,
             upcoming_parties_n_factorial,
+            public_input
+                .setup_parameters
+                .equivalence_class_public_parameters(),
+            &ciphertext_space_public_parameters,
         )?;
 
         let malicious_parties: Vec<_> = malicious_parties

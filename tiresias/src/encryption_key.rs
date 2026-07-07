@@ -12,7 +12,7 @@ use group::{
     CsRng, GroupElement, KnownOrderGroupElement, StatisticalSecuritySizedNumber, Transcribeable,
 };
 use homomorphic_encryption::{
-    AdditivelyHomomorphicEncryptionKey, Error, GroupsPublicParametersAccessors,
+    AdditivelyHomomorphicEncryptionKey, Error, ErrorKind, GroupsPublicParametersAccessors,
 };
 
 use crate::{
@@ -83,11 +83,15 @@ impl AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS> for Encryp
             &public_parameters
                 .plaintext_space_public_parameters()
                 .modulus,
+            public_parameters.ciphertext_space_public_parameters(),
         );
 
         // $ c = c1 * c2 = (m*N + 1) * (r^N) mod N^2 $ [Note that the equation is translated into
         // additive notation, to work with the group traits]
-        ciphertext_first_part + ciphertext_second_part
+        ciphertext_first_part.add_constant_time(
+            &ciphertext_second_part,
+            public_parameters.ciphertext_space_public_parameters(),
+        )
     }
 
     fn sample_mask_for_secure_function_evaluation<
@@ -104,7 +108,7 @@ impl AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS> for Encryp
         rng: &mut impl CsRng,
     ) -> homomorphic_encryption::Result<Self::PlaintextSpaceGroupElement> {
         if MESSAGE_LIMBS != PLAINTEXT_SPACE_SCALAR_LIMBS {
-            return Err(Error::SecureFunctionEvaluation);
+            return Err(Error::from(ErrorKind::SecureFunctionEvaluation));
         }
 
         // First, verify that each coefficient $a_i$ is smaller than the modulus $q$.
@@ -118,7 +122,7 @@ impl AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS> for Encryp
                     )
                 }),
         ) {
-            return Err(Error::SecureFunctionEvaluation);
+            return Err(Error::from(ErrorKind::SecureFunctionEvaluation));
         }
 
         let upper_bounds_sum = ciphertexts_and_encoded_messages_upper_bounds
@@ -130,7 +134,7 @@ impl AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS> for Encryp
                     sum.checked_add(&upper_bound).into()
                 },
             )
-            .ok_or(Error::SecureFunctionEvaluation)?;
+            .ok_or_else(|| Error::from(ErrorKind::SecureFunctionEvaluation))?;
 
         let mask_upper_bound: CtOption<_> = upper_bounds_sum
             .checked_mul(
@@ -140,7 +144,7 @@ impl AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS> for Encryp
             .into();
 
         let mask_upper_bound = Option::<NonZero<_>>::from(mask_upper_bound.and_then(NonZero::new))
-            .ok_or(Error::SecureFunctionEvaluation)?;
+            .ok_or_else(|| Error::from(ErrorKind::SecureFunctionEvaluation))?;
 
         let mask = Uint::<PLAINTEXT_SPACE_SCALAR_LIMBS>::random_mod(rng, &mask_upper_bound);
 
@@ -168,11 +172,11 @@ impl AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS> for Encryp
         is_vartime: bool,
     ) -> homomorphic_encryption::Result<Self::CiphertextSpaceGroupElement> {
         if DIMENSION == 0 {
-            return Err(Error::ZeroDimension);
+            return Err(Error::from(ErrorKind::ZeroDimension));
         }
 
         if MESSAGE_LIMBS != PLAINTEXT_SPACE_SCALAR_LIMBS {
-            return Err(Error::SecureFunctionEvaluation);
+            return Err(Error::from(ErrorKind::SecureFunctionEvaluation));
         }
 
         let plaintext_order: Uint<PLAINTEXT_SPACE_SCALAR_LIMBS> =
@@ -197,7 +201,7 @@ impl AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS> for Encryp
                 })
                 .reduce(|a, b| a.and_then(|a| b.and_then(|b| a.checked_add(&b))))
                 .and_then(|evaluation_upper_bound| evaluation_upper_bound.into())
-                .ok_or(Error::SecureFunctionEvaluation)?;
+                .ok_or_else(|| Error::from(ErrorKind::SecureFunctionEvaluation))?;
 
         // And then adding the mask by modulus $ \omega q $, to result with the secure
         // evaluation upper bound $\textsf{pt}_{\sf eval}$:
@@ -205,12 +209,12 @@ impl AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS> for Encryp
             CtOption::from(mask.value().checked_mul(modulus))
                 .and_then(|mask_by_modulus| evaluation_upper_bound.checked_add(&mask_by_modulus)),
         )
-        .ok_or(Error::SecureFunctionEvaluation)?;
+        .ok_or_else(|| Error::from(ErrorKind::SecureFunctionEvaluation))?;
 
         // And finally, checking that it is smaller than the plaintext order
         // $ $\textsf{pt}_{\sf eval}$ < N $:
         if secure_evaluation_upper_bound >= plaintext_order {
-            return Err(Error::SecureFunctionEvaluation);
+            return Err(Error::from(ErrorKind::SecureFunctionEvaluation));
         }
 
         let modulus = Self::PlaintextSpaceGroupElement::new(
@@ -250,9 +254,11 @@ pub struct PublicParameters(
 impl PublicParameters {
     pub fn new(paillier_associate_bi_prime: LargeBiPrimeSizedNumber) -> crate::Result<Self> {
         let paillier_associate_bi_prime_modulus: Odd<LargeBiPrimeSizedNumber> =
-            Option::from(Odd::new(paillier_associate_bi_prime)).ok_or(
-                crate::Error::SanityCheckError(SanityCheckError::InvalidParameters),
-            )?;
+            Option::from(Odd::new(paillier_associate_bi_prime)).ok_or_else(|| {
+                crate::Error::from(crate::ErrorKind::SanityCheckError(
+                    SanityCheckError::InvalidParameters,
+                ))
+            })?;
 
         Ok(Self(homomorphic_encryption::GroupsPublicParameters {
             plaintext_space_public_parameters: PlaintextSpacePublicParameters::from(

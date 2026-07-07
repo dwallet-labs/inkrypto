@@ -1,8 +1,8 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
+use std::collections::HashMap;
 use std::collections::HashSet;
-use std::{collections::HashMap, ops::Neg};
 
 use crypto_bigint::{NonZero, Uint};
 
@@ -25,7 +25,7 @@ impl Party {
     pub fn decrypt_signature_semi_honest<
         const SCALAR_LIMBS: usize,
         const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
-        GroupElement: VerifyingKey<SCALAR_LIMBS>,
+        GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
         EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
         DecryptionKeyShare: AdditivelyHomomorphicDecryptionKeyShare<PLAINTEXT_SPACE_SCALAR_LIMBS, EncryptionKey>,
     >(
@@ -93,7 +93,7 @@ impl Party {
     pub fn decrypt_signature<
         const SCALAR_LIMBS: usize,
         const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
-        GroupElement: VerifyingKey<SCALAR_LIMBS>,
+        GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
         EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
         DecryptionKeyShare: AdditivelyHomomorphicDecryptionKeyShare<PLAINTEXT_SPACE_SCALAR_LIMBS, EncryptionKey>,
     >(
@@ -173,7 +173,7 @@ impl Party {
             // This must occur because at least one party behaved maliciously and failed the semi-honest threshold decryption,
             // i.e. sent a wrong decryption share.
             // If we identified no malicious party, we have a bug and fail on an internal error so it can be identified.
-            return Err(Error::InternalError);
+            return Err(crate::Error::from_kind(crate::ErrorKind::InternalError));
         }
 
         // The `DecryptionKeyShare` trait works with virtual parties, whilst the `mpc` traits reports tangible parties as malicious.
@@ -206,7 +206,7 @@ impl Party {
     pub fn compute_and_verify_decrypted_signature<
         const SCALAR_LIMBS: usize,
         const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
-        GroupElement: VerifyingKey<SCALAR_LIMBS>,
+        GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
         EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
     >(
         // $ m $
@@ -235,8 +235,8 @@ impl Party {
                 let group_order = GroupElement::Scalar::order_from_public_parameters(
                     &protocol_public_parameters.scalar_group_public_parameters,
                 );
-                let group_order =
-                    Option::<_>::from(NonZero::new(group_order)).ok_or(Error::InternalError)?;
+                let group_order = Option::<_>::from(NonZero::new(group_order))
+                    .ok_or_else(|| crate::Error::from_kind(crate::ErrorKind::InternalError))?;
 
                 let partial_signature: Uint<PLAINTEXT_SPACE_SCALAR_LIMBS> =
                     (*partial_signature).into();
@@ -265,7 +265,9 @@ impl Party {
                     .is_none()
                     .into()
                 {
-                    return Err(Error::SignatureVerification);
+                    return Err(crate::Error::from_kind(
+                        crate::ErrorKind::SignatureVerification,
+                    ));
                 }
 
                 // === Compute s' ===
@@ -274,7 +276,8 @@ impl Party {
                 //    = k \cdot (rx + m) where k = k_{A}\cdot k_{B}^{-1}
                 let signature_s =
                     inverted_displaced_decentralized_party_nonce.unwrap() * partial_signature;
-                let negated_signature_s = signature_s.neg();
+                let negated_signature_s = signature_s
+                    .neg_constant_time(&protocol_public_parameters.scalar_group_public_parameters);
 
                 // === Compute s ===
                 // Protocol C.3, step 2(b) in the broadcast round.
@@ -307,6 +310,8 @@ impl Party {
                     normalized_signature_s,
                     hashed_message,
                     public_key,
+                    &protocol_public_parameters.group_public_parameters,
+                    &protocol_public_parameters.scalar_group_public_parameters,
                 )?;
 
                 // Use the non-normalized `signature_s`, as its the standard's responsibility to normalize the signature.
@@ -315,7 +320,7 @@ impl Party {
 
                 Ok(signature)
             }
-            _ => Err(Error::InternalError),
+            _ => Err(crate::Error::from_kind(crate::ErrorKind::InternalError)),
         }
     }
 }

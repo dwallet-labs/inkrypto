@@ -290,3 +290,5 @@ Cargo.lock
 .ionide
 
 # End of https://www.toptal.com/developers/gitignore/api/rust,intellij+all,intellij+iml,jetbrains+all,jetbrains+iml,visualstudiocode
+
+CLAUDE.md

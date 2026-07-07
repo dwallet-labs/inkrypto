@@ -6,10 +6,6 @@ use std::fmt::Debug;
 
 use serde::Serialize;
 
-use commitment::Commitment;
-use group::{CsRng, PartyID, Samplable};
-use proof::{range, AggregatableRangeProof};
-
 use crate::{
     aggregation::{decommitment_round, Output},
     language::{
@@ -17,6 +13,9 @@ use crate::{
     },
     EnhanceableLanguage, EnhancedLanguage, Error, Proof, Result,
 };
+use commitment::Commitment;
+use group::{CsRng, PartyID, Samplable};
+use proof_aggregation::AggregatableRangeProof;
 
 pub struct Party<
     const REPETITIONS: usize,
@@ -33,7 +32,7 @@ pub struct Party<
     ProtocolContext: Clone + Serialize + Debug + PartialEq + Eq + Send + Sync + Send + Sync,
 > {
     party_id: PartyID,
-    maurer_commitment_round_party: maurer::aggregation::commitment_round::Party<
+    maurer_commitment_round_party: maurer_aggregation::commitment_round::Party<
         REPETITIONS,
         EnhancedLanguage<
             REPETITIONS,
@@ -63,7 +62,7 @@ impl<
         >,
         ProtocolContext: Clone + Serialize + Debug + PartialEq + Eq + Send + Sync + Send + Sync,
     >
-    proof::aggregation::CommitmentRoundParty<
+    proof_aggregation::synchronous::CommitmentRoundParty<
         Output<
             REPETITIONS,
             NUM_RANGE_CLAIMS,
@@ -85,7 +84,7 @@ impl<
     >
 where
     Error: From<
-        range::AggregationError<
+        proof_aggregation::range::AggregationError<
             NUM_RANGE_CLAIMS,
             COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
             RangeProof,
@@ -95,7 +94,7 @@ where
     type Error = Error;
     type Commitment = (
         Commitment,
-        range::Commitment<
+        proof_aggregation::range::Commitment<
             NUM_RANGE_CLAIMS,
             COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
             RangeProof,
@@ -191,7 +190,7 @@ impl<
             .map(|witness| {
                 (
                     *witness.range_proof_commitment_message(),
-                    *witness.range_proof_commitment_randomness(),
+                    witness.range_proof_commitment_randomness().clone(),
                 )
             })
             .unzip();
@@ -229,7 +228,7 @@ impl<
                 ProtocolContext,
             >::sample_randomizers_and_statement_masks(&language_public_parameters, rng)?;
 
-        let maurer_commitment_round_party = maurer::aggregation::commitment_round::Party {
+        let maurer_commitment_round_party = maurer_aggregation::commitment_round::Party {
             party_id,
             provers,
             language_public_parameters,

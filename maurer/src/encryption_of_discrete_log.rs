@@ -6,7 +6,7 @@ use std::marker::PhantomData;
 use crypto_bigint::{NonZero, Uint};
 use serde::Serialize;
 
-use commitment::Error;
+use commitment::{Error, ErrorKind};
 use group::bounded_natural_numbers_group::MAURER_RANDOMIZER_DIFF_BITS;
 use group::{
     direct_product, GroupElement, KnownOrderGroupElement, Reduce, Samplable, Scale, Transcribeable,
@@ -149,13 +149,13 @@ where
         is_verify: bool,
     ) -> crate::Result<Self::StatementSpaceGroupElement> {
         let base = GroupElement::new(
-            language_public_parameters.base,
+            language_public_parameters.base.clone(),
             language_public_parameters.group_public_parameters(),
         )?;
 
         let encryption_key =
             EncryptionKey::new(&language_public_parameters.encryption_scheme_public_parameters)
-                .map_err(|_| crate::Error::InvalidPublicParameters)?;
+                .map_err(|_| crate::Error::from(crate::ErrorKind::InvalidPublicParameters))?;
 
         let plaintext_space_order =
             EncryptionKey::PlaintextSpaceGroupElement::order_from_public_parameters(
@@ -165,7 +165,7 @@ where
             );
         let plaintext_space_order = NonZero::new(plaintext_space_order)
             .into_option()
-            .ok_or(Error::InvalidPublicParameters)?;
+            .ok_or_else(|| Error::from(ErrorKind::InvalidPublicParameters))?;
 
         let discrete_log = witness.discrete_log().value();
         let discrete_log_reduced_modulo_plaintext_order =
@@ -186,7 +186,7 @@ where
         );
 
         let base_by_discrete_log = if is_verify {
-            base.scale_vartime_accelerated(
+            base.scale_vartime_by(
                 &discrete_log,
                 language_public_parameters.group_public_parameters(),
             )
@@ -202,10 +202,10 @@ where
                 })
                 .unwrap_or(Uint::<DISCRETE_LOG_LIMBS>::BITS);
 
-            base.scale_randomized_bounded_accelerated(
+            base.scale_randomized_public_base_bounded_by(
                 &discrete_log,
-                language_public_parameters.group_public_parameters(),
                 discrete_log_upper_bound_bits,
+                language_public_parameters.group_public_parameters(),
             )
         };
 

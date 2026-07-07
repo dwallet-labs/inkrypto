@@ -40,7 +40,7 @@ impl<
         const SCALAR_LIMBS: usize,
         const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
     >
     super::Party<
         SCALAR_LIMBS,
@@ -168,9 +168,10 @@ where
             encryption_of_decentralized_party_secret_key_share_proof,
             encryption_of_decentralized_party_secret_key_share:
                 encryption_of_decentralized_party_secret_key_share.value(),
-            centralized_party_public_key_share: public_output.public_key_share,
+            centralized_party_public_key_share: public_output.public_key_share.clone(),
             decentralized_party_public_key_share: public_output
-                .decentralized_party_public_key_share,
+                .decentralized_party_public_key_share
+                .clone(),
         };
 
         Ok((secret_key_share, public_output, message))
@@ -181,7 +182,7 @@ impl<
         const SCALAR_LIMBS: usize,
         const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
     > mpc::two_party::Round
     for super::Party<
         SCALAR_LIMBS,

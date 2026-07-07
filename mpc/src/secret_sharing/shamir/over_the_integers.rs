@@ -17,11 +17,11 @@ use serde::{Deserialize, Serialize};
 use group::helpers::{FlatMapResults, TryCollectHashMap};
 use group::{
     bounded_integers_group, bounded_natural_numbers_group, CsRng, GroupElement, KnownOrderScalar,
-    LinearlyCombinable, PartyID, Samplable, Scale, StatisticalSecuritySizedNumber,
+    PartyID, Samplable, StatisticalSecuritySizedNumber,
 };
 
 use crate::secret_sharing::shamir::Polynomial;
-use crate::{Error, Result};
+use crate::{Error, ErrorKind, Result};
 
 const NUM_CRYPTO_BIGINT_SIZES: usize = 29;
 pub const CRYPTO_BIGINT_SIZES: [usize; NUM_CRYPTO_BIGINT_SIZES] = [
@@ -236,7 +236,7 @@ impl<ScalarValue> PrecomputedValues<ScalarValue> {
         ScalarValue: From<Uint<SCALAR_LIMBS>>,
     {
         if u32::from(number_of_parties) > MAX_PLAYERS {
-            return Err(crate::Error::InvalidParameters);
+            return Err(crate::Error::from(crate::ErrorKind::InvalidParameters));
         }
 
         let binomial_coefficients = compute_binomial_coefficients(number_of_parties);
@@ -262,7 +262,7 @@ impl<ScalarValue> PrecomputedValues<ScalarValue> {
         let n_factorial_inverse = n_factorial
             .invert()
             .into_option()
-            .ok_or(Error::InternalError)?;
+            .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
 
         let n_factorial_cubed_inverse =
             (n_factorial_inverse * n_factorial_inverse * n_factorial_inverse).value();
@@ -370,6 +370,7 @@ pub fn generate_expected_decryption_share_base<GroupElement: group::GroupElement
     expected_decrypters: HashSet<PartyID>,
     party_id: PartyID,
     number_of_parties: PartyID,
+    public_parameters: &GroupElement::PublicParameters,
 ) -> GroupElement {
     let mut parties: HashSet<PartyID> = (1..=number_of_parties).collect();
     parties.remove(&party_id);
@@ -380,14 +381,14 @@ pub fn generate_expected_decryption_share_base<GroupElement: group::GroupElement
         .map(|&expected_non_decrypter_party_id| party_id.abs_diff(expected_non_decrypter_party_id))
         .fold(FactorialSizedNumber::ONE, |a, b| a * U64::from(b));
 
-    decryption_share_base.scale_vartime(&expected_decryptors_factor)
+    decryption_share_base.scale_vartime(&expected_decryptors_factor, public_parameters)
 }
 
 /// A helper function for threshold decryption schemes that work over hidden-order groups and thus use Shamir's secret sharing over the integers.
 /// Computes the decryption share and its base for every ciphertext: $(c^{n!}, c^{n!d_i})$
 pub fn generate_decryption_shares<
     const SECRET_KEY_SHARE_LIMBS: usize,
-    GroupElement: group::GroupElement + Send + Sync + Scale<Int<SECRET_KEY_SHARE_LIMBS>>,
+    GroupElement: group::GroupElement + Send + Sync,
 >(
     decryption_key_share: Int<SECRET_KEY_SHARE_LIMBS>,
     decryption_share_bases: Vec<GroupElement>,
@@ -422,7 +423,7 @@ pub fn generate_decryption_shares<
 /// Computes the decryption share and its base for every ciphertext: $(c^{n!}, c^{n!d_i})$
 pub fn generate_decryption_share<
     const SECRET_KEY_SHARE_LIMBS: usize,
-    GroupElement: group::GroupElement + Send + Sync + Scale<Int<SECRET_KEY_SHARE_LIMBS>>,
+    GroupElement: group::GroupElement + Send + Sync,
 >(
     decryption_key_share: Int<SECRET_KEY_SHARE_LIMBS>,
     decryption_share_base: &GroupElement,
@@ -434,18 +435,18 @@ pub fn generate_decryption_share<
     secret_key_bits: u32,
 ) -> (GroupElement, GroupElement) {
     let decryption_share_base = decryption_share_base
-        .scale_vartime(&n_factorial)
-        .scale_vartime(&binomial_coefficient);
+        .scale_vartime(&n_factorial, group_public_parameters)
+        .scale_vartime(&binomial_coefficient, group_public_parameters);
 
     // $ c_i = c^{n! \cdot {{n}\choose{j}} \cdot d_i} $
-    let decryption_share = decryption_share_base.scale_randomized_bounded_accelerated(
+    let decryption_share = decryption_share_base.scale_integer_randomized_public_base_bounded(
         &decryption_key_share,
-        group_public_parameters,
         secret_key_share_size_upper_bound(
             u32::from(number_of_parties),
             u32::from(threshold),
             secret_key_bits,
         ),
+        group_public_parameters,
     );
 
     (decryption_share_base, decryption_share)
@@ -459,7 +460,7 @@ pub fn generate_decryption_share<
 /// Thus always do the public operations first in vartime and then the operation using the key in constant time.
 pub fn generate_decryption_share_semi_honest<
     const SECRET_KEY_SHARE_LIMBS: usize,
-    GroupElement: group::GroupElement + Send + Sync + Scale<Int<SECRET_KEY_SHARE_LIMBS>>,
+    GroupElement: group::GroupElement + Send + Sync,
     DecryptionShare: Default + From<GroupElement>,
 >(
     decryption_key_share: Int<SECRET_KEY_SHARE_LIMBS>,
@@ -476,7 +477,7 @@ pub fn generate_decryption_share_semi_honest<
     if !binomial_coefficients.contains_key(&party_id) {
         // This is a public check, so no need for constant time logic here; just return a None.
         return CtOption::new(
-            DecryptionShare::from(*decryption_share_base),
+            DecryptionShare::from(decryption_share_base.clone()),
             Choice::from(0u8),
         );
     }
@@ -489,6 +490,7 @@ pub fn generate_decryption_share_semi_honest<
         expected_decrypters,
         party_id,
         number_of_parties,
+        group_public_parameters,
     );
 
     let (_, decryption_share) = generate_decryption_share(
@@ -515,6 +517,7 @@ pub fn interpolate_decryption_shares<GroupElement: group::GroupElement + Send + 
     number_of_parties: PartyID,
     n_factorial: FactorialSizedNumber,
     batch_size: usize,
+    public_parameters: &GroupElement::PublicParameters,
 ) -> Result<(bool, Vec<GroupElement>)> {
     // Filter out invalid decryption shares.
     let decryption_shares: HashMap<_, _> = decryption_shares
@@ -523,7 +526,7 @@ pub fn interpolate_decryption_shares<GroupElement: group::GroupElement + Send + 
         .collect();
 
     if decryption_shares.len() < usize::from(threshold) {
-        return Err(Error::InvalidParameters);
+        return Err(Error::from(ErrorKind::InvalidParameters));
     };
 
     let decrypters: HashSet<_> = decryption_shares.keys().copied().collect();
@@ -585,6 +588,7 @@ pub fn interpolate_decryption_shares<GroupElement: group::GroupElement + Send + 
         n_factorial,
         Some(expected_decrypters),
         true,
+        public_parameters,
     )
     .map(|combined_decryption_shares| (have_enough_expected_decrypters, combined_decryption_shares))
 }
@@ -605,6 +609,7 @@ pub fn identify_malicious_semi_honest_decrypters<
     binomial_coefficients: HashMap<PartyID, BinomialCoefficientSizedNumber>,
     n_factorial: FactorialSizedNumber,
     batch_size: usize,
+    public_parameters: &GroupElement::PublicParameters,
 ) -> Result<Vec<PartyID>> {
     let malicious_decrypters = invalid_semi_honest_decryption_shares
         .into_iter()
@@ -618,6 +623,7 @@ pub fn identify_malicious_semi_honest_decrypters<
                 number_of_parties,
                 n_factorial,
                 batch_size,
+                public_parameters,
             )?;
 
             Ok::<_, Error>((
@@ -641,7 +647,8 @@ pub fn identify_malicious_semi_honest_decrypters<
                         possibly_invalid_decryption_shares
                             .iter()
                             .map(|possibly_invalid_decryption_share| {
-                                possibly_invalid_decryption_share.scale_vartime(&n_factorial)
+                                possibly_invalid_decryption_share
+                                    .scale_vartime(&n_factorial, public_parameters)
                             })
                             .collect();
 
@@ -653,8 +660,9 @@ pub fn identify_malicious_semi_honest_decrypters<
                                 expected_decrypters.clone(),
                                 *virtual_party_id,
                                 number_of_parties,
+                                public_parameters,
                             )
-                            .scale_vartime(&binomial_coefficient)
+                            .scale_vartime(&binomial_coefficient, public_parameters)
                         })
                         .collect();
 
@@ -700,7 +708,7 @@ pub fn identify_malicious_semi_honest_decrypters<
 /// Note: for threshold decryption, this does not decrypt the ciphertext,
 /// as there is an extra scheme-dependent step of handling the combined decryption shares,
 /// which should be handled by the caller.
-fn interpolate_internal<GroupElement: group::GroupElement + Send + Sync + LinearlyCombinable>(
+fn interpolate_internal<GroupElement: group::GroupElement + Send + Sync>(
     shares: HashMap<PartyID, Vec<GroupElement>>,
     adjusted_lagrange_coefficients: HashMap<PartyID, AdjustedLagrangeCoefficientSizedNumber>,
     interpolated_point: PartyID,
@@ -709,11 +717,12 @@ fn interpolate_internal<GroupElement: group::GroupElement + Send + Sync + Linear
     expected_decrypters: Option<HashSet<PartyID>>, // $\bar{S}$
     is_expected_decryption_share: bool,
     is_vartime: bool,
+    public_parameters: &GroupElement::PublicParameters,
 ) -> Result<Vec<GroupElement>> {
     let batch_size = shares
         .iter()
         .next()
-        .ok_or(Error::InvalidParameters)?
+        .ok_or_else(|| Error::from(ErrorKind::InvalidParameters))?
         .1
         .len();
 
@@ -724,23 +733,23 @@ fn interpolate_internal<GroupElement: group::GroupElement + Send + Sync + Linear
         || shares.iter().any(|(_, shares)| shares.len() != batch_size)
         || shares.keys().copied().collect::<HashSet<_>>() != interpolation_subset
     {
-        return Err(Error::InvalidParameters);
+        return Err(Error::from(ErrorKind::InvalidParameters));
     }
 
     let neutral = shares
         .iter()
         .next()
-        .ok_or(Error::InvalidParameters)?
+        .ok_or_else(|| Error::from(ErrorKind::InvalidParameters))?
         .1
         .first()
-        .ok_or(Error::InternalError)?
+        .ok_or_else(|| Error::from(ErrorKind::InternalError))?
         .neutral();
 
     if interpolation_subset.contains(&interpolated_point) {
         return shares
             .get(&interpolated_point)
             .cloned()
-            .ok_or(Error::InternalError)
+            .ok_or_else(|| Error::from(ErrorKind::InternalError))
             .and_then(|shares| {
                 // This function interpolates shares over the integers.
                 // Since it is supports interpolation in the exponent, we must interpolate the share times $n!$:
@@ -759,7 +768,7 @@ fn interpolate_internal<GroupElement: group::GroupElement + Send + Sync + Linear
                             let mut expected_decrypters_with_zero: HashSet<PartyID> =
                                 expected_decrypters
                                     .clone()
-                                    .ok_or(Error::InvalidParameters)?;
+                                    .ok_or_else(|| Error::from(ErrorKind::InvalidParameters))?;
                             expected_decrypters_with_zero.insert(0);
                             let factor = expected_decrypters_with_zero
                                 .difference(&HashSet::from([interpolated_point]))
@@ -768,16 +777,16 @@ fn interpolate_internal<GroupElement: group::GroupElement + Send + Sync + Linear
                                 });
 
                             if is_vartime {
-                                Ok(share.scale_vartime(&factor))
+                                Ok(share.scale_vartime(&factor, public_parameters))
                             } else {
-                                Ok(share.scale_bounded(&factor, factor.bits_vartime()))
+                                Ok(share.scale_vartime_scalar(&factor, public_parameters))
                             }
                         } else {
                             // The share `s_i` given as input wasn't multiplied by any additional factor, so we simply multiply by `n!`.
                             if is_vartime {
-                                Ok(share.scale_vartime(&n_factorial))
+                                Ok(share.scale_vartime(&n_factorial, public_parameters))
                             } else {
-                                Ok(share.scale_bounded(&n_factorial, n_factorial.bits_vartime()))
+                                Ok(share.scale_vartime_scalar(&n_factorial, public_parameters))
                             }
                         }
                     })
@@ -857,13 +866,14 @@ fn interpolate_internal<GroupElement: group::GroupElement + Send + Sync + Linear
                                 Ok(coefficient)
                             } else {
                                 // This must never happen, if it does there's a bug.
-                                Err(Error::InternalError)
+                                Err(Error::from(ErrorKind::InternalError))
                             }
                         })
                         .map(|coefficient| {
-                            coefficient.map(|coefficient| (party_id, shares[i], coefficient))
+                            coefficient
+                                .map(|coefficient| (party_id, shares[i].clone(), coefficient))
                         })
-                        .unwrap_or(Err(Error::InvalidParameters))
+                        .unwrap_or(Err(Error::from(ErrorKind::InvalidParameters)))
                 })
                 .collect::<Result<_>>()?;
 
@@ -913,7 +923,7 @@ fn interpolate_internal<GroupElement: group::GroupElement + Send + Sync + Linear
                     ]
                     .map(|bases_and_exponents| {
                         if bases_and_exponents.is_empty() {
-                            Ok(neutral)
+                            Ok(neutral.clone())
                         } else {
                             // Safe to `unwrap`, checked it is non-empty.
                             let exponent_bits = bases_and_exponents
@@ -926,11 +936,13 @@ fn interpolate_internal<GroupElement: group::GroupElement + Send + Sync + Linear
                                 GroupElement::linearly_combine_bounded_vartime(
                                     bases_and_exponents,
                                     exponent_bits,
+                                    public_parameters,
                                 )
                             } else {
                                 GroupElement::linearly_combine_bounded(
                                     bases_and_exponents,
                                     exponent_bits,
+                                    public_parameters,
                                 )
                             }
                         }
@@ -940,9 +952,10 @@ fn interpolate_internal<GroupElement: group::GroupElement + Send + Sync + Linear
 
                     let c_prime = if is_vartime {
                         c_prime_part_not_needing_inversion
-                            .sub_vartime(&c_prime_part_needing_inversion)
+                            .sub_vartime(&c_prime_part_needing_inversion, public_parameters)
                     } else {
-                        c_prime_part_not_needing_inversion - c_prime_part_needing_inversion
+                        c_prime_part_not_needing_inversion
+                            .sub_constant_time(&c_prime_part_needing_inversion, public_parameters)
                     };
 
                     // $^{\Pi_{j \in S}(v - j)}$
@@ -957,12 +970,10 @@ fn interpolate_internal<GroupElement: group::GroupElement + Send + Sync + Linear
                         Ok(c_prime.scale_integer_bounded_vartime(
                             &shared_factor,
                             shared_factor.abs().bits_vartime(),
+                            public_parameters,
                         ))
                     } else {
-                        Ok(c_prime.scale_integer_bounded_vartime_scalar(
-                            &shared_factor,
-                            shared_factor.abs().bits_vartime(),
-                        ))
+                        Ok(c_prime.scale_integer_vartime_scalar(&shared_factor, public_parameters))
                     }
                 },
             )
@@ -975,9 +986,7 @@ fn interpolate_internal<GroupElement: group::GroupElement + Send + Sync + Linear
 /// Interpolate `shares` in `interpolated_point` in the exponent.
 /// This is a variable-time function that must only be used with public `shares` (e.g. commitments),
 /// thus the interpolation happens in the exponent.
-pub fn interpolate_in_the_exponent<
-    GroupElement: group::GroupElement + Send + Sync + LinearlyCombinable,
->(
+pub fn interpolate_in_the_exponent<GroupElement: group::GroupElement + Send + Sync>(
     shares: HashMap<PartyID, Vec<GroupElement>>,
     adjusted_lagrange_coefficients: HashMap<PartyID, AdjustedLagrangeCoefficientSizedNumber>,
     interpolated_point: PartyID,
@@ -985,6 +994,7 @@ pub fn interpolate_in_the_exponent<
     n_factorial: FactorialSizedNumber,
     expected_decrypters: Option<HashSet<PartyID>>, // $\bar{S}$
     is_expected_decryption_share: bool,
+    public_parameters: &GroupElement::PublicParameters,
 ) -> Result<Vec<GroupElement>> {
     interpolate_internal(
         shares,
@@ -995,19 +1005,19 @@ pub fn interpolate_in_the_exponent<
         expected_decrypters,
         is_expected_decryption_share,
         true,
+        public_parameters,
     )
 }
 
 /// Interpolate the secret `shares` in `interpolated_point`.
 /// This is a constant time function that must only be used with secret `shares` (e.g. Shamir secret shares).
-pub fn interpolate_secret_shares<
-    GroupElement: group::GroupElement + Send + Sync + LinearlyCombinable,
->(
+pub fn interpolate_secret_shares<GroupElement: group::GroupElement + Send + Sync>(
     shares: HashMap<PartyID, Vec<GroupElement>>,
     adjusted_lagrange_coefficients: HashMap<PartyID, AdjustedLagrangeCoefficientSizedNumber>,
     interpolated_point: PartyID,
     number_of_parties: PartyID,
     n_factorial: FactorialSizedNumber,
+    public_parameters: &GroupElement::PublicParameters,
 ) -> Result<Vec<GroupElement>> {
     interpolate_internal(
         shares,
@@ -1018,13 +1028,14 @@ pub fn interpolate_secret_shares<
         None,
         false,
         false,
+        public_parameters,
     )
 }
 
 /// A wrapper around `interpolate_in_the_exponent()` that takes a map of shares dealt to a set of parties,
 /// takes those that belong to a specific `party_id`, and interpolates it.
 pub fn interpolate_shares_of_party_in_the_exponent<
-    GroupElement: group::GroupElement + Send + Sync + LinearlyCombinable,
+    GroupElement: group::GroupElement + Send + Sync,
 >(
     party_id: PartyID,
     shares: HashMap<PartyID, HashMap<PartyID, GroupElement>>,
@@ -1034,13 +1045,14 @@ pub fn interpolate_shares_of_party_in_the_exponent<
     n_factorial: FactorialSizedNumber,
     expected_decrypters: Option<HashSet<PartyID>>, // $\bar{S}$
     is_expected_decryption_share: bool,
+    public_parameters: &GroupElement::PublicParameters,
 ) -> Result<GroupElement> {
     let shares: HashMap<_, _> = shares
         .into_iter()
         .flat_map(|(dealer_party_id, shares)| {
             shares
                 .get(&party_id)
-                .map(|commitment| (dealer_party_id, vec![*commitment]))
+                .map(|commitment| (dealer_party_id, vec![commitment.clone()]))
         })
         .collect();
 
@@ -1052,13 +1064,14 @@ pub fn interpolate_shares_of_party_in_the_exponent<
         n_factorial,
         expected_decrypters,
         is_expected_decryption_share,
+        public_parameters,
     )?;
 
     // We passed a single share per party to interpolation, so should get a single interpolated share.
     interpolated_shares
         .into_iter()
         .next()
-        .ok_or(Error::InternalError)
+        .ok_or_else(|| Error::from(ErrorKind::InternalError))
 }
 
 /// Compute the adjusted lagrange coefficient: $\Pi_{j\in \bar{S} \setminus S} |j'-j| $
@@ -1160,7 +1173,7 @@ pub fn compute_unexpected_adjusted_lagrange_coefficient(
 #[allow(clippy::type_complexity)]
 pub fn deal_shares<
     const SECRET_KEY_SHARE_LIMBS: usize,
-    GroupElement: group::GroupElement + Send + Sync + Scale<Int<SECRET_KEY_SHARE_LIMBS>>,
+    GroupElement: group::GroupElement + Send + Sync,
 >(
     threshold: PartyID,
     number_of_parties: PartyID,
@@ -1183,7 +1196,7 @@ where
     // this is a special case that we see no practical usefulness for at the moment, wherein the shares are all equal to the secret
     // so we rather just not support it until needed.
     if threshold == 1 {
-        return Err(Error::InvalidParameters);
+        return Err(Error::from(ErrorKind::InvalidParameters));
     }
 
     let upper_bound = secret_key_share_size_upper_bound(
@@ -1210,7 +1223,7 @@ where
     let biggest_coefficient_sample_bits = *coefficients_sample_bits
         .iter()
         .max()
-        .ok_or(Error::InternalError)?;
+        .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
     let integer_public_parameters = bounded_integers_group::PublicParameters::new(
         biggest_coefficient_sample_bits,
         upper_bound,
@@ -1238,7 +1251,9 @@ where
                 {
                     Ok(value)
                 } else {
-                    Err(group::Error::InvalidPublicParameters)
+                    Err(group::Error::from(
+                        group::ErrorKind::InvalidPublicParameters,
+                    ))
                 }
             }?;
 
@@ -1257,38 +1272,39 @@ where
         .map(|(k, coefficient)| {
             let sample_bits = *coefficients_sample_bits
                 .get(k)
-                .ok_or(Error::InternalError)?;
-            Ok(commitment_base.scale_randomized_bounded_accelerated(
-                &coefficient.value(),
-                group_public_parameters,
-                sample_bits,
-            ))
+                .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
+            Ok(
+                commitment_base.scale_integer_randomized_public_base_bounded(
+                    &coefficient.value(),
+                    sample_bits,
+                    group_public_parameters,
+                ),
+            )
         })
         .collect::<Result<Vec<_>>>()?;
 
     // For dealing the shares, set the first coefficient as the secret multiplied by `delta`.
     let mut coefficients_for_evaluation = coefficients_for_commitments.clone();
-    coefficients_for_evaluation[0] =
-        coefficients_for_evaluation[0].scale_bounded(&n_factorial, n_factorial.bits_vartime());
+    coefficients_for_evaluation[0] = coefficients_for_evaluation[0]
+        .scale_vartime_scalar(&n_factorial, &integer_public_parameters);
 
     let polynomial = Polynomial::try_from(coefficients_for_evaluation)?;
 
     #[cfg(feature = "parallel")]
     let parties_iter = (1..=number_of_parties).into_par_iter();
     #[cfg(not(feature = "parallel"))]
-    let parties_iter = (1..=number_of_parties).into_iter();
+    let parties_iter = 1..=number_of_parties;
 
+    let constant_time = true;
     let shares: HashMap<PartyID, _> = parties_iter
         .map(|j| {
-            let degree = bounded_integers_group::GroupElement::new(
-                Int::<SECRET_KEY_SHARE_LIMBS>::from(i32::from(j)),
-                &integer_public_parameters,
-            )?;
-
             // $[s]_{i}=f(i)$
             // Safe to convert to `uint`, as the result are guaranteed to be positive,
             // as we sample the coefficients to be positive, and they are significantly bigger than the secret (statistically hiding it).
-            let share = polynomial.evaluate(&degree).value().abs();
+            let share = polynomial
+                .evaluate_degree(j, constant_time, &integer_public_parameters)
+                .value()
+                .abs();
 
             Ok((j, share))
         })
@@ -1310,6 +1326,7 @@ pub fn commit_shares<
     commitment_base: GroupElement,
     secret_key_bits: u32,
     shares: HashMap<PartyID, Uint<SECRET_KEY_SHARE_LIMBS>>,
+    group_public_parameters: &GroupElement::PublicParameters,
 ) -> Result<HashMap<PartyID, GroupElement>> {
     #[cfg(feature = "parallel")]
     let shares_iter = shares.clone().into_par_iter();
@@ -1328,6 +1345,7 @@ pub fn commit_shares<
                         u32::from(threshold),
                         secret_key_bits,
                     ),
+                    group_public_parameters,
                 ),
             )
         })
@@ -1508,6 +1526,7 @@ mod tests {
                     0,
                     number_of_parties,
                     n_factorial,
+                    &public_parameters,
                 )
                 .unwrap()[0]
                     .value();
@@ -1525,6 +1544,7 @@ mod tests {
                             party_id,
                             number_of_parties,
                             n_factorial,
+                            &public_parameters,
                         )
                             .unwrap()[0]
                             .value();
@@ -1579,6 +1599,7 @@ mod tests {
                     0,
                     number_of_parties,
                     n_factorial,
+                    &public_parameters,
                 )
                 .unwrap()[0]
                     .value();
@@ -1596,6 +1617,7 @@ mod tests {
                             party_id,
                             number_of_parties,
                             n_factorial,
+                            &public_parameters,
                         )
                             .unwrap()[0]
                             .value();
@@ -1655,7 +1677,7 @@ pub mod test_helpers {
     /// DKG.
     pub fn deal_trusted_shares<
         const SECRET_KEY_SHARE_LIMBS: usize,
-        GroupElement: group::GroupElement + Send + Sync + Scale<Int<SECRET_KEY_SHARE_LIMBS>>,
+        GroupElement: group::GroupElement + Send + Sync,
     >(
         threshold: PartyID,
         number_of_parties: PartyID,
@@ -1682,7 +1704,7 @@ pub mod test_helpers {
             number_of_parties,
             n_factorial,
             secret_key,
-            public_verification_key_base,
+            public_verification_key_base.clone(),
             group_public_parameters,
             secret_key_bits,
             &mut OsCsRng,
@@ -1692,9 +1714,10 @@ pub mod test_helpers {
         let public_verification_keys = commit_shares(
             threshold,
             number_of_parties,
-            public_verification_key_base,
+            public_verification_key_base.clone(),
             secret_key_bits,
             decryption_key_shares.clone(),
+            group_public_parameters,
         )
         .unwrap();
 

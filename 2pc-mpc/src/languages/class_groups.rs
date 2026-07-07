@@ -30,7 +30,7 @@ use maurer::{
 use maurer::{extended_encryption_of_tuple, SOUND_PROOFS_REPETITIONS};
 
 use crate::languages::DIMENSION;
-use crate::{Error, ProtocolContext, Result};
+use crate::{Error, ErrorKind, ProtocolContext, Result};
 
 /// The Public Parameters of the Committed Linear Evaluation
 /// Language $L_{\textsf{DComEval}}$.
@@ -432,7 +432,7 @@ pub fn construct_committed_linear_evaluation_public_parameters<
     const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
     const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
     const MESSAGE_LIMBS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
 >(
     first_ciphertext: homomorphic_encryption::CiphertextSpaceValue<
         SCALAR_LIMBS,
@@ -533,7 +533,7 @@ where
     let scalar_group_order = <GroupElement::Scalar as KnownOrderGroupElement<SCALAR_LIMBS>>::order_from_public_parameters(&scalar_group_public_parameters);
 
     if plaintext_space_order != scalar_group_order {
-        Err(Error::InvalidPublicParameters)?;
+        Err(Error::from(ErrorKind::InvalidPublicParameters))?;
     }
 
     let coefficient_sample_bits = if rerandomize_coefficients {
@@ -549,7 +549,7 @@ where
     if coefficient_sample_bits >= Uint::<MESSAGE_LIMBS>::BITS
         || FUNDAMENTAL_DISCRIMINANT_LIMBS >= MESSAGE_LIMBS
     {
-        return Err(Error::InvalidParameters);
+        return Err(Error::from(ErrorKind::InvalidParameters));
     }
 
     // In class-groups, messages are always bound by the curve order.
@@ -593,13 +593,13 @@ where
 /// are untrusted, i.e. we did not verify (in ZK) the validity of their construction.
 /// In that case, we re-randomize the coefficients by adding a randomized multiple of the plaintext space order.
 /// This keeps the value of the coefficient modulo the plaintext order (i.e. the plaintext) the same,
-/// but does re-randomize the multiplicative mask, even if chosen adversarialy (See section F).
+/// but does re-randomize the multiplicative mask, even if chosen adversarially (See section F).
 pub fn prove_committed_linear_evaluation<
     const SCALAR_LIMBS: usize,
     const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
     const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
     const MESSAGE_LIMBS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
 >(
     first_ciphertext: homomorphic_encryption::CiphertextSpaceValue<
         SCALAR_LIMBS,
@@ -747,7 +747,7 @@ where
             let coefficient: Uint<MESSAGE_LIMBS> = if rerandomize_coefficients {
                 // Re-randomize the coefficients by adding a randomized multiple of the plaintext space order.
                 // This keeps the value of the coefficient modulo the plaintext order (i.e. the plaintext) the same,
-                // but does re-randomize the multiplicative mask, even if chosen adversarialy (See section F).
+                // but does re-randomize the multiplicative mask, even if chosen adversarially (See section F).
                 let randomizer = Uint::<MESSAGE_LIMBS>::from(
                     &RandomnessSpaceGroupElement::<FUNDAMENTAL_DISCRIMINANT_LIMBS>::sample(
                         encryption_scheme_public_parameters.randomness_space_public_parameters(),
@@ -790,7 +790,9 @@ where
         rng,
     )?;
 
-    let statement = statement.first().ok_or(crate::Error::InternalError)?;
+    let statement = statement
+        .first()
+        .ok_or_else(|| crate::Error::from(crate::ErrorKind::InternalError))?;
     let evaluated_ciphertext = *statement.evaluated_ciphertext(); // = ct_A
 
     Ok((proof, evaluated_ciphertext))
@@ -805,7 +807,7 @@ pub fn verify_committed_linear_evaluation<
     const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
     const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
     const MESSAGE_LIMBS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
 >(
     first_ciphertext: homomorphic_encryption::CiphertextSpaceValue<
         SCALAR_LIMBS,
@@ -952,7 +954,7 @@ pub fn construct_encryption_of_discrete_log_public_parameters<
     const SCALAR_LIMBS: usize,
     const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
     const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
 >(
     scalar_group_public_parameters: group::PublicParameters<GroupElement::Scalar>,
     group_public_parameters: GroupElement::PublicParameters,
@@ -1051,7 +1053,7 @@ pub fn prove_encryption_of_discrete_log<
     const SCALAR_LIMBS: usize,
     const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
     const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
     PC: Clone + Serialize + Debug + PartialEq + Eq + Send + Sync,
 >(
     scalar_group_public_parameters: group::PublicParameters<GroupElement::Scalar>,
@@ -1153,8 +1155,10 @@ where
         rng,
     )?;
 
-    let (&encryption_of_discrete_log, _) =
-        statement.first().ok_or(crate::Error::InternalError)?.into();
+    let (&encryption_of_discrete_log, _) = statement
+        .first()
+        .ok_or_else(|| crate::Error::from(crate::ErrorKind::InternalError))?
+        .into();
 
     Ok((proof, encryption_of_discrete_log))
 }
@@ -1164,7 +1168,7 @@ pub fn verify_encryption_of_discrete_log<
     const SCALAR_LIMBS: usize,
     const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
     const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
     PC: Clone + Serialize + Debug + PartialEq + Eq + Send + Sync,
 >(
     scalar_group_public_parameters: group::PublicParameters<GroupElement::Scalar>,
@@ -1266,7 +1270,7 @@ pub fn construct_scaling_of_discrete_log_public_parameters<
     const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
     const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
     const MESSAGE_LIMBS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
 >(
     ciphertext: homomorphic_encryption::CiphertextSpaceValue<
         SCALAR_LIMBS,
@@ -1352,7 +1356,7 @@ where
     let scalar_group_order = <GroupElement::Scalar as KnownOrderGroupElement<SCALAR_LIMBS>>::order_from_public_parameters(&scalar_group_public_parameters);
 
     if plaintext_space_order != scalar_group_order {
-        Err(Error::InvalidPublicParameters)?;
+        Err(Error::from(ErrorKind::InvalidPublicParameters))?;
     }
 
     let upper_bound = scalar_group_order.wrapping_sub(&Uint::ONE);
@@ -1392,7 +1396,7 @@ pub fn construct_encryption_of_tuple_public_parameters<
     const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
     const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
     const MESSAGE_LIMBS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
 >(
     ciphertext: homomorphic_encryption::CiphertextSpaceValue<
         SCALAR_LIMBS,
@@ -1477,7 +1481,7 @@ where
     let scalar_group_order = <GroupElement::Scalar as KnownOrderGroupElement<SCALAR_LIMBS>>::order_from_public_parameters(&scalar_group_public_parameters);
 
     if plaintext_space_order != scalar_group_order {
-        Err(Error::InvalidPublicParameters)?;
+        Err(Error::from(ErrorKind::InvalidPublicParameters))?;
     }
 
     let upper_bound = scalar_group_order.wrapping_sub(&Uint::ONE);
@@ -1517,7 +1521,7 @@ pub fn construct_extended_encryption_of_tuple_public_parameters<
     const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
     const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
     const MESSAGE_LIMBS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
 >(
     ciphertexts: [homomorphic_encryption::CiphertextSpaceValue<
         SCALAR_LIMBS,
@@ -1603,7 +1607,7 @@ where
     let scalar_group_order = <GroupElement::Scalar as KnownOrderGroupElement<SCALAR_LIMBS>>::order_from_public_parameters(&scalar_group_public_parameters);
 
     if plaintext_space_order != scalar_group_order {
-        Err(Error::InvalidPublicParameters)?;
+        Err(Error::from(ErrorKind::InvalidPublicParameters))?;
     }
 
     let upper_bound = scalar_group_order.wrapping_sub(&Uint::ONE);

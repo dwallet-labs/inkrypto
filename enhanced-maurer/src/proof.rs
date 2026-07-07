@@ -10,6 +10,13 @@ use crypto_bigint::{NonZero, RandomMod, Uint};
 use merlin::Transcript;
 use serde::{Deserialize, Serialize};
 
+use crate::{
+    language::{
+        EnhancedLanguageStatementAccessors, EnhancedLanguageWitnessAccessors,
+        EnhancedPublicParameters, StatementSpaceGroupElement, WitnessSpaceGroupElement,
+    },
+    EnhanceableLanguage, EnhancedLanguage, Error, ErrorKind, Result,
+};
 use commitment::GroupsPublicParametersAccessors as _;
 use group::{
     helpers::FlatMapResults, CsRng, GroupElement, Samplable, StatisticalSecuritySizedNumber,
@@ -22,14 +29,7 @@ use proof::{
     },
     TranscriptProtocol,
 };
-
-use crate::{
-    language::{
-        EnhancedLanguageStatementAccessors, EnhancedLanguageWitnessAccessors,
-        EnhancedPublicParameters, StatementSpaceGroupElement, WitnessSpaceGroupElement,
-    },
-    EnhanceableLanguage, EnhancedLanguage, Error, Result,
-};
+use proof_aggregation::AggregateableProof;
 
 /// An Enhanced Batched Maurer Zero-Knowledge Proof.
 /// Implements Section 4. Enhanced Batch Schnorr Protocols in the paper.
@@ -147,7 +147,7 @@ impl<
             .map(|witness| {
                 (
                     *witness.range_proof_commitment_message(),
-                    *witness.range_proof_commitment_randomness(),
+                    witness.range_proof_commitment_randomness().clone(),
                 )
             })
             .unzip();
@@ -259,7 +259,7 @@ impl<
         let commitments: Vec<_> = statements
             .clone()
             .into_iter()
-            .map(|statement| *statement.range_proof_commitment())
+            .map(|statement| statement.range_proof_commitment().clone())
             .collect();
 
         // Range check:
@@ -280,15 +280,21 @@ impl<
             COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
         >(true, RangeProof::RANGE_CLAIM_BITS)?;
 
-        if !self.maurer_proof.responses.into_iter().all(|response| {
-            let (commitment_message, ..): (_, _) = response.into();
-            let (commitment_message, _) = commitment_message.into();
+        if !self
+            .maurer_proof
+            .responses
+            .clone()
+            .into_iter()
+            .all(|response| {
+                let (commitment_message, ..): (_, _) = response.into();
+                let (commitment_message, _) = commitment_message.into();
 
-            <[_; NUM_RANGE_CLAIMS]>::from(commitment_message)
-                .into_iter()
-                .all(|range_claim| range_claim.into() < bound)
-        }) {
-            return Err(Error::OutOfRange);
+                <[_; NUM_RANGE_CLAIMS]>::from(commitment_message)
+                    .into_iter()
+                    .all(|range_claim| range_claim.into() < bound)
+            })
+        {
+            return Err(Error::from(ErrorKind::OutOfRange));
         }
 
         Ok(self.range_proof.verify(
@@ -372,10 +378,10 @@ impl<
         let sampling_bit_size: u32 = RangeProof::RANGE_CLAIM_BITS
             .checked_add(challenge_bits)
             .and_then(|bits| bits.checked_add(StatisticalSecuritySizedNumber::BITS))
-            .ok_or(Error::InvalidPublicParameters)?;
+            .ok_or_else(|| Error::from(ErrorKind::InvalidPublicParameters))?;
 
         if Uint::<COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS>::BITS <= sampling_bit_size {
-            return Err(Error::InvalidPublicParameters);
+            return Err(Error::from(ErrorKind::InvalidPublicParameters));
         }
 
         let sampling_range_upper_bound = NonZero::new(
@@ -434,8 +440,8 @@ impl<
 
         let randomizers: [_; REPETITIONS] = commitment_messages
             .into_iter()
-            .zip(commitment_randomnesses.into_iter())
-            .zip(unbounded_witnesses.into_iter())
+            .zip(commitment_randomnesses)
+            .zip(unbounded_witnesses)
             .map(
                 |((commitment_message, commitment_randomness), unbounded_witness)| {
                     (commitment_message, commitment_randomness, unbounded_witness).into()
@@ -443,11 +449,12 @@ impl<
             )
             .collect::<Vec<_>>()
             .try_into()
-            .map_err(|_| Error::InternalError)?;
+            .map_err(|_| Error::from(ErrorKind::InternalError))?;
 
         let is_randomizer = true;
         let is_verify = false;
         let statement_masks = randomizers
+            .clone()
             .map(|randomizer| {
                 EnhancedLanguage::<
                     REPETITIONS,
@@ -495,15 +502,7 @@ impl<
 {
     type Error = Error;
     type ProtocolContext = ProtocolContext;
-    type ProofWithAggregationProtocolContext = Proof<
-        REPETITIONS,
-        NUM_RANGE_CLAIMS,
-        COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
-        RangeProof,
-        UnboundedWitnessSpaceGroupElement,
-        Language,
-        proof::aggregation::ProtocolContext<ProtocolContext>,
-    >;
+
     type PublicParameters = EnhancedPublicParameters<
         REPETITIONS,
         NUM_RANGE_CLAIMS,
@@ -573,6 +572,41 @@ impl<
 
         Language::StatementSpaceGroupElement::batch_normalize(maurer_statements)
     }
+}
+
+impl<
+        const REPETITIONS: usize,
+        const NUM_RANGE_CLAIMS: usize,
+        const COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS: usize,
+        RangeProof: proof::RangeProof<COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS>,
+        UnboundedWitnessSpaceGroupElement: group::GroupElement + Samplable,
+        Language: EnhanceableLanguage<
+            REPETITIONS,
+            NUM_RANGE_CLAIMS,
+            COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
+            UnboundedWitnessSpaceGroupElement,
+        >,
+        ProtocolContext: Clone + Serialize + Debug + PartialEq + Eq + Send + Sync,
+    > AggregateableProof
+    for Proof<
+        REPETITIONS,
+        NUM_RANGE_CLAIMS,
+        COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
+        RangeProof,
+        UnboundedWitnessSpaceGroupElement,
+        Language,
+        ProtocolContext,
+    >
+{
+    type ProofWithAggregationProtocolContext = Proof<
+        REPETITIONS,
+        NUM_RANGE_CLAIMS,
+        COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
+        RangeProof,
+        UnboundedWitnessSpaceGroupElement,
+        Language,
+        proof_aggregation::ProtocolContext<ProtocolContext>,
+    >;
 }
 
 #[cfg(test)]
@@ -717,7 +751,7 @@ pub(crate) mod tests {
                 )
                 .unwrap();
 
-                let public_input = proof::aggregation::asynchronous::PublicInput {
+                let public_input = proof_aggregation::asynchronous::PublicInput {
                     protocol_context: session_id,
                     public_parameters: enhanced_language_public_parameters.clone(),
                     batch_size: witnesses.len(),
@@ -728,7 +762,7 @@ pub(crate) mod tests {
             .unzip();
 
         mpc::test_helpers::asynchronous_session_terminates_successfully::<
-            proof::aggregation::asynchronous::Party<
+            proof_aggregation::asynchronous::Party<
                 Proof<
                     REPETITIONS,
                     NUM_RANGE_CLAIMS,
@@ -820,7 +854,13 @@ pub(crate) mod tests {
         assert!(
             matches!(
                 res.err().unwrap(),
-                Error::Proof(proof::Error::InvalidParameters)
+                Error {
+                    kind: ErrorKind::Proof(proof::Error {
+                        kind: proof::ErrorKind::InvalidParameters,
+                        ..
+                    }),
+                    ..
+                }
             ),
             "shouldn't be able to verify proofs on out of range witnesses"
         );
@@ -944,7 +984,13 @@ pub(crate) mod tests {
                     )
                     .err()
                     .unwrap(),
-                Error::Proof(proof::Error::OutOfRange)
+                Error {
+                    kind: ErrorKind::Proof(proof::Error {
+                        kind: proof::ErrorKind::OutOfRange,
+                        ..
+                    }),
+                    ..
+                }
             ),
             "enhanced proof with out of range range proof must fail verification",
         );
@@ -1122,7 +1168,13 @@ pub(crate) mod tests {
                     )
                     .err()
                     .unwrap(),
-                Error::Proof(proof::Error::OutOfRange)
+                Error {
+                    kind: ErrorKind::Proof(proof::Error {
+                        kind: proof::ErrorKind::OutOfRange,
+                        ..
+                    }),
+                    ..
+                }
             ),
             "enhanced proof with out of range range proof must fail verification",
         );

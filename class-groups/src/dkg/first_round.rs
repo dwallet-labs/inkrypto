@@ -22,17 +22,18 @@ use crate::dkg::{
 };
 use crate::equivalence_class::EquivalenceClassOps;
 use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
+    DealSecretMessage, DealtSecretShare,
+};
+use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
     SecretKeyShareCRTPrimeSetupParameters, CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, MAX_PRIMES,
     NUM_SECRET_SHARE_PRIMES,
 };
-use crate::publicly_verifiable_secret_sharing::{
-    BaseProtocolContext, DealSecretMessage, DealtSecretShare,
-};
+use crate::publicly_verifiable_secret_sharing::BaseProtocolContext;
 use crate::setup::DeriveFromPlaintextPublicParameters;
 use crate::setup::SetupParameters;
 use crate::{
     equivalence_class, publicly_verifiable_secret_sharing, CompactIbqf, EquivalenceClass, Error,
-    Result, SECRET_KEY_SHARE_LIMBS, SECRET_KEY_SHARE_WITNESS_LIMBS,
+    ErrorKind, Result, SECRET_KEY_SHARE_LIMBS, SECRET_KEY_SHARE_WITNESS_LIMBS,
 };
 
 impl<
@@ -91,7 +92,7 @@ where
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             group::PublicParameters<GroupElement::Scalar>,
         >,
-        pvss_party: &publicly_verifiable_secret_sharing::Party<
+        pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
@@ -139,7 +140,7 @@ where
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             group::PublicParameters<GroupElement::Scalar>,
         >,
-        pvss_party: &publicly_verifiable_secret_sharing::Party<
+        pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
@@ -233,7 +234,7 @@ where
         tangible_party_id: PartyID,
         access_structure: &WeightedThresholdAccessStructure,
         setup_parameters_per_crt_prime: &[SecretKeyShareCRTPrimeSetupParameters; MAX_PRIMES],
-        pvss_party: &publicly_verifiable_secret_sharing::Party<
+        pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
@@ -307,7 +308,7 @@ where
                         HashMap::from([(None, deal_secret_message)]),
                         share_threshold_encryption_key_message,
                     )),
-                    _ => Err(Error::InvalidParameters),
+                    _ => Err(Error::from(ErrorKind::InvalidParameters)),
                 };
 
                 (dealer_party_id, res)
