@@ -64,17 +64,5 @@ benchmarking = ["test_helpers"]
 # in production.
 unsafe_mock = ["mpc/unsafe_mock", "class_groups/unsafe_mock"]
 
-[[test]]
-name = "halborn_dkg"
-required-features = ["test_helpers"]
-
-[[test]]
-name = "halborn_presign"
-required-features = ["test_helpers"]
-
-[[test]]
-name = "halborn_sign"
-required-features = ["test_helpers"]
-
 [lints]
 workspace = true

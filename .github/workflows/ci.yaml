@@ -90,7 +90,17 @@ jobs:
       - name: Use Rust Cache
         uses: Swatinem/rust-cache@v2
       - name: Run Tests
-        run: cargo test --all-features --workspace --release
+        # The three crates carrying the INSECURE `unsafe_mock` feature — twopc_mpc,
+        # class_groups, mpc — are tested WITHOUT it and are excluded from the
+        # `--all-features` run: `--all-features` would activate `unsafe_mock` (which
+        # short-circuits proof verification and swaps in deterministic keygen/protocol
+        # mocks), so the suite would exercise the mocks instead of the real crypto and
+        # lose all real coverage. Each is tested separately with its real feature set.
+        run: |
+          cargo test --all-features --workspace --exclude twopc_mpc --exclude class_groups --exclude mpc --release
+          cargo test -p twopc_mpc --features benchmarking,parallel --release
+          cargo test -p class_groups --features benchmarking,randomized_decryption --release
+          cargo test -p mpc --features test_helpers,parallel --release
 
   clippy:
     name: Clippy
