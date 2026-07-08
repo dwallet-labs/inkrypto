@@ -5,6 +5,8 @@
 # Covers JetBrains IDEs: IntelliJ, RubyMine, PhpStorm, AppCode, PyCharm, CLion, Android Studio, WebStorm and Rider
 # Reference: https://intellij-support.jetbrains.com/hc/en-us/articles/206544839
 
+docs/
+
 # User-specific stuff
 .idea/**/workspace.xml
 .idea/**/tasks.xml
@@ -289,4 +291,12 @@ Cargo.lock
 .history
 .ionide
 
+# macOS
+.DS_Store
+
 # End of https://www.toptal.com/developers/gitignore/api/rust,intellij+all,intellij+iml,jetbrains+all,jetbrains+iml,visualstudiocode
+.claude/settings.local.json
+
+bench_2pc_mpc_dkg.txt
+bench_2pc_mpc_presign.txt
+bench_2pc_mpc_sign.txt

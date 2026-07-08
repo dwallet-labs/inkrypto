@@ -27,6 +27,8 @@ thiserror = { workspace = true }
 itertools = { workspace = true }
 rayon = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true  }
+# Only pulled in by `unsafe_mock`, to deserialize the embedded mock-keygen fixtures.
+bcs = { workspace = true, optional = true }
 
 [dev-dependencies]
 group = { path = "../group", features = ["os_rng"] }
@@ -44,6 +46,9 @@ rayon = { workspace = true }
 default = ["randomized_decryption"]
 
 randomized_decryption = []
+# INSECURE test-only: short-circuit knowledge-of-decryption-key UC-proof verification,
+# and return instant keygen from embedded neutral-key fixtures (`dep:bcs` to decode them).
+unsafe_mock = ["dep:bcs"]
 threshold = ["dep:maurer"]
 
 parallel = ["dep:rayon", "mpc/parallel", "proof/parallel", "maurer/parallel"]
@@ -53,3 +58,6 @@ benchmarking = ["test_helpers", "mpc/parallel", "threshold", "dep:rayon"]
 [[bench]]
 name = "benches"
 harness = false
+
+[lints]
+workspace = true

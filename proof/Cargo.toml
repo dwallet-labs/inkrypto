@@ -10,7 +10,6 @@ merlin = { workspace = true, default-features = false }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, default-features = false, features = ["alloc"] }
 group = { path = "../group" }
-mpc = { path = "../mpc" }
 commitment = { path = "../commitment" }
 thiserror = { workspace = true }
 itertools = { workspace = true }
@@ -23,11 +22,13 @@ rand = { workspace = true, default-features = false, features = ["alloc"], optio
 rstest = { workspace = true, optional = true }
 
 [dev-dependencies]
-mpc = { path = "../mpc", features = ["test_helpers"] }
 group = { path = "../group", features = ["os_rng"] }
 bulletproofs = { workspace = true, features = ["cloneable"] }
 
 [features]
 bulletproofs = ["dep:bulletproofs"]
 test_helpers = ["dep:criterion", "group/os_rng", "dep:rstest", "dep:rand", "bulletproofs/cloneable"]
-parallel = ["dep:rayon", "mpc/parallel"]
+parallel = ["dep:rayon"]
+
+[lints]
+workspace = true

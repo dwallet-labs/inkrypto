@@ -10,10 +10,7 @@ use serde::{de::Error, Deserialize, Deserializer, Serialize, Serializer};
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 
 use group::linear_combination::linearly_combine_bounded_or_scale;
-use group::{
-    BoundedGroupElement, CsRng, GroupElement as _, LinearlyCombinable, Samplable, Scale,
-    Transcribeable,
-};
+use group::{BoundedGroupElement, CsRng, GroupElement as _, Samplable, Transcribeable};
 
 /// An element of the [Multiplicative group of integers modulo N](https://en.wikipedia.org/wiki/Multiplicative_group_of_integers_modulo_n)
 /// where `N = PQ` $\mathbb{Z}_N^*$ for the randomness space of the Paillier cryptosystem
@@ -40,7 +37,10 @@ where
             let value = Value::new(Uint::<LIMBS>::random_mod(rng, &modulus), public_parameters)?;
 
             match Self::new(value, public_parameters) {
-                Err(group::Error::InvalidGroupElement) => {
+                Err(group::Error {
+                    kind: group::ErrorKind::InvalidGroupElement,
+                    ..
+                }) => {
                     continue;
                 }
                 Ok(sampled_element) => {
@@ -169,31 +169,13 @@ where
         #[allow(deprecated)]
         let modulus = Odd::new(modulus);
         if modulus.is_none().into() {
-            return Err(group::Error::UnsupportedPublicParameters);
+            return Err(group::Error::from(
+                group::ErrorKind::UnsupportedPublicParameters,
+            ));
         }
         let params = MontyParams::<LIMBS>::new(modulus.unwrap());
 
         Ok(Self { params })
-    }
-}
-
-impl<const LIMBS: usize, const WIDE_LIMBS: usize> LinearlyCombinable for GroupElement<LIMBS>
-where
-    Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
-    Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-{
-    fn linearly_combine_bounded<const RHS_LIMBS: usize>(
-        bases_and_multiplicands: Vec<(Self, Uint<RHS_LIMBS>)>,
-        exponent_bits: u32,
-    ) -> group::Result<Self> {
-        linearly_combine_bounded_or_scale(bases_and_multiplicands, exponent_bits, true)
-    }
-
-    fn linearly_combine_bounded_vartime<const RHS_LIMBS: usize>(
-        bases_and_multiplicands: Vec<(Self, Uint<RHS_LIMBS>)>,
-        exponent_bits: u32,
-    ) -> group::Result<Self> {
-        linearly_combine_bounded_or_scale(bases_and_multiplicands, exponent_bits, false)
     }
 }
 
@@ -224,7 +206,7 @@ where
         // bypassing of the proof).
 
         if element.square() == MontyForm::<LIMBS>::zero(public_parameters.params) {
-            Err(group::Error::InvalidGroupElement)
+            Err(group::Error::from(group::ErrorKind::InvalidGroupElement))
         } else {
             Ok(Self(element))
         }
@@ -232,26 +214,6 @@ where
 
     fn neutral(&self) -> Self {
         GroupElement(MontyForm::<LIMBS>::one(*self.0.params()))
-    }
-
-    fn scale<const RHS_LIMBS: usize>(&self, scalar: &Uint<RHS_LIMBS>) -> Self {
-        // This is inefficient, but in a hidden-order group, we can't do better than this as we
-        // can't take the scalar modulus the order.
-        Self(self.0.pow(scalar))
-    }
-
-    fn scale_bounded<const SCALAR_LIMBS: usize>(
-        &self,
-        scalar: &Uint<SCALAR_LIMBS>,
-        scalar_bits: u32,
-    ) -> Self {
-        // This is inefficient, but in a hidden-order group, we can't do better than this as we
-        // can't take the scalar modulus the order.
-        Self(self.0.pow_bounded_exp(scalar, scalar_bits))
-    }
-
-    fn double(&self) -> Self {
-        Self(self.0.square())
     }
 
     fn neutral_from_public_parameters(
@@ -262,32 +224,262 @@ where
         )))
     }
 
+    fn add_constant_time(&self, other: &Self, _public_parameters: &Self::PublicParameters) -> Self {
+        *self + other
+    }
+
+    fn sub_constant_time(&self, other: &Self, _public_parameters: &Self::PublicParameters) -> Self {
+        *self - other
+    }
+
+    fn neg_constant_time(&self, _public_parameters: &Self::PublicParameters) -> Self {
+        -*self
+    }
+
+    fn scale<const RHS_LIMBS: usize>(
+        &self,
+        scalar: &Uint<RHS_LIMBS>,
+        _public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        // This is inefficient, but in a hidden-order group, we can't do better than this as we
+        // can't take the scalar modulus the order.
+        Self(self.0.pow(scalar))
+    }
+
+    fn scale_bounded<const SCALAR_LIMBS: usize>(
+        &self,
+        scalar: &Uint<SCALAR_LIMBS>,
+        scalar_bits: u32,
+        _public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(self.0.pow_bounded_exp(scalar, scalar_bits))
+    }
+
     fn scale_bounded_vartime<const SCALAR_LIMBS: usize>(
         &self,
         scalar: &Uint<SCALAR_LIMBS>,
         scalar_bits: u32,
+        _public_parameters: &Self::PublicParameters,
     ) -> Self {
-        self.scale_bounded(scalar, scalar_bits)
+        Self(self.0.pow_bounded_exp(scalar, scalar_bits))
     }
 
-    fn add_vartime(self, other: &Self) -> Self {
-        self + other
+    fn scale_integer_bounded<const SCALAR_LIMBS: usize>(
+        &self,
+        integer: &Int<SCALAR_LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        group::scale_integer_bounded(self, integer, scalar_bits, public_parameters)
     }
 
-    fn double_vartime(&self) -> Self {
-        self.double()
+    fn scale_integer<const SCALAR_LIMBS: usize>(
+        &self,
+        integer: &Int<SCALAR_LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_integer_bounded(integer, Uint::<SCALAR_LIMBS>::BITS, public_parameters)
     }
 
-    fn add_randomized(self, other: &Self) -> Self {
-        self + other
+    fn scale_vartime<const SCALAR_LIMBS: usize>(
+        &self,
+        scalar: &Uint<SCALAR_LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_bounded_vartime(scalar, scalar.bits_vartime(), public_parameters)
     }
 
-    fn sub_randomized(self, other: &Self) -> Self {
-        self - other
+    fn scale_integer_vartime<const SCALAR_LIMBS: usize>(
+        &self,
+        scalar: &Int<SCALAR_LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_integer_bounded_vartime(scalar, scalar.abs().bits_vartime(), public_parameters)
     }
 
-    fn sub_vartime(self, other: &Self) -> Self {
-        self - other
+    fn scale_vartime_scalar<const SCALAR_LIMBS: usize>(
+        &self,
+        scalar: &Uint<SCALAR_LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_bounded(scalar, scalar.bits_vartime(), public_parameters)
+    }
+
+    fn scale_public_base<const SCALAR_LIMBS: usize>(
+        &self,
+        scalar: &Uint<SCALAR_LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_bounded(scalar, Uint::<SCALAR_LIMBS>::BITS, public_parameters)
+    }
+
+    fn scale_public_base_bounded<const SCALAR_LIMBS: usize>(
+        &self,
+        scalar: &Uint<SCALAR_LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_bounded(scalar, scalar_bits, public_parameters)
+    }
+
+    fn scale_integer_public_base<const SCALAR_LIMBS: usize>(
+        &self,
+        integer: &Int<SCALAR_LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_integer_public_base_bounded(
+            integer,
+            Uint::<SCALAR_LIMBS>::BITS,
+            public_parameters,
+        )
+    }
+
+    fn scale_integer_public_base_bounded<const SCALAR_LIMBS: usize>(
+        &self,
+        integer: &Int<SCALAR_LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        group::scale_integer_public_base_bounded(self, integer, scalar_bits, public_parameters)
+    }
+
+    fn scale_randomized<const SCALAR_LIMBS: usize>(
+        &self,
+        scalar: &Uint<SCALAR_LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_bounded(scalar, Uint::<SCALAR_LIMBS>::BITS, public_parameters)
+    }
+
+    fn scale_randomized_bounded<const SCALAR_LIMBS: usize>(
+        &self,
+        scalar: &Uint<SCALAR_LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_bounded(scalar, scalar_bits, public_parameters)
+    }
+
+    fn scale_randomized_public_base<const SCALAR_LIMBS: usize>(
+        &self,
+        scalar: &Uint<SCALAR_LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_bounded(scalar, Uint::<SCALAR_LIMBS>::BITS, public_parameters)
+    }
+
+    fn scale_randomized_public_base_bounded<const SCALAR_LIMBS: usize>(
+        &self,
+        scalar: &Uint<SCALAR_LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_bounded(scalar, scalar_bits, public_parameters)
+    }
+
+    fn scale_integer_randomized<const SCALAR_LIMBS: usize>(
+        &self,
+        integer: &Int<SCALAR_LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_integer_randomized_bounded(
+            integer,
+            Uint::<SCALAR_LIMBS>::BITS,
+            public_parameters,
+        )
+    }
+
+    fn scale_integer_randomized_bounded<const SCALAR_LIMBS: usize>(
+        &self,
+        integer: &Int<SCALAR_LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        group::scale_integer_randomized_bounded(self, integer, scalar_bits, public_parameters)
+    }
+
+    fn scale_integer_randomized_public_base<const SCALAR_LIMBS: usize>(
+        &self,
+        integer: &Int<SCALAR_LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_integer_randomized_public_base_bounded(
+            integer,
+            Uint::<SCALAR_LIMBS>::BITS,
+            public_parameters,
+        )
+    }
+
+    fn scale_integer_randomized_public_base_bounded<const SCALAR_LIMBS: usize>(
+        &self,
+        integer: &Int<SCALAR_LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        group::scale_integer_randomized_public_base_bounded(
+            self,
+            integer,
+            scalar_bits,
+            public_parameters,
+        )
+    }
+
+    fn scale_randomized_vartime_scalar<const SCALAR_LIMBS: usize>(
+        &self,
+        scalar: &Uint<SCALAR_LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_bounded(scalar, scalar.bits_vartime(), public_parameters)
+    }
+
+    fn add_randomized(&self, other: &Self, _public_parameters: &Self::PublicParameters) -> Self {
+        *self + other
+    }
+
+    fn add_vartime(&self, other: &Self, _public_parameters: &Self::PublicParameters) -> Self {
+        *self + other
+    }
+
+    fn sub_randomized(&self, other: &Self, _public_parameters: &Self::PublicParameters) -> Self {
+        *self - other
+    }
+
+    fn sub_vartime(&self, other: &Self, _public_parameters: &Self::PublicParameters) -> Self {
+        *self - other
+    }
+
+    fn double(&self, _public_parameters: &Self::PublicParameters) -> Self {
+        Self(self.0.square())
+    }
+
+    fn double_vartime(&self, _public_parameters: &Self::PublicParameters) -> Self {
+        self.double(_public_parameters)
+    }
+
+    fn linearly_combine_bounded<const RHS_LIMBS: usize>(
+        bases_and_multiplicands: Vec<(Self, Uint<RHS_LIMBS>)>,
+        exponent_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> group::Result<Self> {
+        linearly_combine_bounded_or_scale(
+            bases_and_multiplicands,
+            exponent_bits,
+            true,
+            public_parameters,
+        )
+    }
+
+    fn linearly_combine_bounded_vartime<const RHS_LIMBS: usize>(
+        bases_and_multiplicands: Vec<(Self, Uint<RHS_LIMBS>)>,
+        exponent_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> group::Result<Self> {
+        linearly_combine_bounded_or_scale(
+            bases_and_multiplicands,
+            exponent_bits,
+            false,
+            public_parameters,
+        )
     }
 }
 
@@ -424,7 +616,8 @@ where
     type Output = GroupElement<LIMBS>;
 
     fn mul(self, rhs: Uint<RHS_LIMBS>) -> Self::Output {
-        self.scale(&rhs)
+        let public_parameters = PublicParameters::from(self);
+        self.scale(&rhs, &public_parameters)
     }
 }
 
@@ -437,7 +630,8 @@ where
     type Output = GroupElement<LIMBS>;
 
     fn mul(self, rhs: &Uint<RHS_LIMBS>) -> Self::Output {
-        self.scale(rhs)
+        let public_parameters = PublicParameters::from(self);
+        self.scale(rhs, &public_parameters)
     }
 }
 
@@ -450,7 +644,8 @@ where
     type Output = GroupElement<LIMBS>;
 
     fn mul(self, rhs: Uint<RHS_LIMBS>) -> Self::Output {
-        self.scale(&rhs)
+        let public_parameters = PublicParameters::from(*self);
+        self.scale(&rhs, &public_parameters)
     }
 }
 
@@ -463,7 +658,8 @@ where
     type Output = GroupElement<LIMBS>;
 
     fn mul(self, rhs: &Uint<RHS_LIMBS>) -> Self::Output {
-        self.scale(rhs)
+        let public_parameters = PublicParameters::from(*self);
+        self.scale(rhs, &public_parameters)
     }
 }
 
@@ -475,7 +671,8 @@ where
     type Output = GroupElement<LIMBS>;
 
     fn mul(self, rhs: GroupElement<LIMBS>) -> Self::Output {
-        self.scale(&Uint::<LIMBS>::from(&rhs))
+        let public_parameters = PublicParameters::from(self);
+        self.scale(&Uint::<LIMBS>::from(&rhs), &public_parameters)
     }
 }
 
@@ -487,7 +684,8 @@ where
     type Output = GroupElement<LIMBS>;
 
     fn mul(self, rhs: &GroupElement<LIMBS>) -> Self::Output {
-        self.scale(&Uint::<LIMBS>::from(rhs))
+        let public_parameters = PublicParameters::from(self);
+        self.scale(&Uint::<LIMBS>::from(rhs), &public_parameters)
     }
 }
 
@@ -499,7 +697,8 @@ where
     type Output = GroupElement<LIMBS>;
 
     fn mul(self, rhs: GroupElement<LIMBS>) -> Self::Output {
-        self.scale(&Uint::<LIMBS>::from(&rhs))
+        let public_parameters = PublicParameters::from(*self);
+        self.scale(&Uint::<LIMBS>::from(&rhs), &public_parameters)
     }
 }
 
@@ -511,7 +710,8 @@ where
     type Output = GroupElement<LIMBS>;
 
     fn mul(self, rhs: &GroupElement<LIMBS>) -> Self::Output {
-        self.scale(&Uint::<LIMBS>::from(rhs))
+        let public_parameters = PublicParameters::from(*self);
+        self.scale(&Uint::<LIMBS>::from(rhs), &public_parameters)
     }
 }
 
@@ -593,94 +793,12 @@ where
     }
 }
 
-impl<const LIMBS: usize, const WIDE_LIMBS: usize, const SCALAR_LIMBS: usize>
-    Scale<Uint<SCALAR_LIMBS>> for GroupElement<LIMBS>
-where
-    Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
-    Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-{
-    fn scale_randomized_accelerated(
-        &self,
-        scalar: &Uint<SCALAR_LIMBS>,
-        _public_parameters: &Self::PublicParameters,
-    ) -> Self {
-        self.scale(scalar)
-    }
-
-    fn scale_vartime_accelerated(
-        &self,
-        scalar: &Uint<SCALAR_LIMBS>,
-        _public_parameters: &Self::PublicParameters,
-    ) -> Self {
-        self.scale_vartime(scalar)
-    }
-
-    fn scale_randomized_bounded_accelerated(
-        &self,
-        scalar: &Uint<SCALAR_LIMBS>,
-        _public_parameters: &Self::PublicParameters,
-        scalar_bits: u32,
-    ) -> Self {
-        self.scale_bounded(scalar, scalar_bits)
-    }
-
-    fn scale_bounded_vartime_accelerated(
-        &self,
-        scalar: &Uint<SCALAR_LIMBS>,
-        _public_parameters: &Self::PublicParameters,
-        scalar_bits: u32,
-    ) -> Self {
-        self.scale_bounded_vartime(scalar, scalar_bits)
-    }
-}
-
-impl<const LIMBS: usize, const WIDE_LIMBS: usize, const SCALAR_LIMBS: usize>
-    Scale<Int<SCALAR_LIMBS>> for GroupElement<LIMBS>
-where
-    Uint<LIMBS>: Concat<Output = Uint<WIDE_LIMBS>> + Encoding,
-    Uint<WIDE_LIMBS>: Split<Output = Uint<LIMBS>>,
-{
-    fn scale_randomized_accelerated(
-        &self,
-        scalar: &Int<SCALAR_LIMBS>,
-        _public_parameters: &Self::PublicParameters,
-    ) -> Self {
-        self.scale_integer(scalar)
-    }
-
-    fn scale_vartime_accelerated(
-        &self,
-        scalar: &Int<SCALAR_LIMBS>,
-        _public_parameters: &Self::PublicParameters,
-    ) -> Self {
-        self.scale_integer_vartime(scalar)
-    }
-
-    fn scale_randomized_bounded_accelerated(
-        &self,
-        scalar: &Int<SCALAR_LIMBS>,
-        _public_parameters: &Self::PublicParameters,
-        scalar_bits: u32,
-    ) -> Self {
-        self.scale_integer_bounded(scalar, scalar_bits)
-    }
-
-    fn scale_bounded_vartime_accelerated(
-        &self,
-        scalar: &Int<SCALAR_LIMBS>,
-        _public_parameters: &Self::PublicParameters,
-        scalar_bits: u32,
-    ) -> Self {
-        self.scale_integer_bounded_vartime(scalar, scalar_bits)
-    }
-}
-
 #[cfg(feature = "benchmarking")]
 pub(crate) mod benches {
     use criterion::{BatchSize, Criterion};
     use crypto_bigint::{Integer, MultiExponentiate, Random};
 
-    use group::{LinearlyCombinable, OsCsRng};
+    use group::OsCsRng;
 
     use crate::PaillierModulusSizedNumber;
 
@@ -732,7 +850,11 @@ pub(crate) mod benches {
                     bench.iter_batched(
                         || bases_and_multiplicands.clone(),
                         |bases_and_multiplicands| {
-                            GroupElement::linearly_combine(bases_and_multiplicands).unwrap()
+                            GroupElement::linearly_combine(
+                                bases_and_multiplicands,
+                                &public_parameters,
+                            )
+                            .unwrap()
                         },
                         BatchSize::PerIteration,
                     );

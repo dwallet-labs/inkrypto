@@ -6,13 +6,13 @@ use std::{
     ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign},
 };
 
-use crypto_bigint::{NonZero, Uint};
+use crypto_bigint::{Int, NonZero, Uint};
 use serde::{Deserialize, Serialize};
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq, CtOption};
 
 use crate::{
     BoundedGroupElement, CsRng, GroupElement, Invert, KnownOrderGroupElement, KnownOrderScalar,
-    LinearlyCombinable, Reduce, Samplable, Scale, Transcribeable,
+    Reduce, Samplable, Scale, Transcribeable,
 };
 
 /// Newtype used to comply with Rust's local-type checks.
@@ -53,18 +53,6 @@ impl<const SCALAR_LIMBS: usize, S: GroupElement> GroupElement for Scalar<SCALAR_
         Self(self.0.neutral())
     }
 
-    fn scale<const LIMBS: usize>(&self, scalar: &Uint<LIMBS>) -> Self {
-        Self(self.0.scale(scalar))
-    }
-
-    fn scale_bounded<const LIMBS: usize>(&self, scalar: &Uint<LIMBS>, scalar_bits: u32) -> Self {
-        Self(self.0.scale_bounded(scalar, scalar_bits))
-    }
-
-    fn double(&self) -> Self {
-        Self(self.0.double())
-    }
-
     fn neutral_from_public_parameters(
         public_parameters: &Self::PublicParameters,
     ) -> crate::Result<Self> {
@@ -73,38 +61,300 @@ impl<const SCALAR_LIMBS: usize, S: GroupElement> GroupElement for Scalar<SCALAR_
         )?))
     }
 
+    fn add_constant_time(&self, other: &Self, public_parameters: &Self::PublicParameters) -> Self {
+        Self(self.0.add_constant_time(&other.0, &public_parameters.0))
+    }
+
+    fn sub_constant_time(&self, other: &Self, public_parameters: &Self::PublicParameters) -> Self {
+        Self(self.0.sub_constant_time(&other.0, &public_parameters.0))
+    }
+
+    fn neg_constant_time(&self, public_parameters: &Self::PublicParameters) -> Self {
+        Self(self.0.neg_constant_time(&public_parameters.0))
+    }
+
+    fn scale<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(self.0.scale(scalar, &public_parameters.0))
+    }
+
+    fn scale_bounded<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .scale_bounded(scalar, scalar_bits, &public_parameters.0),
+        )
+    }
+
     fn scale_bounded_vartime<const LIMBS: usize>(
         &self,
         scalar: &Uint<LIMBS>,
         scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
     ) -> Self {
-        self.scale_bounded(scalar, scalar_bits)
+        Self(
+            self.0
+                .scale_bounded_vartime(scalar, scalar_bits, &public_parameters.0),
+        )
     }
 
-    fn add_randomized(self, other: &Self) -> Self {
-        Self(self.0.add_randomized(&other.0))
+    fn scale_integer_bounded<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .scale_integer_bounded(integer, scalar_bits, &public_parameters.0),
+        )
     }
 
-    fn add_vartime(self, other: &Self) -> Self {
-        Self(self.0.add_vartime(&other.0))
+    fn scale_integer<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(self.0.scale_integer(integer, &public_parameters.0))
     }
 
-    fn double_vartime(&self) -> Self {
-        Self(self.0.double_vartime())
+    fn scale_vartime<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(self.0.scale_vartime(scalar, &public_parameters.0))
     }
 
-    fn sub_randomized(self, other: &Self) -> Self {
-        Self(self.0.sub_vartime(&other.0))
+    fn scale_integer_vartime<const LIMBS: usize>(
+        &self,
+        scalar: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(self.0.scale_integer_vartime(scalar, &public_parameters.0))
     }
 
-    fn sub_vartime(self, other: &Self) -> Self {
-        Self(self.0.sub_vartime(&other.0))
+    fn scale_integer_bounded_vartime<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .scale_integer_bounded_vartime(integer, scalar_bits, &public_parameters.0),
+        )
     }
-}
-impl<const SCALAR_LIMBS: usize, S: GroupElement> LinearlyCombinable for Scalar<SCALAR_LIMBS, S> {
+
+    fn scale_vartime_scalar<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(self.0.scale_vartime_scalar(scalar, &public_parameters.0))
+    }
+
+    fn scale_integer_vartime_scalar<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .scale_integer_vartime_scalar(integer, &public_parameters.0),
+        )
+    }
+
+    fn scale_public_base<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(self.0.scale_public_base(scalar, &public_parameters.0))
+    }
+
+    fn scale_public_base_bounded<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .scale_public_base_bounded(scalar, scalar_bits, &public_parameters.0),
+        )
+    }
+
+    fn scale_integer_public_base<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .scale_integer_public_base(integer, &public_parameters.0),
+        )
+    }
+
+    fn scale_integer_public_base_bounded<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .scale_integer_public_base_bounded(integer, scalar_bits, &public_parameters.0),
+        )
+    }
+
+    fn scale_randomized<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(self.0.scale_randomized(scalar, &public_parameters.0))
+    }
+
+    fn scale_randomized_bounded<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .scale_randomized_bounded(scalar, scalar_bits, &public_parameters.0),
+        )
+    }
+
+    fn scale_randomized_public_base<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .scale_randomized_public_base(scalar, &public_parameters.0),
+        )
+    }
+
+    fn scale_randomized_public_base_bounded<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .scale_randomized_public_base_bounded(scalar, scalar_bits, &public_parameters.0),
+        )
+    }
+
+    fn scale_integer_randomized<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .scale_integer_randomized(integer, &public_parameters.0),
+        )
+    }
+
+    fn scale_integer_randomized_bounded<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .scale_integer_randomized_bounded(integer, scalar_bits, &public_parameters.0),
+        )
+    }
+
+    fn scale_integer_randomized_public_base<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .scale_integer_randomized_public_base(integer, &public_parameters.0),
+        )
+    }
+
+    fn scale_integer_randomized_public_base_bounded<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(self.0.scale_integer_randomized_public_base_bounded(
+            integer,
+            scalar_bits,
+            &public_parameters.0,
+        ))
+    }
+
+    fn scale_randomized_vartime_scalar<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .scale_randomized_vartime_scalar(scalar, &public_parameters.0),
+        )
+    }
+
+    fn scale_integer_randomized_vartime_scalar<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .scale_integer_randomized_vartime_scalar(integer, &public_parameters.0),
+        )
+    }
+
+    fn add_randomized(&self, other: &Self, public_parameters: &Self::PublicParameters) -> Self {
+        Self(self.0.add_randomized(&other.0, &public_parameters.0))
+    }
+
+    fn add_vartime(&self, other: &Self, public_parameters: &Self::PublicParameters) -> Self {
+        Self(self.0.add_vartime(&other.0, &public_parameters.0))
+    }
+
+    fn sub_randomized(&self, other: &Self, public_parameters: &Self::PublicParameters) -> Self {
+        Self(self.0.sub_randomized(&other.0, &public_parameters.0))
+    }
+
+    fn sub_vartime(&self, other: &Self, public_parameters: &Self::PublicParameters) -> Self {
+        Self(self.0.sub_vartime(&other.0, &public_parameters.0))
+    }
+
+    fn double(&self, public_parameters: &Self::PublicParameters) -> Self {
+        Self(self.0.double(&public_parameters.0))
+    }
+
+    fn double_vartime(&self, public_parameters: &Self::PublicParameters) -> Self {
+        Self(self.0.double_vartime(&public_parameters.0))
+    }
+
     fn linearly_combine_bounded<const RHS_LIMBS: usize>(
         bases_and_multiplicands: Vec<(Self, Uint<RHS_LIMBS>)>,
         exponent_bits: u32,
+        public_parameters: &Self::PublicParameters,
     ) -> crate::Result<Self> {
         S::linearly_combine_bounded(
             bases_and_multiplicands
@@ -112,6 +362,7 @@ impl<const SCALAR_LIMBS: usize, S: GroupElement> LinearlyCombinable for Scalar<S
                 .map(|(scalar, multiplicand)| (scalar.0, multiplicand))
                 .collect(),
             exponent_bits,
+            &public_parameters.0,
         )
         .map(Self)
     }
@@ -119,6 +370,7 @@ impl<const SCALAR_LIMBS: usize, S: GroupElement> LinearlyCombinable for Scalar<S
     fn linearly_combine_bounded_vartime<const RHS_LIMBS: usize>(
         bases_and_multiplicands: Vec<(Self, Uint<RHS_LIMBS>)>,
         exponent_bits: u32,
+        public_parameters: &Self::PublicParameters,
     ) -> crate::Result<Self> {
         S::linearly_combine_bounded_vartime(
             bases_and_multiplicands
@@ -126,6 +378,7 @@ impl<const SCALAR_LIMBS: usize, S: GroupElement> LinearlyCombinable for Scalar<S
                 .map(|(scalar, multiplicand)| (scalar.0, multiplicand))
                 .collect(),
             exponent_bits,
+            &public_parameters.0,
         )
         .map(Self)
     }
@@ -176,7 +429,7 @@ impl<const SCALAR_LIMBS: usize, V: Into<Uint<SCALAR_LIMBS>>> Into<Uint<SCALAR_LI
     }
 }
 
-impl<const SCALAR_LIMBS: usize, S: GroupElement> Neg for Scalar<SCALAR_LIMBS, S> {
+impl<const SCALAR_LIMBS: usize, S: GroupElement + Neg<Output = S>> Neg for Scalar<SCALAR_LIMBS, S> {
     type Output = Self;
 
     fn neg(self) -> Self::Output {
@@ -184,7 +437,9 @@ impl<const SCALAR_LIMBS: usize, S: GroupElement> Neg for Scalar<SCALAR_LIMBS, S>
     }
 }
 
-impl<const SCALAR_LIMBS: usize, S: GroupElement> Add<Self> for Scalar<SCALAR_LIMBS, S> {
+impl<const SCALAR_LIMBS: usize, S: GroupElement + Add<S, Output = S>> Add<Self>
+    for Scalar<SCALAR_LIMBS, S>
+{
     type Output = Self;
 
     fn add(self, rhs: Self) -> Self::Output {
@@ -192,7 +447,9 @@ impl<const SCALAR_LIMBS: usize, S: GroupElement> Add<Self> for Scalar<SCALAR_LIM
     }
 }
 
-impl<'r, const SCALAR_LIMBS: usize, S: GroupElement> Add<&'r Self> for Scalar<SCALAR_LIMBS, S> {
+impl<'r, const SCALAR_LIMBS: usize, S: GroupElement + for<'a> Add<&'a S, Output = S>> Add<&'r Self>
+    for Scalar<SCALAR_LIMBS, S>
+{
     type Output = Self;
 
     fn add(self, rhs: &'r Self) -> Self::Output {
@@ -200,7 +457,9 @@ impl<'r, const SCALAR_LIMBS: usize, S: GroupElement> Add<&'r Self> for Scalar<SC
     }
 }
 
-impl<const SCALAR_LIMBS: usize, S: GroupElement> Sub<Self> for Scalar<SCALAR_LIMBS, S> {
+impl<const SCALAR_LIMBS: usize, S: GroupElement + Sub<S, Output = S>> Sub<Self>
+    for Scalar<SCALAR_LIMBS, S>
+{
     type Output = Self;
 
     fn sub(self, rhs: Self) -> Self::Output {
@@ -208,7 +467,9 @@ impl<const SCALAR_LIMBS: usize, S: GroupElement> Sub<Self> for Scalar<SCALAR_LIM
     }
 }
 
-impl<'r, const SCALAR_LIMBS: usize, S: GroupElement> Sub<&'r Self> for Scalar<SCALAR_LIMBS, S> {
+impl<'r, const SCALAR_LIMBS: usize, S: GroupElement + for<'a> Sub<&'a S, Output = S>> Sub<&'r Self>
+    for Scalar<SCALAR_LIMBS, S>
+{
     type Output = Self;
 
     fn sub(self, rhs: &'r Self) -> Self::Output {
@@ -216,13 +477,15 @@ impl<'r, const SCALAR_LIMBS: usize, S: GroupElement> Sub<&'r Self> for Scalar<SC
     }
 }
 
-impl<const SCALAR_LIMBS: usize, S: GroupElement> AddAssign<Self> for Scalar<SCALAR_LIMBS, S> {
+impl<const SCALAR_LIMBS: usize, S: GroupElement + AddAssign<S>> AddAssign<Self>
+    for Scalar<SCALAR_LIMBS, S>
+{
     fn add_assign(&mut self, rhs: Self) {
         self.0.add_assign(rhs.0)
     }
 }
 
-impl<'r, const SCALAR_LIMBS: usize, S: GroupElement> AddAssign<&'r Self>
+impl<'r, const SCALAR_LIMBS: usize, S: GroupElement + for<'a> AddAssign<&'a S>> AddAssign<&'r Self>
     for Scalar<SCALAR_LIMBS, S>
 {
     fn add_assign(&mut self, rhs: &'r Self) {
@@ -230,13 +493,15 @@ impl<'r, const SCALAR_LIMBS: usize, S: GroupElement> AddAssign<&'r Self>
     }
 }
 
-impl<const SCALAR_LIMBS: usize, S: GroupElement> SubAssign<Self> for Scalar<SCALAR_LIMBS, S> {
+impl<const SCALAR_LIMBS: usize, S: GroupElement + SubAssign<S>> SubAssign<Self>
+    for Scalar<SCALAR_LIMBS, S>
+{
     fn sub_assign(&mut self, rhs: Self) {
         self.0.sub_assign(rhs.0)
     }
 }
 
-impl<'r, const SCALAR_LIMBS: usize, S: GroupElement> SubAssign<&'r Self>
+impl<'r, const SCALAR_LIMBS: usize, S: GroupElement + for<'a> SubAssign<&'a S>> SubAssign<&'r Self>
     for Scalar<SCALAR_LIMBS, S>
 {
     fn sub_assign(&mut self, rhs: &'r Self) {
@@ -314,38 +579,134 @@ where
     S::Value: From<Uint<SCALAR_LIMBS>> + Into<Uint<SCALAR_LIMBS>>,
     S: Default + ConditionallySelectable,
 {
-    fn scale_randomized_accelerated(
-        &self,
-        scalar: &Self,
-        _public_parameters: &Self::PublicParameters,
-    ) -> Self {
-        *scalar * self
+    fn scale_by(&self, scalar: &Self, public_parameters: &Self::PublicParameters) -> Self {
+        let scalar_uint: Uint<SCALAR_LIMBS> = scalar.value().into();
+        Self(self.0.scale(&scalar_uint, &public_parameters.0))
     }
 
-    fn scale_vartime_accelerated(
-        &self,
-        scalar: &Self,
-        _public_parameters: &Self::PublicParameters,
-    ) -> Self {
-        self.scale_vartime(&scalar.value().into())
+    fn scale_vartime_by(&self, scalar: &Self, public_parameters: &Self::PublicParameters) -> Self {
+        let scalar_uint: Uint<SCALAR_LIMBS> = scalar.value().into();
+        Self(self.0.scale_vartime(&scalar_uint, &public_parameters.0))
     }
 
-    fn scale_randomized_bounded_accelerated(
+    fn scale_bounded_by(
         &self,
         scalar: &Self,
-        _public_parameters: &Self::PublicParameters,
         scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
     ) -> Self {
-        self.scale_bounded(&scalar.value().into(), scalar_bits)
+        let scalar_uint: Uint<SCALAR_LIMBS> = scalar.value().into();
+        Self(
+            self.0
+                .scale_bounded(&scalar_uint, scalar_bits, &public_parameters.0),
+        )
     }
 
-    fn scale_bounded_vartime_accelerated(
+    fn scale_bounded_vartime_by(
         &self,
         scalar: &Self,
-        _public_parameters: &Self::PublicParameters,
         scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
     ) -> Self {
-        self.scale_bounded_vartime(&scalar.value().into(), scalar_bits)
+        let scalar_uint: Uint<SCALAR_LIMBS> = scalar.value().into();
+        Self(
+            self.0
+                .scale_bounded_vartime(&scalar_uint, scalar_bits, &public_parameters.0),
+        )
+    }
+
+    fn scale_vartime_scalar_by(
+        &self,
+        scalar: &Self,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        let scalar_uint: Uint<SCALAR_LIMBS> = scalar.value().into();
+        Self(
+            self.0
+                .scale_vartime_scalar(&scalar_uint, &public_parameters.0),
+        )
+    }
+
+    fn scale_public_base_by(
+        &self,
+        scalar: &Self,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        let scalar_uint: Uint<SCALAR_LIMBS> = scalar.value().into();
+        Self(self.0.scale_public_base(&scalar_uint, &public_parameters.0))
+    }
+
+    fn scale_public_base_bounded_by(
+        &self,
+        scalar: &Self,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        let scalar_uint: Uint<SCALAR_LIMBS> = scalar.value().into();
+        Self(
+            self.0
+                .scale_public_base_bounded(&scalar_uint, scalar_bits, &public_parameters.0),
+        )
+    }
+
+    fn scale_randomized_by(
+        &self,
+        scalar: &Self,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        let scalar_uint: Uint<SCALAR_LIMBS> = scalar.value().into();
+        Self(self.0.scale_randomized(&scalar_uint, &public_parameters.0))
+    }
+
+    fn scale_randomized_bounded_by(
+        &self,
+        scalar: &Self,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        let scalar_uint: Uint<SCALAR_LIMBS> = scalar.value().into();
+        Self(
+            self.0
+                .scale_randomized_bounded(&scalar_uint, scalar_bits, &public_parameters.0),
+        )
+    }
+
+    fn scale_randomized_vartime_scalar_by(
+        &self,
+        scalar: &Self,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        let scalar_uint: Uint<SCALAR_LIMBS> = scalar.value().into();
+        Self(
+            self.0
+                .scale_randomized_vartime_scalar(&scalar_uint, &public_parameters.0),
+        )
+    }
+
+    fn scale_randomized_public_base_by(
+        &self,
+        scalar: &Self,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        let scalar_uint: Uint<SCALAR_LIMBS> = scalar.value().into();
+        Self(
+            self.0
+                .scale_randomized_public_base(&scalar_uint, &public_parameters.0),
+        )
+    }
+
+    fn scale_randomized_public_base_bounded_by(
+        &self,
+        scalar: &Self,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        let scalar_uint: Uint<SCALAR_LIMBS> = scalar.value().into();
+        Self(self.0.scale_randomized_public_base_bounded(
+            &scalar_uint,
+            scalar_bits,
+            &public_parameters.0,
+        ))
     }
 }
 
@@ -355,38 +716,142 @@ where
     S::Value: From<Uint<SCALAR_LIMBS>> + Into<Uint<SCALAR_LIMBS>>,
     S: Default + ConditionallySelectable,
 {
-    fn scale_randomized_accelerated(
+    fn scale_by(
         &self,
         scalar: &Value<crate::Value<S>>,
-        _public_parameters: &Self::PublicParameters,
+        public_parameters: &Self::PublicParameters,
     ) -> Self {
-        self.scale(&(*scalar).into())
+        let scalar_uint: Uint<SCALAR_LIMBS> = (*scalar).into();
+        Self(self.0.scale(&scalar_uint, &public_parameters.0))
     }
 
-    fn scale_vartime_accelerated(
+    fn scale_vartime_by(
         &self,
         scalar: &Value<crate::Value<S>>,
-        _public_parameters: &Self::PublicParameters,
+        public_parameters: &Self::PublicParameters,
     ) -> Self {
-        self.scale_vartime(&(*scalar).into())
+        let scalar_uint: Uint<SCALAR_LIMBS> = (*scalar).into();
+        Self(self.0.scale_vartime(&scalar_uint, &public_parameters.0))
     }
 
-    fn scale_randomized_bounded_accelerated(
+    fn scale_bounded_by(
         &self,
         scalar: &Value<crate::Value<S>>,
-        _public_parameters: &Self::PublicParameters,
         scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
     ) -> Self {
-        self.scale_bounded(&(*scalar).into(), scalar_bits)
+        let scalar_uint: Uint<SCALAR_LIMBS> = (*scalar).into();
+        Self(
+            self.0
+                .scale_bounded(&scalar_uint, scalar_bits, &public_parameters.0),
+        )
     }
 
-    fn scale_bounded_vartime_accelerated(
+    fn scale_bounded_vartime_by(
         &self,
         scalar: &Value<crate::Value<S>>,
-        _public_parameters: &Self::PublicParameters,
         scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
     ) -> Self {
-        self.scale_bounded_vartime(&(*scalar).into(), scalar_bits)
+        let scalar_uint: Uint<SCALAR_LIMBS> = (*scalar).into();
+        Self(
+            self.0
+                .scale_bounded_vartime(&scalar_uint, scalar_bits, &public_parameters.0),
+        )
+    }
+
+    fn scale_vartime_scalar_by(
+        &self,
+        scalar: &Value<crate::Value<S>>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        let scalar_uint: Uint<SCALAR_LIMBS> = (*scalar).into();
+        Self(
+            self.0
+                .scale_vartime_scalar(&scalar_uint, &public_parameters.0),
+        )
+    }
+
+    fn scale_public_base_by(
+        &self,
+        scalar: &Value<crate::Value<S>>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        let scalar_uint: Uint<SCALAR_LIMBS> = (*scalar).into();
+        Self(self.0.scale_public_base(&scalar_uint, &public_parameters.0))
+    }
+
+    fn scale_public_base_bounded_by(
+        &self,
+        scalar: &Value<crate::Value<S>>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        let scalar_uint: Uint<SCALAR_LIMBS> = (*scalar).into();
+        Self(
+            self.0
+                .scale_public_base_bounded(&scalar_uint, scalar_bits, &public_parameters.0),
+        )
+    }
+
+    fn scale_randomized_by(
+        &self,
+        scalar: &Value<crate::Value<S>>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        let scalar_uint: Uint<SCALAR_LIMBS> = (*scalar).into();
+        Self(self.0.scale_randomized(&scalar_uint, &public_parameters.0))
+    }
+
+    fn scale_randomized_bounded_by(
+        &self,
+        scalar: &Value<crate::Value<S>>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        let scalar_uint: Uint<SCALAR_LIMBS> = (*scalar).into();
+        Self(
+            self.0
+                .scale_randomized_bounded(&scalar_uint, scalar_bits, &public_parameters.0),
+        )
+    }
+
+    fn scale_randomized_vartime_scalar_by(
+        &self,
+        scalar: &Value<crate::Value<S>>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        let scalar_uint: Uint<SCALAR_LIMBS> = (*scalar).into();
+        Self(
+            self.0
+                .scale_randomized_vartime_scalar(&scalar_uint, &public_parameters.0),
+        )
+    }
+
+    fn scale_randomized_public_base_by(
+        &self,
+        scalar: &Value<crate::Value<S>>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        let scalar_uint: Uint<SCALAR_LIMBS> = (*scalar).into();
+        Self(
+            self.0
+                .scale_randomized_public_base(&scalar_uint, &public_parameters.0),
+        )
+    }
+
+    fn scale_randomized_public_base_bounded_by(
+        &self,
+        scalar: &Value<crate::Value<S>>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        let scalar_uint: Uint<SCALAR_LIMBS> = (*scalar).into();
+        Self(self.0.scale_randomized_public_base_bounded(
+            &scalar_uint,
+            scalar_bits,
+            &public_parameters.0,
+        ))
     }
 }
 

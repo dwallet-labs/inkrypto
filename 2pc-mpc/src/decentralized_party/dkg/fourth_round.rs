@@ -3,7 +3,7 @@
 
 use super::PublicInput;
 
-use crate::decentralized_party::dkg::{Message, PublicOutput};
+use crate::decentralized_party::dkg::{FourthRoundInternalOutput, Message, PublicOutput};
 use crate::Result;
 use class_groups::dkg::compute_public_verification_keys_for_participating_party;
 use class_groups::encryption_key::public_parameters::Instantiate;
@@ -20,26 +20,26 @@ use class_groups::{
 };
 use commitment::CommitmentSizedNumber;
 use group::helpers::DeduplicateAndSort;
-use group::secp256k1::{GroupElement, Scalar, SCALAR_LIMBS};
 use group::{curve25519, ristretto, secp256k1, secp256r1, CsRng, GroupElement as _, PartyID};
 use mpc::{AsynchronousRoundResult, WeightedThresholdAccessStructure};
 use std::collections::HashMap;
 
 impl super::Party {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn advance_fourth_round(
         tangible_party_id: PartyID,
         session_id: CommitmentSizedNumber,
         access_structure: &WeightedThresholdAccessStructure,
         equality_of_discrete_log_in_hidden_order_group_base_protocol_context: BaseProtocolContext,
         public_input: &PublicInput,
-        decryption_key_contribution_pvss_party: &publicly_verifiable_secret_sharing::Party<
+        decryption_key_contribution_pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
-            SCALAR_LIMBS,
+            { secp256k1::SCALAR_LIMBS },
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            GroupElement,
+            secp256k1::GroupElement,
         >,
         deal_decryption_key_contribution_and_prove_coefficient_commitments_messages: HashMap<
             PartyID,
@@ -53,30 +53,8 @@ impl super::Party {
         decryption_key_share_bits: u32,
         rng: &mut impl CsRng,
     ) -> Result<AsynchronousRoundResult<Message, (), PublicOutput>> {
-        let (
-            malicious_parties,
-            inner_protocol_public_output,
-            ristretto_public_verification_keys,
-            ristretto_encryption_key,
-            secp256r1_public_verification_keys,
-            secp256r1_encryption_key,
-            secp256k1_encryption_of_secret_key_share_first_part,
-            secp256k1_encryption_of_secret_key_share_second_part,
-            secp256k1_public_key_share_first_part,
-            secp256k1_public_key_share_second_part,
-            ristretto_encryption_of_secret_key_share_first_part,
-            ristretto_encryption_of_secret_key_share_second_part,
-            ristretto_public_key_share_first_part,
-            ristretto_public_key_share_second_part,
-            curve25519_encryption_of_secret_key_share_first_part,
-            curve25519_encryption_of_secret_key_share_second_part,
-            curve25519_public_key_share_first_part,
-            curve25519_public_key_share_second_part,
-            secp256r1_encryption_of_secret_key_share_first_part,
-            secp256r1_encryption_of_secret_key_share_second_part,
-            secp256r1_public_key_share_first_part,
-            secp256r1_public_key_share_second_part,
-        ) = Self::advance_fourth_round_internal(
+        // Step 1: Run CG DKG R4 computation
+        let (malicious_parties, fourth_round_output) = Self::advance_fourth_round_internal(
             tangible_party_id,
             session_id,
             access_structure,
@@ -97,35 +75,80 @@ impl super::Party {
             rng,
         )?;
 
-        let public_output = PublicOutput::new(
-            inner_protocol_public_output,
-            secp256k1_encryption_of_secret_key_share_first_part,
-            secp256k1_encryption_of_secret_key_share_second_part,
-            secp256k1_public_key_share_first_part,
-            secp256k1_public_key_share_second_part,
-            ristretto_encryption_of_secret_key_share_first_part,
-            ristretto_encryption_of_secret_key_share_second_part,
-            ristretto_public_key_share_first_part,
-            ristretto_public_key_share_second_part,
-            ristretto_encryption_key.value(),
-            ristretto_public_verification_keys,
-            curve25519_encryption_of_secret_key_share_first_part,
-            curve25519_encryption_of_secret_key_share_second_part,
-            curve25519_public_key_share_first_part,
-            curve25519_public_key_share_second_part,
-            secp256r1_encryption_of_secret_key_share_first_part,
-            secp256r1_encryption_of_secret_key_share_second_part,
-            secp256r1_public_key_share_first_part,
-            secp256r1_public_key_share_second_part,
-            secp256r1_encryption_key.value(),
-            secp256r1_public_verification_keys,
-        )?;
+        // Step 2: Construct Protocol 0.1 PublicInput with real data from CG DKG R4 output
+        let threshold_encryption_of_secret_key_share_parts_to_sharing_public_input =
+            Self::construct_threshold_encryption_of_secret_key_share_parts_to_sharing_public_input(
+                public_input,
+                &fourth_round_output,
+            )?;
 
-        Ok(AsynchronousRoundResult::Finalize {
+        // Step 3: Deal randomizers using the real PublicInput
+        let (dealing_malicious_parties, dealing_message) =
+            crate::decentralized_party::threshold_encryption_of_secret_key_share_parts_to_sharing::dealing::advance_dealing_round(
+                session_id,
+                tangible_party_id,
+                &threshold_encryption_of_secret_key_share_parts_to_sharing_public_input,
+                rng,
+            )?;
+
+        let malicious_parties = malicious_parties
+            .into_iter()
+            .chain(dealing_malicious_parties)
+            .deduplicate_and_sort();
+
+        let message = Message::VerifiedDealers {
+            fourth_round_output,
+            threshold_encryption_of_secret_key_share_parts_to_sharing_dealing_message:
+                dealing_message,
+        };
+
+        Ok(AsynchronousRoundResult::Advance {
             malicious_parties,
-            private_output: (),
-            public_output,
+            message,
         })
+    }
+
+    /// Extracts `FourthRoundInternalOutput` and dealing messages from R4 `VerifiedDealers`,
+    /// then majority-votes on the output.
+    ///
+    /// Shared by R5 (accusation), R6 (decryption), and R7 (aggregation).
+    pub(crate) fn extract_verified_dealers_and_majority_vote(
+        verified_dealers_messages: HashMap<PartyID, Message>,
+        access_structure: &WeightedThresholdAccessStructure,
+    ) -> Result<(
+        FourthRoundInternalOutput,
+        HashMap<
+            PartyID,
+            crate::decentralized_party::threshold_encryption_of_secret_key_share_parts_to_sharing::DealingRoundMessage,
+        >,
+        Vec<PartyID>,
+    )>{
+        let (fourth_round_outputs, dealing_round_messages): (
+            HashMap<PartyID, FourthRoundInternalOutput>,
+            HashMap<PartyID, _>,
+        ) = verified_dealers_messages
+            .into_iter()
+            .filter_map(|(party_id, message)| {
+                if let Message::VerifiedDealers {
+                    fourth_round_output,
+                    threshold_encryption_of_secret_key_share_parts_to_sharing_dealing_message,
+                } = message
+                {
+                    Some(((party_id, fourth_round_output), (party_id, threshold_encryption_of_secret_key_share_parts_to_sharing_dealing_message)))
+                } else {
+                    None
+                }
+            })
+            .unzip();
+
+        let (fourth_round_output, vote_malicious_parties) =
+            Self::majority_vote_fourth_round_output(fourth_round_outputs, access_structure)?;
+
+        Ok((
+            fourth_round_output,
+            dealing_round_messages,
+            vote_malicious_parties,
+        ))
     }
 
     pub(crate) fn advance_fourth_round_internal(
@@ -134,23 +157,23 @@ impl super::Party {
         access_structure: &WeightedThresholdAccessStructure,
         encryption_of_decryption_key_base_protocol_context: BaseProtocolContext,
         class_groups_public_input: &class_groups::dkg::PublicInput<
-            SCALAR_LIMBS,
+            { secp256k1::SCALAR_LIMBS },
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            group::PublicParameters<Scalar>,
+            group::PublicParameters<secp256k1::Scalar>,
         >,
         secp256k1_setup_parameters: &Secp256k1SetupParameters,
         ristretto_setup_parameters: &RistrettoSetupParameters,
         curve25519_setup_parameters: &Curve25519SetupParameters,
         secp256r1_setup_parameters: &Secp256r1SetupParameters,
-        decryption_key_contribution_pvss_party: &publicly_verifiable_secret_sharing::Party<
+        decryption_key_contribution_pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
-            SCALAR_LIMBS,
+            { secp256k1::SCALAR_LIMBS },
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            GroupElement,
+            secp256k1::GroupElement,
         >,
         deal_decryption_key_contribution_and_prove_coefficient_commitments_messages: HashMap<
             PartyID,
@@ -163,34 +186,7 @@ impl super::Party {
         secp256r1_encryption_of_secret_key_share_base_protocol_context: crate::BaseProtocolContext,
         decryption_key_share_bits: u32,
         rng: &mut impl CsRng,
-    ) -> Result<(
-        Vec<PartyID>,
-        ::class_groups::dkg::PublicOutput<
-            SCALAR_LIMBS,
-            FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-        >,
-        HashMap<PartyID, CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
-        EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        HashMap<PartyID, CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
-        EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        secp256k1::group_element::Value,
-        secp256k1::group_element::Value,
-        CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        ristretto::GroupElement,
-        ristretto::GroupElement,
-        CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        curve25519::GroupElement,
-        curve25519::GroupElement,
-        CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        secp256r1::group_element::Value,
-        secp256r1::group_element::Value,
-    )> {
+    ) -> Result<(Vec<PartyID>, super::FourthRoundInternalOutput)> {
         let (
             parties_sending_invalid_deal_decryption_key_contribution_and_prove_coefficient_commitments_messages,
             deal_decryption_key_contribution_messages,
@@ -218,14 +214,15 @@ impl super::Party {
             access_structure,
             encrypt_decryption_key_shares_and_secret_key_shares_messages,
             equality_of_coefficients_commitments_proofs_and_statements,
+            ristretto_setup_parameters.equivalence_class_public_parameters(),
         )?;
 
         let (inner_protocol_malicious_parties, inner_protocol_public_output) =
             class_groups::dkg::Party::<
-                SCALAR_LIMBS,
+                { secp256k1::SCALAR_LIMBS },
                 FUNDAMENTAL_DISCRIMINANT_LIMBS,
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-                GroupElement,
+                secp256k1::GroupElement,
             >::advance_fourth_round_internal(
                 tangible_party_id,
                 session_id,
@@ -247,19 +244,21 @@ impl super::Party {
         // Note that the decryption key contribution commitments come from `handle_third_round_messages`,
         // which already filtered ones coming from `malicious_coefficients_committers`, and thus these are only the honest commitments.
         let ristretto_encryption_key = class_groups::dkg::PublicOutput::<
-            SCALAR_LIMBS,
+            { secp256k1::SCALAR_LIMBS },
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
         >::compute_encryption_key(
-            ristretto_decryption_key_contribution_commitments
+            ristretto_decryption_key_contribution_commitments,
+            ristretto_setup_parameters.equivalence_class_public_parameters(),
         )?;
 
         let secp256r1_encryption_key = class_groups::dkg::PublicOutput::<
-            SCALAR_LIMBS,
+            { secp256k1::SCALAR_LIMBS },
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
         >::compute_encryption_key(
-            secp256r1_decryption_key_contribution_commitments
+            secp256r1_decryption_key_contribution_commitments,
+            secp256r1_setup_parameters.equivalence_class_public_parameters(),
         )?;
 
         let (
@@ -313,37 +312,41 @@ impl super::Party {
             access_structure,
             malicious_coefficients_committers.clone(),
             ristretto_reconstructed_commitments_to_decryption_key_contribution_sharing,
+            ristretto_setup_parameters.equivalence_class_public_parameters(),
         );
 
         let secp256r1_public_verification_keys = Self::compute_public_verification_keys(
             access_structure,
             malicious_coefficients_committers,
             secp256r1_reconstructed_commitments_to_decryption_key_contribution_sharing,
+            secp256r1_setup_parameters.equivalence_class_public_parameters(),
         );
 
         Ok((
             malicious_parties,
-            inner_protocol_public_output,
-            ristretto_public_verification_keys,
-            ristretto_encryption_key,
-            secp256r1_public_verification_keys,
-            secp256r1_encryption_key,
-            secp256k1_encryption_of_secret_key_share_first_part,
-            secp256k1_encryption_of_secret_key_share_second_part,
-            secp256k1_public_key_share_first_part,
-            secp256k1_public_key_share_second_part,
-            ristretto_encryption_of_secret_key_share_first_part,
-            ristretto_encryption_of_secret_key_share_second_part,
-            ristretto_public_key_share_first_part,
-            ristretto_public_key_share_second_part,
-            curve25519_encryption_of_secret_key_share_first_part,
-            curve25519_encryption_of_secret_key_share_second_part,
-            curve25519_public_key_share_first_part,
-            curve25519_public_key_share_second_part,
-            secp256r1_encryption_of_secret_key_share_first_part,
-            secp256r1_encryption_of_secret_key_share_second_part,
-            secp256r1_public_key_share_first_part,
-            secp256r1_public_key_share_second_part,
+            super::FourthRoundInternalOutput {
+                inner_protocol_public_output,
+                ristretto_public_verification_keys,
+                ristretto_encryption_key: ristretto_encryption_key.value(),
+                secp256r1_public_verification_keys,
+                secp256r1_encryption_key: secp256r1_encryption_key.value(),
+                secp256k1_encryption_of_secret_key_share_first_part,
+                secp256k1_encryption_of_secret_key_share_second_part,
+                secp256k1_public_key_share_first_part,
+                secp256k1_public_key_share_second_part,
+                ristretto_encryption_of_secret_key_share_first_part,
+                ristretto_encryption_of_secret_key_share_second_part,
+                ristretto_public_key_share_first_part,
+                ristretto_public_key_share_second_part,
+                curve25519_encryption_of_secret_key_share_first_part,
+                curve25519_encryption_of_secret_key_share_second_part,
+                curve25519_public_key_share_first_part,
+                curve25519_public_key_share_second_part,
+                secp256r1_encryption_of_secret_key_share_first_part,
+                secp256r1_encryption_of_secret_key_share_second_part,
+                secp256r1_public_key_share_first_part,
+                secp256r1_public_key_share_second_part,
+            },
         ))
     }
 
@@ -378,8 +381,8 @@ impl super::Party {
         ristretto::GroupElement,
         CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
         CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        curve25519::GroupElement,
-        curve25519::GroupElement,
+        curve25519::Value,
+        curve25519::Value,
         CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
         CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
         secp256r1::group_element::Value,
@@ -577,6 +580,9 @@ impl super::Party {
             PartyID,
             HashMap<PartyID, EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
         >,
+        equivalence_class_public_parameters: &class_groups::equivalence_class::PublicParameters<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        >,
     ) -> HashMap<PartyID, CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>> {
         // Filter malicious parties out.
         let reconstructed_commitments_to_sharing: HashMap<_, _> =
@@ -595,6 +601,7 @@ impl super::Party {
                     access_structure,
                     reconstructed_commitments_to_sharing.clone(),
                     participating_tangible_party_id,
+                    equivalence_class_public_parameters,
                 )
                 .ok()
             })

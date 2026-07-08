@@ -9,8 +9,8 @@ use merlin::Transcript;
 use serde::{Deserialize, Serialize};
 
 use group::{
-    helpers::FlatMapResults, self_product, ComputationalSecuritySizedNumber, CsRng, GroupElement,
-    LinearlyCombinable, Samplable, StatisticalSecuritySizedNumber,
+    helpers::FlatMapResults, ComputationalSecuritySizedNumber, CsRng, GroupElement, Samplable,
+    StatisticalSecuritySizedNumber,
 };
 use proof::{GroupsPublicParametersAccessors, TranscriptProtocol};
 
@@ -18,7 +18,7 @@ use crate::language::MAX_REPETITIONS;
 use crate::{
     language,
     language::{StatementSpaceValue, WitnessSpaceValue},
-    Error, Result,
+    Error, ErrorKind, Result,
 };
 
 pub mod fischlin;
@@ -57,7 +57,7 @@ impl<
         ProtocolContext: Clone + Serialize + Debug + PartialEq + Eq + Send + Sync + Send + Sync,
     > Proof<REPETITIONS, Language, ProtocolContext>
 {
-    pub(super) fn new(
+    pub fn new(
         statement_masks: [group::Value<Language::StatementSpaceGroupElement>; REPETITIONS],
         responses: [group::Value<Language::WitnessSpaceGroupElement>; REPETITIONS],
     ) -> Self {
@@ -66,6 +66,36 @@ impl<
             responses,
             _protocol_context_choice: PhantomData,
         }
+    }
+
+    /// Construct a deterministic default proof from neutral (identity) group elements.
+    ///
+    /// Used for threshold mode where no centralized party exists: the default proof
+    /// provides deterministic bytes for Fiat-Shamir transcript consistency without
+    /// requiring actual proof generation or verification.
+    pub fn new_default(
+        witness_space_public_parameters: &language::WitnessSpacePublicParameters<
+            REPETITIONS,
+            Language,
+        >,
+        statement_space_public_parameters: &language::StatementSpacePublicParameters<
+            REPETITIONS,
+            Language,
+        >,
+    ) -> Result<Self> {
+        let neutral_statement =
+            Language::StatementSpaceGroupElement::neutral_from_public_parameters(
+                statement_space_public_parameters,
+            )?;
+
+        let neutral_witness = Language::WitnessSpaceGroupElement::neutral_from_public_parameters(
+            witness_space_public_parameters,
+        )?;
+
+        Ok(Self::new(
+            array::from_fn(|_| neutral_statement.value()),
+            array::from_fn(|_| neutral_witness.value()),
+        ))
     }
 
     /// Prove a batched Maurer zero-knowledge claim.
@@ -159,7 +189,7 @@ impl<
         )
     }
 
-    pub(super) fn prove_inner(
+    pub fn prove_inner(
         protocol_context: &ProtocolContext,
         language_public_parameters: &Language::PublicParameters,
         witnesses: Vec<Language::WitnessSpaceGroupElement>,
@@ -168,11 +198,11 @@ impl<
         statement_masks: [Language::StatementSpaceGroupElement; REPETITIONS],
     ) -> Result<Self> {
         if REPETITIONS == 0 || REPETITIONS > MAX_REPETITIONS {
-            return Err(Error::UnsupportedRepetitions);
+            return Err(Error::from(ErrorKind::UnsupportedRepetitions));
         }
 
         if witnesses.is_empty() {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         let batch_size = witnesses.len();
@@ -205,17 +235,21 @@ impl<
                     Language::WitnessSpaceGroupElement::linearly_combine_bounded(
                         witnesses_and_challenges,
                         challenge_bit_size,
+                        language_public_parameters.witness_space_public_parameters(),
                     )
                     .map_or(
-                        randomizer,
+                        randomizer.clone(),
                         |witnesses_and_challenges_linear_combination| {
-                            randomizer + witnesses_and_challenges_linear_combination
+                            randomizer.add_constant_time(
+                                &witnesses_and_challenges_linear_combination,
+                                language_public_parameters.witness_space_public_parameters(),
+                            )
                         },
                     )
                 })
                 .collect::<Vec<_>>()
                 .try_into()
-                .map_err(|_| Error::InternalError)?,
+                .map_err(|_| Error::from(ErrorKind::InternalError))?,
         );
 
         Ok(Self::new(statement_masks_values, responses))
@@ -254,18 +288,19 @@ impl<
         self.verify_inner(challenges, language_public_parameters, statements)
     }
 
-    pub(crate) fn verify_inner(
+    pub fn verify_inner(
         &self,
         challenges: [Vec<ComputationalSecuritySizedNumber>; REPETITIONS],
         language_public_parameters: &Language::PublicParameters,
         statements: Vec<Language::StatementSpaceGroupElement>,
     ) -> Result<()> {
         if REPETITIONS == 0 || REPETITIONS > MAX_REPETITIONS {
-            return Err(Error::UnsupportedRepetitions);
+            return Err(Error::from(ErrorKind::UnsupportedRepetitions));
         }
 
         let responses = self
             .responses
+            .clone()
             .map(|response| {
                 Language::WitnessSpaceGroupElement::new(
                     response,
@@ -276,6 +311,7 @@ impl<
 
         let statement_masks = self
             .statement_masks
+            .clone()
             .map(|statement_mask| {
                 Language::StatementSpaceGroupElement::new(
                     statement_mask,
@@ -309,23 +345,26 @@ impl<
                     Language::StatementSpaceGroupElement::linearly_combine_bounded_vartime(
                         statements_and_challenges,
                         challenge_bit_size,
+                        language_public_parameters.statement_space_public_parameters(),
                     )
                     .map_or(
-                        statement_mask,
+                        statement_mask.clone(),
                         |statements_and_challenges_linear_combination| {
-                            statements_and_challenges_linear_combination
-                                .add_vartime(&statement_mask)
+                            statements_and_challenges_linear_combination.add_vartime(
+                                &statement_mask,
+                                language_public_parameters.statement_space_public_parameters(),
+                            )
                         },
                     )
                 })
                 .collect::<Vec<_>>()
                 .try_into()
-                .map_err(|_| Error::InternalError)?;
+                .map_err(|_| Error::from(ErrorKind::InternalError))?;
 
         if response_statements == reconstructed_response_statements {
             return Ok(());
         }
-        Err(proof::Error::ProofVerification)?
+        Err(proof::Error::from(proof::ErrorKind::ProofVerification))?
     }
 
     /// Verify a batch of batched Maurer zero-knowledge proofs.
@@ -337,21 +376,24 @@ impl<
         rng: &mut impl CsRng,
     ) -> Result<()> {
         if REPETITIONS == 0 || REPETITIONS > MAX_REPETITIONS {
-            return Err(Error::UnsupportedRepetitions);
+            return Err(Error::from(ErrorKind::UnsupportedRepetitions));
         }
 
         let challenge_bit_size = Language::challenge_bits()?
             .checked_add(StatisticalSecuritySizedNumber::BITS)
-            .ok_or(Error::InternalError)?;
+            .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
 
         let number_of_proofs = proofs.len();
-        let batch_size = statements.first().ok_or(Error::InvalidParameters)?.len();
+        let batch_size = statements
+            .first()
+            .ok_or_else(|| Error::from(ErrorKind::InvalidParameters))?
+            .len();
 
         if statements.len() != number_of_proofs
             || protocol_contexts.len() != number_of_proofs
             || statements.iter().any(|v| v.len() != batch_size)
         {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         // Compute the maurer challenges $\set{e_{ij}^k}$
@@ -436,7 +478,7 @@ impl<
             // For the `k`th repetition, compute $\sum{s_i^k*z_i^k}$
             let responses_and_challenges = responses
                 .iter()
-                .map(|responses| responses[k])
+                .map(|responses| responses[k].clone())
                 .zip(
                     batch_verification_challenges
                         .iter()
@@ -444,7 +486,10 @@ impl<
                 )
                 .collect();
 
-            Language::WitnessSpaceGroupElement::linearly_combine_vartime(responses_and_challenges)
+            Language::WitnessSpaceGroupElement::linearly_combine_vartime(
+                responses_and_challenges,
+                language_public_parameters.witness_space_public_parameters(),
+            )
         })
         .flat_map_results()?;
 
@@ -464,24 +509,26 @@ impl<
                 .flat_map_results()?;
 
         // $\sum{s_i^k*R_i^k}$
-        let batched_statement_masks = array::from_fn(|k| {
-            // Safe to dereference `statement_masks` and `batch_verification_challenges` here as we are iterating the indices of the `REPETITIONS` sized arrays with `k`.
-            // For the `k`th repetition, compute $\sum{s_i^k*R_i^k}$
-            let statement_masks_and_challenges = statement_masks
-                .iter()
-                .map(|statement_masks| statement_masks[k])
-                .zip(
-                    batch_verification_challenges
-                        .iter()
-                        .map(|batch_verification_challenges| batch_verification_challenges[k]),
-                )
-                .collect();
+        let batched_statement_masks: [Language::StatementSpaceGroupElement; REPETITIONS] =
+            array::from_fn(|k| {
+                // Safe to dereference `statement_masks` and `batch_verification_challenges` here as we are iterating the indices of the `REPETITIONS` sized arrays with `k`.
+                // For the `k`th repetition, compute $\sum{s_i^k*R_i^k}$
+                let statement_masks_and_challenges = statement_masks
+                    .iter()
+                    .map(|statement_masks| statement_masks[k].clone())
+                    .zip(
+                        batch_verification_challenges
+                            .iter()
+                            .map(|batch_verification_challenges| batch_verification_challenges[k]),
+                    )
+                    .collect();
 
-            Language::StatementSpaceGroupElement::linearly_combine_vartime(
-                statement_masks_and_challenges,
-            )
-        })
-        .flat_map_results()?;
+                Language::StatementSpaceGroupElement::linearly_combine_vartime(
+                    statement_masks_and_challenges,
+                    language_public_parameters.statement_space_public_parameters(),
+                )
+            })
+            .flat_map_results()?;
 
         // Compute $\set{\sum{s_i^k*e_{ij}^k*X_{ij}}}_k$
         let batched_statements: [Language::StatementSpaceGroupElement; REPETITIONS] =
@@ -505,21 +552,33 @@ impl<
                 Language::StatementSpaceGroupElement::linearly_combine_bounded_vartime(
                     statements_and_challenges,
                     challenge_bit_size,
+                    language_public_parameters.statement_space_public_parameters(),
                 )
             })
             .flat_map_results()?;
 
         // $\sum{s_i^k*R_i^k} + \sum{s_i^k*e_{ij}^k*X_{ij}}$
+        let reconstructed_response_statements: Vec<Language::StatementSpaceGroupElement> =
+            batched_statement_masks
+                .into_iter()
+                .zip(batched_statements)
+                .map(|(mask, statement)| {
+                    mask.add_vartime(
+                        &statement,
+                        language_public_parameters.statement_space_public_parameters(),
+                    )
+                })
+                .collect();
         let reconstructed_response_statements: [Language::StatementSpaceGroupElement; REPETITIONS] =
-            self_product::GroupElement::from(batched_statement_masks)
-                .add_vartime(&self_product::GroupElement::from(batched_statements))
-                .into();
+            reconstructed_response_statements
+                .try_into()
+                .map_err(|_| Error::from(ErrorKind::InternalError))?;
 
         if response_statements == reconstructed_response_statements {
             return Ok(());
         }
 
-        Err(proof::Error::ProofVerification)?
+        Err(proof::Error::from(proof::ErrorKind::ProofVerification))?
     }
 
     #[allow(clippy::type_complexity)]
@@ -541,6 +600,7 @@ impl<
         let is_randomizer = true;
         let is_verify = false;
         let statement_masks = randomizers
+            .clone()
             .map(|randomizer| {
                 Language::homomorphose(
                     &randomizer,
@@ -554,7 +614,7 @@ impl<
         Ok((randomizers, statement_masks))
     }
 
-    pub(super) fn setup_transcript(
+    pub fn setup_transcript(
         protocol_context: &ProtocolContext,
         language_public_parameters: &Language::PublicParameters,
         statements: Vec<group::Value<Language::StatementSpaceGroupElement>>,
@@ -575,7 +635,7 @@ impl<
                 .serialize_to_transcript_as_json(b"statement value", &statement)
                 .is_err()
         }) {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         if statement_masks_values.iter().any(|statement_mask| {
@@ -583,13 +643,13 @@ impl<
                 .serialize_to_transcript_as_json(b"statement mask value", &statement_mask)
                 .is_err()
         }) {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         Ok(transcript)
     }
 
-    pub(crate) fn compute_challenges(
+    pub fn compute_challenges(
         batch_size: usize,
         transcript: &mut Transcript,
     ) -> [Vec<ComputationalSecuritySizedNumber>; REPETITIONS] {
@@ -617,8 +677,6 @@ impl<
 {
     type Error = Error;
     type ProtocolContext = ProtocolContext;
-    type ProofWithAggregationProtocolContext =
-        Proof<REPETITIONS, Language, proof::aggregation::ProtocolContext<ProtocolContext>>;
     type PublicParameters = Language::PublicParameters;
     type WitnessSpaceGroupElement = Language::WitnessSpaceGroupElement;
     type StatementSpaceGroupElement = Language::StatementSpaceGroupElement;
@@ -680,7 +738,6 @@ pub(super) mod test_helpers {
 
     use commitment::CommitmentSizedNumber;
     use group::{OsCsRng, PartyID};
-    use mpc::{Weight, WeightedThresholdAccessStructure};
 
     use crate::test_helpers::{sample_witness, sample_witnesses};
     use crate::Language;
@@ -775,12 +832,12 @@ pub(super) mod test_helpers {
         assert!(res.is_err(), "non-valid proofs shouldn't batch verify");
 
         let mut invalid_proofs = proofs;
-        invalid_proofs[0].responses =
-            [Language::WitnessSpaceGroupElement::neutral_from_public_parameters(
-                language_public_parameters.witness_space_public_parameters(),
-            )
-            .unwrap()
-            .value(); REPETITIONS];
+        let neutral_value = Language::WitnessSpaceGroupElement::neutral_from_public_parameters(
+            language_public_parameters.witness_space_public_parameters(),
+        )
+        .unwrap()
+        .value();
+        invalid_proofs[0].responses = array::from_fn(|_| neutral_value.clone());
         let res = Proof::verify_batch(
             invalid_proofs,
             vec![PhantomData; number_of_proofs],
@@ -790,53 +847,6 @@ pub(super) mod test_helpers {
         );
 
         assert!(res.is_err(), "non-valid proofs shouldn't batch verify");
-    }
-
-    /// Test that the MPC Session for the Maurer statement aggregation asynchronous protocol for `Lang` succeeds.
-    pub fn statement_aggregates_asynchronously<
-        const REPETITIONS: usize,
-        Lang: Language<REPETITIONS>,
-    >(
-        language_public_parameters: &Lang::PublicParameters,
-        threshold: PartyID,
-        party_to_weight: HashMap<PartyID, Weight>,
-        batch_size: usize,
-        rng: &mut impl CsRng,
-    ) {
-        let session_id = CommitmentSizedNumber::random(rng);
-        let access_structure =
-            WeightedThresholdAccessStructure::new(threshold, party_to_weight).unwrap();
-
-        let (private_inputs, public_inputs): (HashMap<_, _>, HashMap<_, _>) = (1
-            ..=access_structure.number_of_tangible_parties())
-            .map(|party_id| {
-                let witnesses = sample_witnesses::<REPETITIONS, Lang>(
-                    language_public_parameters,
-                    batch_size,
-                    rng,
-                );
-
-                let public_input = proof::aggregation::asynchronous::PublicInput {
-                    protocol_context: session_id,
-                    public_parameters: language_public_parameters.clone(),
-                    batch_size,
-                };
-
-                ((party_id, witnesses), (party_id, public_input))
-            })
-            .unzip();
-
-        mpc::test_helpers::asynchronous_session_terminates_successfully::<
-            proof::aggregation::asynchronous::Party<
-                Proof<REPETITIONS, Lang, CommitmentSizedNumber>,
-            >,
-        >(
-            session_id,
-            &access_structure,
-            private_inputs,
-            public_inputs,
-            2,
-        );
     }
 
     pub fn invalid_proof_fails_verification<
@@ -875,18 +885,25 @@ pub(super) mod test_helpers {
                             .clone()
                             .into_iter()
                             .take(batch_size - 1)
-                            .chain(vec![wrong_statement])
+                            .chain(vec![wrong_statement.clone()])
                             .collect(),
                     )
                     .err()
                     .unwrap(),
-                Error::Proof(proof::Error::ProofVerification)
+                Error {
+                    kind: ErrorKind::Proof(proof::Error {
+                        kind: proof::ErrorKind::ProofVerification,
+                        ..
+                    }),
+                    ..
+                }
             ),
             "valid proof shouldn't verify against wrong statements"
         );
 
         let mut invalid_proof = valid_proof.clone();
-        invalid_proof.responses = [wrong_witness.value(); REPETITIONS];
+        let wrong_witness_value = wrong_witness.value();
+        invalid_proof.responses = array::from_fn(|_| wrong_witness_value.clone());
 
         assert!(
             matches!(
@@ -894,13 +911,20 @@ pub(super) mod test_helpers {
                     .verify(&PhantomData, language_public_parameters, statements.clone(),)
                     .err()
                     .unwrap(),
-                Error::Proof(proof::Error::ProofVerification)
+                Error {
+                    kind: ErrorKind::Proof(proof::Error {
+                        kind: proof::ErrorKind::ProofVerification,
+                        ..
+                    }),
+                    ..
+                }
             ),
             "proof with a wrong response shouldn't pass verification"
         );
 
         let mut invalid_proof = valid_proof.clone();
-        invalid_proof.statement_masks = [wrong_statement.neutral().value(); REPETITIONS];
+        let neutral_statement_value = wrong_statement.neutral().value();
+        invalid_proof.statement_masks = array::from_fn(|_| neutral_statement_value.clone());
 
         assert!(
             matches!(
@@ -908,13 +932,20 @@ pub(super) mod test_helpers {
                     .verify(&PhantomData, language_public_parameters, statements.clone(),)
                     .err()
                     .unwrap(),
-                Error::Proof(proof::Error::ProofVerification)
+                Error {
+                    kind: ErrorKind::Proof(proof::Error {
+                        kind: proof::ErrorKind::ProofVerification,
+                        ..
+                    }),
+                    ..
+                }
             ),
             "proof with a neutral statement_mask shouldn't pass verification"
         );
 
         let mut invalid_proof = valid_proof.clone();
-        invalid_proof.responses = [wrong_witness.neutral().value(); REPETITIONS];
+        let neutral_witness_value = wrong_witness.neutral().value();
+        invalid_proof.responses = array::from_fn(|_| neutral_witness_value.clone());
 
         assert!(
             matches!(
@@ -922,14 +953,21 @@ pub(super) mod test_helpers {
                     .verify(&PhantomData, language_public_parameters, statements.clone(),)
                     .err()
                     .unwrap(),
-                Error::Proof(proof::Error::ProofVerification)
+                Error {
+                    kind: ErrorKind::Proof(proof::Error {
+                        kind: proof::ErrorKind::ProofVerification,
+                        ..
+                    }),
+                    ..
+                }
             ),
             "proof with a neutral response shouldn't pass verification"
         );
 
         if let Some(invalid_statement_space_value) = invalid_statement_space_value {
             let mut invalid_proof = valid_proof.clone();
-            invalid_proof.statement_masks = [invalid_statement_space_value; REPETITIONS];
+            invalid_proof.statement_masks =
+                array::from_fn(|_| invalid_statement_space_value.clone());
 
             assert!(matches!(
             invalid_proof
@@ -940,14 +978,14 @@ pub(super) mod test_helpers {
                 )
                 .err()
                 .unwrap(),
-            Error::Group(group::Error::InvalidGroupElement)),
+            Error { kind: ErrorKind::Group(group::Error { kind: group::ErrorKind::InvalidGroupElement, .. }), .. }),
                     "proof with an invalid statement_mask value should generate an invalid parameter error when checking the element is not in the group"
             );
         }
 
         if let Some(invalid_witness_space_value) = invalid_witness_space_value {
             let mut invalid_proof = valid_proof.clone();
-            invalid_proof.responses = [invalid_witness_space_value; REPETITIONS];
+            invalid_proof.responses = array::from_fn(|_| invalid_witness_space_value.clone());
 
             assert!(matches!(
             invalid_proof
@@ -958,7 +996,7 @@ pub(super) mod test_helpers {
                 )
                 .err()
                 .unwrap(),
-            Error::Group(group::Error::InvalidGroupElement)),
+            Error { kind: ErrorKind::Group(group::Error { kind: group::ErrorKind::InvalidGroupElement, .. }), .. }),
                     "proof with an invalid response value should generate an invalid parameter error when checking the element is not in the group"
             );
         }
@@ -997,7 +1035,13 @@ pub(super) mod test_helpers {
                     )
                     .err()
                     .unwrap(),
-                Error::Proof(proof::Error::ProofVerification)
+                Error {
+                    kind: ErrorKind::Proof(proof::Error {
+                        kind: proof::ErrorKind::ProofVerification,
+                        ..
+                    }),
+                    ..
+                }
             ),
             "proof over wrong public parameters shouldn't pass verification"
         );
@@ -1089,7 +1133,7 @@ pub(super) mod test_helpers {
                         Some(protocol_context.clone()),
                         Some(language_public_parameters.clone()),
                         Some(statement_values.clone()),
-                        Some(proof.statement_masks),
+                        Some(proof.statement_masks.clone()),
                     ),
                     language_public_parameters,
                     statements.clone(),
@@ -1107,14 +1151,20 @@ pub(super) mod test_helpers {
                             Some(protocol_context.clone()),
                             Some(language_public_parameters.clone()),
                             Some(statement_values.clone()),
-                            Some(proof.statement_masks),
+                            Some(proof.statement_masks.clone()),
                         ),
                         language_public_parameters,
                         statements.clone()
                     )
                     .err()
                     .unwrap(),
-                Error::Proof(proof::Error::ProofVerification),
+                Error {
+                    kind: ErrorKind::Proof(proof::Error {
+                        kind: proof::ErrorKind::ProofVerification,
+                        ..
+                    }),
+                    ..
+                },
             ),
             "proofs with incomplete transcripts (missing language name) should fail"
         );
@@ -1128,14 +1178,20 @@ pub(super) mod test_helpers {
                             None,
                             Some(language_public_parameters.clone()),
                             Some(statement_values.clone()),
-                            Some(proof.statement_masks),
+                            Some(proof.statement_masks.clone()),
                         ),
                         language_public_parameters,
                         statements.clone()
                     )
                     .err()
                     .unwrap(),
-                Error::Proof(proof::Error::ProofVerification),
+                Error {
+                    kind: ErrorKind::Proof(proof::Error {
+                        kind: proof::ErrorKind::ProofVerification,
+                        ..
+                    }),
+                    ..
+                },
             ),
             "proofs with incomplete transcripts (missing protocol context) should fail"
         );
@@ -1149,14 +1205,20 @@ pub(super) mod test_helpers {
                             Some(protocol_context.clone()),
                             None,
                             Some(statement_values.clone()),
-                            Some(proof.statement_masks),
+                            Some(proof.statement_masks.clone()),
                         ),
                         language_public_parameters,
                         statements.clone()
                     )
                     .err()
                     .unwrap(),
-                Error::Proof(proof::Error::ProofVerification),
+                Error {
+                    kind: ErrorKind::Proof(proof::Error {
+                        kind: proof::ErrorKind::ProofVerification,
+                        ..
+                    }),
+                    ..
+                },
             ),
             "proofs with incomplete transcripts (missing public parameters) should fail"
         );
@@ -1170,14 +1232,20 @@ pub(super) mod test_helpers {
                             Some(protocol_context.clone()),
                             Some(language_public_parameters.clone()),
                             None,
-                            Some(proof.statement_masks),
+                            Some(proof.statement_masks.clone()),
                         ),
                         language_public_parameters,
                         statements.clone()
                     )
                     .err()
                     .unwrap(),
-                Error::Proof(proof::Error::ProofVerification),
+                Error {
+                    kind: ErrorKind::Proof(proof::Error {
+                        kind: proof::ErrorKind::ProofVerification,
+                        ..
+                    }),
+                    ..
+                },
             ),
             "proofs with incomplete transcripts (missing statements) should fail"
         );
@@ -1198,7 +1266,13 @@ pub(super) mod test_helpers {
                     )
                     .err()
                     .unwrap(),
-                Error::Proof(proof::Error::ProofVerification),
+                Error {
+                    kind: ErrorKind::Proof(proof::Error {
+                        kind: proof::ErrorKind::ProofVerification,
+                        ..
+                    }),
+                    ..
+                },
             ),
             "proofs with incomplete transcripts (missing statement masks) should fail"
         );
@@ -1212,7 +1286,8 @@ pub(super) mod test_helpers {
     ) {
         let witness =
             sample_witnesses::<REPETITIONS, Language>(language_public_parameters, 1, &mut OsCsRng)
-                [0];
+                [0]
+            .clone();
 
         benchmark_proof_internal::<REPETITIONS, Language>(
             language_public_parameters,
@@ -1238,10 +1313,10 @@ pub(super) mod test_helpers {
         let timestamp = if as_micros { "ms" } else { "µs" };
 
         for batch_size in batch_sizes
-            .unwrap_or(vec![1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024])
+            .unwrap_or_else(|| vec![1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024])
             .into_iter()
         {
-            let witnesses = vec![witness; batch_size];
+            let witnesses = vec![witness.clone(); batch_size];
 
             let now = measurement.start();
             let statements: Result<Vec<_>> = witnesses
@@ -1270,7 +1345,7 @@ pub(super) mod test_helpers {
                     statements_values.clone(),
                     // just a stub value as the value doesn't affect the benchmarking of
                     // this function
-                    &[*statements_values.first().unwrap(); REPETITIONS],
+                    &array::from_fn(|_| statements_values.first().unwrap().clone()),
                 )
                 .unwrap(),
             );
@@ -1321,7 +1396,7 @@ pub(super) mod test_helpers {
                         "{}, {}, {}, {batch_size}, {:?}",
                         Language::NAME,
                         REPETITIONS,
-                        extra_description.clone().unwrap_or("".to_string()),
+                        extra_description.clone().unwrap_or_default(),
                         if as_micros {
                             verify_batch_time.as_micros()
                         } else {
@@ -1339,7 +1414,7 @@ pub(super) mod test_helpers {
                 "{}, {}, {}, {batch_size}, {:?}, {:?}, {:?}, {:?}, {:?}",
                 Language::NAME,
                 REPETITIONS,
-                extra_description.clone().unwrap_or("".to_string()),
+                extra_description.clone().unwrap_or_default(),
                 if as_micros {
                     statements_time.as_micros()
                 } else {

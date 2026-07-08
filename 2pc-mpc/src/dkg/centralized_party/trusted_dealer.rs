@@ -57,7 +57,7 @@ pub struct Party<
 impl<
         const SCALAR_LIMBS: usize,
         const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
         EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
         ProtocolPublicParameters,
     >
@@ -120,7 +120,7 @@ where
         )?;
         let public_key = (secret_key * generator).value();
 
-        // sampled decntralized party secret key share uniformly at random. $x_{B}\gets [0,q], x_{A}=x-X_{B}, X_{B}=x_{B}\cdot G,X_{A}=X-X_{B}$.
+        // sampled decentralized party secret key share uniformly at random. $x_{B}\gets [0,q], x_{A}=x-X_{B}, X_{B}=x_{B}\cdot G,X_{A}=X-X_{B}$.
         let decentralized_party_secret_key_share = GroupElement::Scalar::sample(
             &protocol_public_parameters.scalar_group_public_parameters,
             rng,
@@ -128,7 +128,10 @@ where
         let decentralized_party_public_key_share =
             (decentralized_party_secret_key_share * generator).value();
 
-        let secret_key_share = secret_key - decentralized_party_secret_key_share;
+        let secret_key_share = secret_key.sub_constant_time(
+            &decentralized_party_secret_key_share,
+            &protocol_public_parameters.scalar_group_public_parameters,
+        );
 
         let protocol_context = knowledge_of_secret_key_share_protocol_context(session_id);
 

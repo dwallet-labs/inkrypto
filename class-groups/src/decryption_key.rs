@@ -337,6 +337,7 @@ where
     }
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct DecryptionKeyPublicParameters();
 
@@ -444,8 +445,10 @@ where
             public_parameters.setup_parameters.decryption_key_bits(),
         );
         if !key_matches_pp {
-            return Err(homomorphic_encryption::Error::Group(
-                group::Error::InvalidParameters,
+            return Err(homomorphic_encryption::Error::from(
+                homomorphic_encryption::ErrorKind::Group(group::Error::from(
+                    group::ErrorKind::InvalidParameters,
+                )),
             ));
         }
 
@@ -473,10 +476,16 @@ where
             plaintext_space_public_parameters,
             DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
         )
-        .map_err(|_| homomorphic_encryption::Error::InternalError)?;
+        .map_err(|_| {
+            homomorphic_encryption::Error::from(homomorphic_encryption::ErrorKind::InternalError)
+        })?;
 
         let (_, decryption_key) = Self::generate_with_setup_parameters(setup_parameters, rng)
-            .map_err(|_| homomorphic_encryption::Error::InternalError)?;
+            .map_err(|_| {
+                homomorphic_encryption::Error::from(
+                    homomorphic_encryption::ErrorKind::InternalError,
+                )
+            })?;
 
         Ok(decryption_key)
     }

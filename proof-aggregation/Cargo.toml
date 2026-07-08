@@ -1,0 +1,38 @@
+[package]
+name = "proof_aggregation"
+version = "0.2.0"
+edition = "2021"
+license = "CC-BY-NC-ND-4.0"
+
+[dependencies]
+crypto-bigint = { workspace = true, features = ["serde"], default-features = false }
+merlin = { workspace = true, default-features = false }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, default-features = false, features = ["alloc"] }
+group = { path = "../group" }
+mpc = { path = "../mpc" }
+proof = { path = "../proof" }
+maurer = { path = "../maurer" }
+commitment = { path = "../commitment" }
+thiserror = { workspace = true }
+itertools = { workspace = true }
+bulletproofs = { workspace = true, default-features = false, optional = true}
+curve25519-dalek = { workspace = true, features = ["serde"] }
+
+rayon = { workspace = true, optional = true }
+criterion = { workspace = true, default-features = false, features = ["html_reports", "cargo_bench_support", "rayon"], optional = true }
+rand = { workspace = true, default-features = false, features = ["alloc"], optional = true }
+rstest = { workspace = true, optional = true }
+
+[dev-dependencies]
+mpc = { path = "../mpc", features = ["test_helpers"] }
+group = { path = "../group", features = ["os_rng"] }
+bulletproofs = { workspace = true, features = ["cloneable"] }
+
+[features]
+bulletproofs = ["dep:bulletproofs"]
+test_helpers = ["dep:criterion", "group/os_rng", "dep:rstest", "dep:rand", "bulletproofs/cloneable"]
+parallel = ["dep:rayon", "mpc/parallel"]
+
+[lints]
+workspace = true

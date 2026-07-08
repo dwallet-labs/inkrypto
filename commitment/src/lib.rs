@@ -17,9 +17,37 @@ pub use pedersen::Pedersen;
 pub mod multipedersen;
 pub mod pedersen;
 
-/// Commitment error.
+/// Commitment error wrapper that carries a backtrace captured at construction.
+///
+/// See `group::Error` for details.
+#[derive(thiserror::Error, Clone, Debug)]
+#[error("{kind}\n{backtrace}")]
+pub struct Error {
+    pub kind: ErrorKind,
+    pub backtrace: std::sync::Arc<std::backtrace::Backtrace>,
+}
+
+impl PartialEq for Error {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+    }
+}
+
+impl<E> From<E> for Error
+where
+    ErrorKind: From<E>,
+{
+    fn from(value: E) -> Self {
+        Self {
+            kind: ErrorKind::from(value),
+            backtrace: std::sync::Arc::new(std::backtrace::Backtrace::capture()),
+        }
+    }
+}
+
+/// Commitment error kind.
 #[derive(thiserror::Error, Clone, Debug, PartialEq)]
-pub enum Error {
+pub enum ErrorKind {
     #[error("invalid public parameters")]
     InvalidPublicParameters,
     #[error("group error")]
@@ -129,6 +157,7 @@ pub trait HomomorphicCommitmentScheme<const MESSAGE_SPACE_SCALAR_LIMBS: usize>:
         &self,
         message: &Self::MessageSpaceGroupElement,
         randomness: &Self::RandomnessSpaceGroupElement,
+        public_parameters: &group::PublicParameters<Self::CommitmentSpaceGroupElement>,
     ) -> Self::CommitmentSpaceGroupElement;
 }
 
@@ -285,6 +314,9 @@ pub mod test_helpers {
     >(
         public_parameters: &CommitmentScheme::PublicParameters,
     ) {
+        let commitment_space_public_parameters =
+            public_parameters.commitment_space_public_parameters();
+
         let first_message = CommitmentScheme::MessageSpaceGroupElement::sample(
             public_parameters.message_space_public_parameters(),
             &mut OsCsRng,
@@ -308,8 +340,16 @@ pub mod test_helpers {
         .unwrap();
 
         let commitment_scheme = CommitmentScheme::new(public_parameters).unwrap();
-        let first_commitment = commitment_scheme.commit(&first_message, &first_randomness);
-        let second_commitment = commitment_scheme.commit(&second_message, &second_randomness);
+        let first_commitment = commitment_scheme.commit(
+            &first_message,
+            &first_randomness,
+            commitment_space_public_parameters,
+        );
+        let second_commitment = commitment_scheme.commit(
+            &second_message,
+            &second_randomness,
+            commitment_space_public_parameters,
+        );
 
         assert_ne!(
             first_commitment, second_commitment,
@@ -317,15 +357,26 @@ pub mod test_helpers {
         );
         assert_ne!(
             first_commitment,
-            commitment_scheme.commit(&first_message, &second_randomness),
+            commitment_scheme.commit(
+                &first_message,
+                &second_randomness,
+                commitment_space_public_parameters,
+            ),
             "commitments over the same message using different randomness should differ"
         );
 
+        let message_space_public_parameters = public_parameters.message_space_public_parameters();
+        let randomness_space_public_parameters =
+            public_parameters.randomness_space_public_parameters();
+
         assert_eq!(
-            first_commitment + second_commitment,
+            first_commitment
+                .add_constant_time(&second_commitment, commitment_space_public_parameters,),
             commitment_scheme.commit(
-                &(first_message + second_message),
-                &(first_randomness + second_randomness),
+                &first_message.add_constant_time(&second_message, message_space_public_parameters),
+                &first_randomness
+                    .add_constant_time(&second_randomness, randomness_space_public_parameters,),
+                commitment_space_public_parameters,
             ),
             "commit should be homomorphic"
         );

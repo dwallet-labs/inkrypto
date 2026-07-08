@@ -3,8 +3,36 @@
 
 use group::PartyID;
 
+/// Tiresias error wrapper that carries a backtrace captured at construction.
+///
+/// See `group::Error` for details.
+#[derive(thiserror::Error, Clone, Debug)]
+#[error("{kind}\n{backtrace}")]
+pub struct Error {
+    pub kind: ErrorKind,
+    pub backtrace: std::sync::Arc<std::backtrace::Backtrace>,
+}
+
+impl PartialEq for Error {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+    }
+}
+
+impl<E> From<E> for Error
+where
+    ErrorKind: From<E>,
+{
+    fn from(value: E) -> Self {
+        Self {
+            kind: ErrorKind::from(value),
+            backtrace: std::sync::Arc::new(std::backtrace::Backtrace::capture()),
+        }
+    }
+}
+
 #[derive(thiserror::Error, Clone, Debug, PartialEq)]
-pub enum Error {
+pub enum ErrorKind {
     #[error("the following protocol error occurred: {0}")]
     ProtocolError(ProtocolError),
     #[error("the following sanity-check error occurred: {0}")]
@@ -35,17 +63,17 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 impl From<Error> for mpc::Error {
     fn from(value: Error) -> Self {
-        match value {
-            Error::ProtocolError(ProtocolError::ProofVerificationError(malicious_parties)) => {
-                mpc::Error::MaliciousMessage(malicious_parties)
+        match value.kind {
+            ErrorKind::ProtocolError(ProtocolError::ProofVerificationError(malicious_parties)) => {
+                mpc::Error::from(mpc::ErrorKind::MaliciousMessage(malicious_parties))
             }
-            Error::Group(e) => mpc::Error::Group(e),
-            Error::InternalError => mpc::Error::InternalError,
-            Error::SanityCheckError(SanityCheckError::InvalidParameters) => {
-                mpc::Error::InvalidParameters
+            ErrorKind::Group(e) => mpc::Error::from(mpc::ErrorKind::Group(e)),
+            ErrorKind::InternalError => mpc::Error::from(mpc::ErrorKind::InternalError),
+            ErrorKind::SanityCheckError(SanityCheckError::InvalidParameters) => {
+                mpc::Error::from(mpc::ErrorKind::InvalidParameters)
             }
-            Error::MPC(e) => e,
-            e => mpc::Error::Consumer(format!("tiresias error {e:?}")),
+            ErrorKind::MPC(e) => e,
+            kind => mpc::Error::from(mpc::ErrorKind::Consumer(format!("tiresias error {kind:?}"))),
         }
     }
 }

@@ -6,68 +6,22 @@ use crypto_bigint::{Limb, Uint, Word};
 use rayon::prelude::*;
 use subtle::{ConditionallySelectable, ConstantTimeEq};
 
-use crate::Error;
+use crate::{Error, ErrorKind};
 
 const WINDOW: u32 = 4;
 const WINDOW_MASK: Word = (1 << WINDOW) - 1;
 
-/// Performs constant-time "modular multi-exponentiation" (i.e. linear combination) using Montgomery's ladder.
-pub trait LinearlyCombinable: Sized {
-    /// Performs constant-time "modular multi-exponentiation" (i.e. linear combination) using Montgomery's ladder.
-    ///
-    /// See: Straus, E. G. Problems and solutions: Addition chains of vectors. American Mathematical
-    /// Monthly 71 (1964), 806–808.
-    ///
-    /// This gives roughly a 4x improvement for 4096-bits multiplicative groups
-    fn linearly_combine<const RHS_LIMBS: usize>(
-        bases_and_multiplicands: Vec<(Self, Uint<RHS_LIMBS>)>,
-    ) -> crate::Result<Self> {
-        Self::linearly_combine_bounded(bases_and_multiplicands, Uint::<RHS_LIMBS>::BITS)
-    }
-
-    /// Performs constant-time "modular multi-exponentiation" (i.e. linear combination) using Montgomery's ladder.
-    /// `exponent_bits` represents the number of bits to take into account for the exponent.
-    ///
-    /// See: Straus, E. G. Problems and solutions: Addition chains of vectors. American Mathematical
-    /// Monthly 71 (1964), 806–808.
-    ///
-    /// This gives roughly a 4x improvement for 4096-bits multiplicative groups
-    fn linearly_combine_bounded<const RHS_LIMBS: usize>(
-        bases_and_multiplicands: Vec<(Self, Uint<RHS_LIMBS>)>,
-        exponent_bits: u32,
-    ) -> crate::Result<Self>;
-
-    /// Performs variable-time "modular multi-exponentiation" (i.e. linear combination) using Montgomery's ladder.
-    ///
-    /// See: Straus, E. G. Problems and solutions: Addition chains of vectors. American Mathematical
-    /// Monthly 71 (1964), 806–808.
-    fn linearly_combine_vartime<const RHS_LIMBS: usize>(
-        bases_and_multiplicands: Vec<(Self, Uint<RHS_LIMBS>)>,
-    ) -> crate::Result<Self> {
-        Self::linearly_combine_bounded_vartime(bases_and_multiplicands, Uint::<RHS_LIMBS>::BITS)
-    }
-
-    /// Performs variable-time "modular multi-exponentiation" (i.e. linear combination) using Montgomery's ladder.
-    /// `exponent_bits` represents the number of bits to take into account for the exponent.
-    ///
-    /// See: Straus, E. G. Problems and solutions: Addition chains of vectors. American Mathematical
-    /// Monthly 71 (1964), 806–808.
-    fn linearly_combine_bounded_vartime<const RHS_LIMBS: usize>(
-        bases_and_multiplicands: Vec<(Self, Uint<RHS_LIMBS>)>,
-        exponent_bits: u32,
-    ) -> crate::Result<Self>;
-}
-
 pub fn linearly_combine_bounded<
     const RHS_LIMBS: usize,
-    GroupElement: crate::GroupElement + ConditionallySelectable,
+    GroupElement: crate::GroupElement + Copy + ConditionallySelectable,
 >(
     bases_and_multiplicands: Vec<(GroupElement, Uint<RHS_LIMBS>)>,
     exponent_bits: u32,
     constant_time: bool,
+    public_parameters: &GroupElement::PublicParameters,
 ) -> crate::Result<GroupElement> {
     if bases_and_multiplicands.is_empty() || exponent_bits > Uint::<RHS_LIMBS>::BITS {
-        return Err(Error::InvalidParameters);
+        return Err(Error::from(ErrorKind::InvalidParameters));
     }
 
     // Checked that it's non-empty, so safe to `unwrap`
@@ -96,9 +50,9 @@ pub fn linearly_combine_bounded<
             let mut i = 2;
             while i < products.len() {
                 if constant_time {
-                    products[i] = base + products[i - 1];
+                    products[i] = base.add_constant_time(&products[i - 1], public_parameters);
                 } else {
-                    products[i] = base.add_vartime(&products[i - 1])
+                    products[i] = base.add_vartime(&products[i - 1], public_parameters)
                 }
                 i += 1;
             }
@@ -126,9 +80,9 @@ pub fn linearly_combine_bounded<
                     i += 1;
 
                     if constant_time {
-                        z = z.double();
+                        z = z.double(public_parameters);
                     } else {
-                        z = z.double_vartime()
+                        z = z.double_vartime(public_parameters)
                     }
                 }
             }
@@ -171,9 +125,9 @@ pub fn linearly_combine_bounded<
             {
                 z = powers.fold(z, |a, b| {
                     if constant_time {
-                        a + b
+                        a.add_constant_time(&b, public_parameters)
                     } else {
-                        a.add_vartime(&b)
+                        a.add_vartime(&b, public_parameters)
                     }
                 });
             }
@@ -183,17 +137,17 @@ pub fn linearly_combine_bounded<
                     || neutral,
                     |a, b| {
                         if constant_time {
-                            a + b
+                            a.add_constant_time(&b, public_parameters)
                         } else {
-                            a.add_vartime(&b)
+                            a.add_vartime(&b, public_parameters)
                         }
                     },
                 );
 
                 z = if constant_time {
-                    z + sum
+                    z.add_constant_time(&sum, public_parameters)
                 } else {
-                    z.add_vartime(&sum)
+                    z.add_vartime(&sum, public_parameters)
                 };
             }
         }
@@ -206,20 +160,30 @@ pub fn linearly_combine_bounded<
 /// Default to use the (hopefully faster) `scale_bounded` in case there is only one base and multiplicand.
 pub fn linearly_combine_bounded_or_scale<
     const RHS_LIMBS: usize,
-    GroupElement: crate::GroupElement + ConditionallySelectable,
+    GroupElement: crate::GroupElement + Copy + ConditionallySelectable,
 >(
     bases_and_multiplicands: Vec<(GroupElement, Uint<RHS_LIMBS>)>,
     exponent_bits: u32,
     constant_time: bool,
+    public_parameters: &GroupElement::PublicParameters,
 ) -> crate::Result<GroupElement> {
+    if bases_and_multiplicands.is_empty() || exponent_bits > Uint::<RHS_LIMBS>::BITS {
+        return Err(Error::from(ErrorKind::InvalidParameters));
+    }
+
     if let &[(base, multiplicand)] = &bases_and_multiplicands[..] {
         if constant_time {
-            Ok(base.scale_bounded(&multiplicand, exponent_bits))
+            Ok(base.scale_bounded(&multiplicand, exponent_bits, public_parameters))
         } else {
-            Ok(base.scale_bounded_vartime(&multiplicand, exponent_bits))
+            Ok(base.scale_bounded_vartime(&multiplicand, exponent_bits, public_parameters))
         }
     } else {
-        linearly_combine_bounded(bases_and_multiplicands, exponent_bits, constant_time)
+        linearly_combine_bounded(
+            bases_and_multiplicands,
+            exponent_bits,
+            constant_time,
+            public_parameters,
+        )
     }
 }
 
@@ -260,6 +224,7 @@ mod tests {
                 .collect(),
             U256::BITS,
             false,
+            &group_public_parameters,
         )
         .unwrap();
 
@@ -272,6 +237,7 @@ mod tests {
                 .collect(),
             U256::BITS,
             true,
+            &group_public_parameters,
         )
         .unwrap();
 
@@ -292,8 +258,7 @@ pub(crate) mod benches {
     use criterion::Criterion;
     use crypto_bigint::U256;
 
-    use crate::linear_combination::LinearlyCombinable;
-    use crate::{ristretto, secp256k1, CyclicGroupElement, OsCsRng, Samplable};
+    use crate::{ristretto, secp256k1, CyclicGroupElement, GroupElement, OsCsRng, Samplable};
 
     pub(crate) fn benchmark(c: &mut Criterion) {
         let mut g = c.benchmark_group("Linear Combination in secp256k1");
@@ -338,8 +303,11 @@ pub(crate) mod benches {
 
             g.bench_function(format!("{batch_size} elements"), |bench| {
                 bench.iter(|| {
-                    secp256k1::GroupElement::linearly_combine(bases_and_multiplicands.clone())
-                        .unwrap()
+                    secp256k1::GroupElement::linearly_combine(
+                        bases_and_multiplicands.clone(),
+                        &group_public_parameters,
+                    )
+                    .unwrap()
                 });
             });
         }
@@ -388,8 +356,11 @@ pub(crate) mod benches {
 
             g.bench_function(format!("{batch_size} elements"), |bench| {
                 bench.iter(|| {
-                    ristretto::GroupElement::linearly_combine(bases_and_multiplicands.clone())
-                        .unwrap()
+                    ristretto::GroupElement::linearly_combine(
+                        bases_and_multiplicands.clone(),
+                        &group_public_parameters,
+                    )
+                    .unwrap()
                 });
             });
         }

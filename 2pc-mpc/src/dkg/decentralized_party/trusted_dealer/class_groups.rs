@@ -36,7 +36,7 @@ impl<
         const SCALAR_LIMBS: usize,
         const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
     >
     crate::class_groups::TrustedDealerDKGDecentralizedParty<
         SCALAR_LIMBS,
@@ -151,13 +151,13 @@ where
             message
                 .encryption_of_decentralized_party_secret_key_share_proof
                 .clone(),
-            message.decentralized_party_public_key_share,
+            message.decentralized_party_public_key_share.clone(),
             message.encryption_of_decentralized_party_secret_key_share,
         )?;
 
         Self::verify_knowledge_of_centralized_party_key_share_proof(
-            message.centralized_party_public_key_share,
-            message.decentralized_party_public_key_share,
+            message.centralized_party_public_key_share.clone(),
+            message.decentralized_party_public_key_share.clone(),
             message.encryption_of_decentralized_party_secret_key_share,
             message.knowledge_of_secret_key_share_proof.clone(),
             protocol_public_parameters,
@@ -170,7 +170,7 @@ impl<
         const SCALAR_LIMBS: usize,
         const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
     > AsynchronouslyAdvanceable
     for Party<
         SCALAR_LIMBS,

@@ -11,12 +11,11 @@ use class_groups::{
     SECRET_KEY_SHARE_LIMBS, SECRET_KEY_SHARE_WITNESS_LIMBS,
 };
 use group::helpers::DeduplicateAndSort;
-use group::secp256k1::{GroupElement, Scalar, SCALAR_LIMBS};
-use group::{CsRng, PartyID};
+use group::{secp256k1, CsRng, PartyID};
 use mpc::{AsynchronousRoundResult, HandleInvalidMessages, WeightedThresholdAccessStructure};
 
 use crate::decentralized_party::dkg::{Message, PublicOutput};
-use crate::{Error, Result};
+use crate::{Error, ErrorKind, Result};
 
 use super::PublicInput;
 
@@ -25,14 +24,14 @@ impl super::Party {
         tangible_party_id: PartyID,
         access_structure: &WeightedThresholdAccessStructure,
         public_input: &PublicInput,
-        decryption_key_contribution_pvss_party: &publicly_verifiable_secret_sharing::Party<
+        decryption_key_contribution_pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
-            SCALAR_LIMBS,
+            { secp256k1::SCALAR_LIMBS },
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            GroupElement,
+            secp256k1::GroupElement,
         >,
         deal_decryption_key_contribution_and_prove_coefficient_commitments_messages: HashMap<
             PartyID,
@@ -62,21 +61,21 @@ impl super::Party {
         tangible_party_id: PartyID,
         access_structure: &WeightedThresholdAccessStructure,
         class_groups_public_input: &class_groups::dkg::PublicInput<
-            SCALAR_LIMBS,
+            { secp256k1::SCALAR_LIMBS },
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            group::PublicParameters<Scalar>,
+            group::PublicParameters<secp256k1::Scalar>,
         >,
         ristretto_setup_parameters: &RistrettoSetupParameters,
         secp256r1_setup_parameters: &Secp256r1SetupParameters,
-        decryption_key_contribution_pvss_party: &publicly_verifiable_secret_sharing::Party<
+        decryption_key_contribution_pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
-            SCALAR_LIMBS,
+            { secp256k1::SCALAR_LIMBS },
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            GroupElement,
+            secp256k1::GroupElement,
         >,
         deal_decryption_key_contribution_and_prove_coefficient_commitments_messages: HashMap<
             PartyID,
@@ -96,10 +95,10 @@ impl super::Party {
         )?;
 
         let (inner_protocol_malicious_parties, verified_dealers_) = class_groups::dkg::Party::<
-            SCALAR_LIMBS,
+            { secp256k1::SCALAR_LIMBS },
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            GroupElement,
+            secp256k1::GroupElement,
         >::advance_second_round_internal(
             tangible_party_id,
             access_structure,
@@ -129,7 +128,7 @@ impl super::Party {
         HashMap<
             PartyID,
             class_groups::dkg::Message<
-                SCALAR_LIMBS,
+                { secp256k1::SCALAR_LIMBS },
                 FUNDAMENTAL_DISCRIMINANT_LIMBS,
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             >,
@@ -142,7 +141,7 @@ impl super::Party {
                 .map(|(dealer_party_id, message)| {
                     let res = match message {
                         Message::VerifiedDecryptionKeyContributionDealers(message) => Ok(message),
-                        _ => Err(Error::InvalidMessage),
+                        _ => Err(Error::from(ErrorKind::InvalidMessage)),
                     };
 
                     (dealer_party_id, res)

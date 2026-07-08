@@ -24,7 +24,7 @@ use proof::{
     CanonicalGroupsPublicParameters, GroupsPublicParameters, GroupsPublicParametersAccessors,
 };
 
-use crate::{Error, Result};
+use crate::{Error, ErrorKind, Result};
 
 /// An Enhanced Maurer Zero-Knowledge Proof Language.
 ///
@@ -99,12 +99,14 @@ pub trait EnhanceableLanguage<
             RANGE_CLAIMS_PER_SCALAR,
             SCALAR_LIMBS,
         >(true, range_claim_bits)
-        .map_err(|_| maurer::Error::InvalidPublicParameters)?;
+        .map_err(|_| maurer::Error::from(maurer::ErrorKind::InvalidPublicParameters))?;
 
         let order = GroupElement::order_from_public_parameters(group_public_parameters);
 
         if order <= commitment_message_space_lower_bound {
-            return Err(maurer::Error::InvalidPublicParameters);
+            return Err(maurer::Error::from(
+                maurer::ErrorKind::InvalidPublicParameters,
+            ));
         }
 
         Ok(())
@@ -193,7 +195,7 @@ impl<
 
         let language_witness = Language::compose_witness(
             decomposed_witness,
-            *witness.unbounded_witness(),
+            witness.unbounded_witness().clone(),
             &enhanced_language_public_parameters.language_public_parameters,
             RangeProof::RANGE_CLAIM_BITS,
         )?;
@@ -210,7 +212,7 @@ impl<
                 .range_proof_public_parameters
                 .commitment_scheme_public_parameters(),
         )
-        .map_err(|_| maurer::Error::InvalidPublicParameters)?;
+        .map_err(|_| maurer::Error::from(maurer::ErrorKind::InvalidPublicParameters))?;
 
         let commitment_message_value =
             <[_; NUM_RANGE_CLAIMS]>::from(witness.range_proof_commitment_message().value()).into();
@@ -230,6 +232,10 @@ impl<
         let range_proof_commitment = commitment_scheme.commit(
             &commitment_message,
             witness.range_proof_commitment_randomness(),
+            enhanced_language_public_parameters
+                .range_proof_public_parameters
+                .commitment_scheme_public_parameters()
+                .commitment_space_public_parameters(),
         );
 
         Ok((range_proof_commitment, language_statement).into())
@@ -253,15 +259,15 @@ pub fn composed_witness_upper_bound<
     let num_range_claims_minus_one_by_delta_bits = (RANGE_CLAIMS_PER_SCALAR as u32)
         .checked_sub(1)
         .and_then(|num_range_claims_minus_one| num_range_claims_minus_one.checked_mul(delta_bits))
-        .ok_or(Error::InvalidPublicParameters)?;
+        .ok_or_else(|| Error::from(ErrorKind::InvalidPublicParameters))?;
 
     let upper_bound_bits = delta_hat_bits
         .and_then(|bits| bits.checked_add(num_range_claims_minus_one_by_delta_bits))
         .and_then(|bits| bits.checked_add(1))
-        .ok_or(Error::InvalidPublicParameters)?;
+        .ok_or_else(|| Error::from(ErrorKind::InvalidPublicParameters))?;
 
     if upper_bound_bits >= Uint::<UPPER_BOUND_LIMBS>::BITS {
-        return Err(Error::InvalidPublicParameters);
+        return Err(Error::from(ErrorKind::InvalidPublicParameters));
     }
 
     Ok(Uint::<UPPER_BOUND_LIMBS>::ONE << upper_bound_bits)
@@ -279,7 +285,7 @@ pub(crate) fn commitment_message_space_lower_bound<
     let delta_hat_bits = if account_for_aggregation {
         PartyID::BITS
             .checked_add(range_claim_bits)
-            .ok_or(Error::InvalidPublicParameters)?
+            .ok_or_else(|| Error::from(ErrorKind::InvalidPublicParameters))?
     } else {
         range_claim_bits
     };
@@ -289,14 +295,16 @@ pub(crate) fn commitment_message_space_lower_bound<
         || range_claim_bits == 0
         || Uint::<SCALAR_LIMBS>::BITS <= delta_hat_bits
     {
-        return Err(Error::InvalidPublicParameters);
+        return Err(Error::from(ErrorKind::InvalidPublicParameters));
     }
 
     // $$ \hat{\Delta} = \Delta \cdot n_{max} $$.
     let delta_hat: Uint<SCALAR_LIMBS> = Uint::<SCALAR_LIMBS>::ONE << delta_hat_bits;
 
-    let number_of_range_claims =
-        U64::from(u64::try_from(NUM_RANGE_CLAIMS).map_err(|_| Error::InvalidPublicParameters)?);
+    let number_of_range_claims = U64::from(
+        u64::try_from(NUM_RANGE_CLAIMS)
+            .map_err(|_| Error::from(ErrorKind::InvalidPublicParameters))?,
+    );
 
     Option::from(
         CtOption::from(delta_hat.checked_mul(&number_of_range_claims))
@@ -315,7 +323,7 @@ pub(crate) fn commitment_message_space_lower_bound<
                 CtOption::from(bound.checked_mul(&Uint::<SCALAR_LIMBS>::from(2u8)))
             }),
     )
-    .ok_or(Error::InvalidPublicParameters)
+    .ok_or_else(|| Error::from(ErrorKind::InvalidPublicParameters))
 }
 
 pub trait DecomposableWitness<
@@ -326,7 +334,9 @@ pub trait DecomposableWitness<
 {
     fn valid_parameters(range_claim_bits: u32) -> maurer::Result<()> {
         if range_claim_bits == 0 || RANGE_CLAIMS_PER_SCALAR == 0 {
-            return Err(maurer::Error::InvalidPublicParameters);
+            return Err(maurer::Error::from(
+                maurer::ErrorKind::InvalidPublicParameters,
+            ));
         }
 
         // Check that the witness is big enough to hold the range claim representation of the
@@ -342,11 +352,15 @@ pub trait DecomposableWitness<
         if witness_too_small_for_scalar_range_claim_representation
             || Uint::<COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS>::BITS <= range_claim_bits
         {
-            return Err(maurer::Error::InvalidPublicParameters);
+            return Err(maurer::Error::from(
+                maurer::ErrorKind::InvalidPublicParameters,
+            ));
         }
 
         if WITNESS_LIMBS <= COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS {
-            return Err(maurer::Error::InvalidPublicParameters);
+            return Err(maurer::Error::from(
+                maurer::ErrorKind::InvalidPublicParameters,
+            ));
         }
 
         Ok(())
@@ -380,7 +394,6 @@ pub trait DecomposableWitness<
         Self::valid_parameters(range_claim_bits)?;
 
         let delta: Uint<WITNESS_LIMBS> = Uint::<WITNESS_LIMBS>::ONE << range_claim_bits;
-        let delta = Self::new(delta.into(), public_parameters)?;
 
         let decomposed_witness = decomposed_witness
             .iter()
@@ -408,21 +421,30 @@ pub trait DecomposableWitness<
             .and_then(|num_range_claims_minus_one| {
                 num_range_claims_minus_one.checked_mul(range_claim_bits)
             })
-            .ok_or(maurer::Error::InvalidPublicParameters)?;
+            .ok_or_else(|| maurer::Error::from(maurer::ErrorKind::InvalidPublicParameters))?;
 
         let upper_bound_bits = num_range_claims_minus_one_by_delta_bits
             .checked_add(Uint::<COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS>::BITS)
             .and_then(|bits| bits.checked_add(1))
-            .ok_or(maurer::Error::InvalidPublicParameters)?;
+            .ok_or_else(|| maurer::Error::from(maurer::ErrorKind::InvalidPublicParameters))?;
 
         if Uint::<WITNESS_LIMBS>::BITS <= upper_bound_bits {
-            return Err(maurer::Error::InvalidPublicParameters);
+            return Err(maurer::Error::from(
+                maurer::ErrorKind::InvalidPublicParameters,
+            ));
         }
 
         let polynomial = Polynomial::try_from(decomposed_witness)
-            .map_err(|_| maurer::Error::InvalidParameters)?;
+            .map_err(|_| maurer::Error::from(maurer::ErrorKind::InvalidParameters))?;
 
-        Ok(polynomial.evaluate(&delta))
+        Ok(
+            polynomial.evaluate_public_point(
+                &delta,
+                range_claim_bits + 1,
+                false,
+                public_parameters,
+            ),
+        )
     }
 }
 
@@ -822,7 +844,7 @@ impl<
         >(true, RangeProof::RANGE_CLAIM_BITS)?;
 
         if order_lower_bound <= commitment_message_space_lower_bound {
-            return Err(Error::InvalidPublicParameters);
+            return Err(Error::from(ErrorKind::InvalidPublicParameters));
         }
 
         Ok(Self {

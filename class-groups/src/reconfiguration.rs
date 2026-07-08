@@ -25,11 +25,13 @@ use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
     CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, MAX_PRIMES, NUM_ENCRYPTION_OF_DECRYPTION_KEY_PRIMES,
     NUM_SECRET_SHARE_PRIMES,
 };
-use crate::publicly_verifiable_secret_sharing::{DealSecretMessage, DealtSecretShareMessage};
+use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
+    DealSecretMessage, DealtSecretShareMessage,
+};
 use crate::setup::{DeriveFromPlaintextPublicParameters, SetupParameters};
 use crate::{
-    decryption_key_share, dkg, equivalence_class, CompactIbqf, EquivalenceClass, Error, Result,
-    DECRYPTION_KEY_BITS_112BIT_SECURITY, DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+    decryption_key_share, dkg, equivalence_class, CompactIbqf, EquivalenceClass, Error, ErrorKind,
+    Result, DECRYPTION_KEY_BITS_112BIT_SECURITY, DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
 };
 use crate::{
     RISTRETTO_FUNDAMENTAL_DISCRIMINANT_LIMBS, RISTRETTO_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -321,7 +323,7 @@ where
     {
         if computational_security_parameter != DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER {
             // Our sizes are optimized for 112-bits security, need to recompile to allow 128-bit security.
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         if u32::from(current_access_structure.threshold) > MAX_THRESHOLD
@@ -329,11 +331,11 @@ where
             || u32::from(current_access_structure.number_of_virtual_parties()) > MAX_PLAYERS
             || u32::from(upcoming_access_structure.number_of_virtual_parties()) > MAX_PLAYERS
         {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         if FUNDAMENTAL_DISCRIMINANT_LIMBS != CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         let current_tangible_parties: HashSet<_> = current_tangible_party_id_to_upcoming
@@ -353,7 +355,7 @@ where
                 .copied()
                 .collect()
         {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         let upcoming_party_ids_of_current_parties: HashSet<_> =
@@ -364,7 +366,7 @@ where
                 .collect();
 
         if !upcoming_tangible_parties.is_superset(&upcoming_party_ids_of_current_parties) {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         let setup_parameters =
@@ -411,12 +413,12 @@ pub(crate) mod test_helpers {
     use mpc::test_helpers::asynchronous_session_terminates_successfully_internal;
 
     use crate::dkg::test_helpers::mock_dkg_output;
+    use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::test_helpers::construct_encryption_keys_and_proofs_per_crt_prime_secp256k1;
     use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
         construct_knowledge_of_decryption_key_public_parameters_per_crt_prime,
         construct_setup_parameters_per_crt_prime, generate_keypairs_per_crt_prime,
         generate_knowledge_of_decryption_key_proofs_per_crt_prime,
     };
-    use crate::publicly_verifiable_secret_sharing::test_helpers::construct_encryption_keys_and_proofs_per_crt_prime_secp256k1;
     use crate::setup::{DeriveFromPlaintextPublicParameters, SetupParameters};
     use crate::test_helpers::deal_trusted_shares;
     use crate::{
@@ -522,6 +524,7 @@ pub(crate) mod test_helpers {
             n_factorial,
             None,
             false,
+            equivalence_class_public_parameters,
         )
         .unwrap()[0];
 
@@ -531,6 +534,7 @@ pub(crate) mod test_helpers {
             0,
             number_of_parties,
             n_factorial,
+            &discrete_log_group_public_parameters,
         )
         .unwrap()[0];
 
@@ -545,8 +549,9 @@ pub(crate) mod test_helpers {
             "interpolated decryption key is wrong"
         );
 
-        let expected_encryption_key =
-            (1..=2).fold(encryption_key, |acc, _| acc.scale_vartime(&n_factorial));
+        let expected_encryption_key = (1..=2).fold(encryption_key, |acc, _| {
+            acc.scale_vartime(&n_factorial, equivalence_class_public_parameters)
+        });
 
         assert_eq!(
             interpolated_encryption_key, expected_encryption_key,

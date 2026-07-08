@@ -1,20 +1,42 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
-pub mod presign;
+//! # Schnorr 2PC-MPC Signature Protocols
+//!
+//! This module provides two implementations of 2PC-MPC Schnorr signatures:
+//!
+//! ## AHE-Based Implementation (`ahe` module)
+//!
+//! Uses Additively Homomorphic Encryption (class groups) for threshold signing.
+//! The presign phase produces encrypted nonce shares $\ct_{k_0}, \ct_{k_1}$.
+//!
+//! ## SSS-Based Implementation (`shamir` module)
+//!
+//! Uses Shamir Secret Sharing for threshold signing, as described in Section 9
+//! of the 2PC-MPC v3 Provisionals document. The presign phase produces
+//! secret shares $[k_0]_i, [k_1]_i$ using VSS.
+
+/// AHE-based Schnorr protocol using class groups for threshold encryption.
+pub mod ahe;
+
+/// Shared sign protocol components.
 pub mod sign;
 
+/// SSS-based Schnorr protocol using Shamir Secret Sharing (Section 9).
+pub mod vss;
+
 use crate::sign::EncodableSignature;
-use crate::{Error, Result};
+use crate::{Error, ErrorKind, Result};
+pub use ahe::Presign;
 use curve25519_dalek::RistrettoPoint;
 use ecdsa::elliptic_curve::group::GroupEncoding;
 use ecdsa::elliptic_curve::point::AffineCoordinates;
 use group::{
-    curve25519, ristretto, secp256k1, GroupElement, HashScheme, HashToGroup, PrimeGroupElement,
+    curve25519, ristretto, secp256k1, GroupElement, HashContext, HashScheme, HashToGroup,
+    PrimeGroupElement,
 };
 use k256::schnorr::signature::digest::Digest;
 use k256::schnorr::signature::Verifier;
-pub use presign::Presign;
 use schnorrkel::context::{SigningContext, SigningTranscript};
 use serde::{Deserialize, Serialize};
 use sha2::digest::FixedOutput;
@@ -23,6 +45,190 @@ use std::fmt::Debug;
 use std::ops::Neg;
 
 pub const TAPROOT_CHALLENGE_TAG: &[u8] = b"BIP0340/challenge";
+
+/// A partial Schnorr signature from a party.
+///
+/// This is the message broadcast by the centralized party in the sign protocol,
+/// containing their public nonce share and partial response.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PartialSignature<GroupElementValue, ScalarValue> {
+    /// The party's public nonce share $K_A = k_A \cdot G$ (before normalization).
+    pub public_nonce_share_prenormalization: GroupElementValue,
+    /// The party's partial response $z_A = k_A + e \cdot x_A$.
+    pub partial_response: ScalarValue,
+}
+
+/// Generates the `s` part of a Schnorr signature on `message` (optionally) prepended by `prefix`.
+pub fn generate_schnorr_signature_response<
+    const SCALAR_LIMBS: usize,
+    GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
+>(
+    secret_key: GroupElement::Scalar,
+    public_key: GroupElement,
+    nonce: GroupElement::Scalar,
+    public_nonce: GroupElement,
+    message: &[u8],
+    hash_type: HashScheme,
+    hash_context: &HashContext,
+    scalar_group_public_parameters: &group::PublicParameters<GroupElement::Scalar>,
+) -> Result<GroupElement::Scalar> {
+    let challenge = public_key.derive_challenge(&public_nonce, message, hash_type, hash_context)?;
+
+    generate_schnorr_response::<SCALAR_LIMBS, GroupElement>(
+        secret_key,
+        nonce,
+        challenge,
+        scalar_group_public_parameters,
+    )
+}
+
+/// Generates a partial Schnorr response (the `s` part of the partial signature) on `message` (optionally) prepended by `prefix`.
+pub fn generate_partial_schnorr_response<
+    const SCALAR_LIMBS: usize,
+    GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
+>(
+    secret_key_share: GroupElement::Scalar,
+    public_key: GroupElement,
+    nonce_share: GroupElement::Scalar,
+    public_nonce: GroupElement,
+    message: &[u8],
+    hash_type: HashScheme,
+    hash_context: &HashContext,
+    scalar_group_public_parameters: &group::PublicParameters<GroupElement::Scalar>,
+) -> Result<GroupElement::Scalar> {
+    let challenge = public_key.derive_challenge(&public_nonce, message, hash_type, hash_context)?;
+
+    generate_schnorr_response::<SCALAR_LIMBS, GroupElement>(
+        secret_key_share,
+        nonce_share,
+        challenge,
+        scalar_group_public_parameters,
+    )
+}
+
+/// Generates the `s` part of a Schnorr signature on `message` (optionally) prepended by `prefix`.
+/// Note: this function is also used for generating partial signature,
+/// in which case `public_nonce` and `public_key` do not necessarily correspond to `nonce` and `secret_key`,
+/// and therefore no correctness checks are performed here, and the responsibility remains on the caller.
+pub fn generate_schnorr_response<
+    const SCALAR_LIMBS: usize,
+    GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
+>(
+    secret_key: GroupElement::Scalar,
+    nonce: GroupElement::Scalar,
+    challenge: GroupElement::Scalar,
+    scalar_group_public_parameters: &group::PublicParameters<GroupElement::Scalar>,
+) -> Result<GroupElement::Scalar> {
+    let s = (challenge * secret_key).add_constant_time(&nonce, scalar_group_public_parameters);
+
+    Ok(s)
+}
+
+/// Verifies a Schnorr signature on `message` (optionally) prepended by `prefix`.
+/// Note: `public_key` and `public_nonce` must be non-unit.
+/// Note: `public_nonce` must be normalized, i.e. the `y` value must be even.
+/// Note: `public_key` is always interpreted as the corresponding normalized element.
+pub fn verify_schnorr_signature<
+    const SCALAR_LIMBS: usize,
+    GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
+>(
+    // $ s $
+    signature_response: GroupElement::Scalar,
+    public_nonce: GroupElement,
+    public_key: GroupElement,
+    message: &[u8],
+    hash_type: HashScheme,
+    hash_context: &HashContext,
+    group_public_parameters: &group::PublicParameters<GroupElement>,
+) -> Result<()> {
+    // Taproot adds a requirement on Schnorr signatures,
+    // that the public nonce is normalized, in the sense that their `y` coordinate is even.
+    // it also always interprets the public key as normalized.
+    // We check that in our generic implementation, where non-taproot (i.e. `GroupElement` isn't `secp256k1::GroupElement`) simply return `true` for these checks.
+
+    // Verify the signature against the normalized public key.
+    // If a group element is not Taproot normalized then its negation will be.
+    let public_key = if public_key.is_taproot_normalized() {
+        public_key
+    } else {
+        public_key.neg_constant_time(group_public_parameters)
+    };
+
+    // The public nonce must be normalized
+    if !public_nonce.is_taproot_normalized() {
+        return Err(Error::from(ErrorKind::SignatureVerification));
+    }
+
+    let challenge = public_key.derive_challenge(&public_nonce, message, hash_type, hash_context)?;
+
+    verify_schnorr_signature_inner(
+        signature_response,
+        challenge,
+        public_nonce,
+        public_key,
+        group_public_parameters,
+    )
+}
+
+/// Verifies a partial Schnorr signature on `message` (optionally) prepended by `prefix`.
+/// Note: `public_key` and `public_nonce` must be non-unit.
+/// Note: `public_nonce` must be normalized, i.e. the `y` value must be even.
+/// Note: `public_key` is always interpreted as the corresponding normalized element.
+/// In this case the challenge is derived from the full public_key and public_nonce while
+/// the signature_response is expected to hold with respect to the public_key_share and public_nonce_share.
+pub fn verify_partial_schnorr_signature<
+    const SCALAR_LIMBS: usize,
+    GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
+>(
+    // $ s $
+    partial_response: GroupElement::Scalar,
+    public_nonce_share: GroupElement,
+    public_nonce: GroupElement,
+    public_key_share: GroupElement,
+    public_key: GroupElement,
+    message: &[u8],
+    hash_type: HashScheme,
+    hash_context: &HashContext,
+    group_public_parameters: &group::PublicParameters<GroupElement>,
+) -> Result<()> {
+    // The public nonce must be normalized
+    if !public_nonce.is_taproot_normalized() {
+        return Err(Error::from(ErrorKind::SignatureVerification));
+    }
+
+    let challenge = public_key.derive_challenge(&public_nonce, message, hash_type, hash_context)?;
+
+    verify_schnorr_signature_inner(
+        partial_response,
+        challenge,
+        public_nonce_share,
+        public_key_share,
+        group_public_parameters,
+    )
+}
+
+fn verify_schnorr_signature_inner<
+    const SCALAR_LIMBS: usize,
+    GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
+>(
+    // $ s $
+    signature_response: GroupElement::Scalar,
+    challenge: GroupElement::Scalar,
+    public_nonce: GroupElement,
+    public_key: GroupElement,
+    group_public_parameters: &group::PublicParameters<GroupElement>,
+) -> Result<()> {
+    let generator = GroupElement::generator_from_public_parameters(group_public_parameters)?;
+
+    let reconstructed_public_nonce = (signature_response * generator)
+        .sub_vartime(&(challenge * public_key), group_public_parameters);
+
+    if public_nonce == reconstructed_public_nonce {
+        Ok(())
+    } else {
+        Err(Error::from(ErrorKind::SignatureVerification))
+    }
+}
 
 /// A standardized Schnorr verifying key.
 pub trait VerifyingKey<const SCALAR_LIMBS: usize>:
@@ -38,12 +244,14 @@ pub trait VerifyingKey<const SCALAR_LIMBS: usize>:
         public_nonce: &Self,
         message: &[u8],
         hash_type: HashScheme,
+        hash_context: &HashContext,
     ) -> Result<Self::Scalar>;
 
     fn verify(
         &self,
         message: &[u8],
         hash_type: HashScheme,
+        hash_context: &HashContext,
         signature: &Self::Signature,
     ) -> Result<()>;
 
@@ -103,9 +311,13 @@ impl VerifyingKey<{ secp256k1::SCALAR_LIMBS }> for secp256k1::GroupElement {
         public_nonce: &Self,
         message: &[u8],
         hash_type: HashScheme,
+        hash_context: &HashContext,
     ) -> Result<Self::Scalar> {
         if hash_type != HashScheme::SHA256 {
-            return Err(Error::Nonstandard);
+            return Err(Error::from(ErrorKind::Nonstandard));
+        }
+        if !matches!(hash_context, HashContext::None) {
+            return Err(Error::from(ErrorKind::Nonstandard));
         }
 
         let mut digest = taproot_tagged_hash(TAPROOT_CHALLENGE_TAG);
@@ -135,14 +347,18 @@ impl VerifyingKey<{ secp256k1::SCALAR_LIMBS }> for secp256k1::GroupElement {
         &self,
         message: &[u8],
         hash_type: HashScheme,
+        hash_context: &HashContext,
         signature: &Self::Signature,
     ) -> Result<()> {
         if hash_type != HashScheme::SHA256 {
-            return Err(Error::Nonstandard);
+            return Err(Error::from(ErrorKind::Nonstandard));
+        }
+        if !matches!(hash_context, HashContext::None) {
+            return Err(Error::from(ErrorKind::Nonstandard));
         }
 
         let signature = k256::schnorr::Signature::from_bytes(&signature.0)
-            .map_err(|_| Error::SignatureVerification)?;
+            .map_err(|_| Error::from(ErrorKind::SignatureVerification))?;
 
         // Verify the signature against the normalized public key.
         // If a non-zero group element is not Taproot normalized then its negation will be.
@@ -153,13 +369,13 @@ impl VerifyingKey<{ secp256k1::SCALAR_LIMBS }> for secp256k1::GroupElement {
         };
         let verifying_key: k256::AffinePoint = public_key.value().into();
         let verifying_key = k256::PublicKey::from_affine(verifying_key)
-            .map_err(|_| Error::SignatureVerification)?;
+            .map_err(|_| Error::from(ErrorKind::SignatureVerification))?;
         let verifying_key = k256::schnorr::VerifyingKey::try_from(verifying_key)
-            .map_err(|_| Error::SignatureVerification)?;
+            .map_err(|_| Error::from(ErrorKind::SignatureVerification))?;
 
         verifying_key
             .verify(message, &signature)
-            .map_err(|_| Error::SignatureVerification)
+            .map_err(|_| Error::from(ErrorKind::SignatureVerification))
     }
 
     fn is_taproot_normalized(&self) -> bool {
@@ -187,10 +403,10 @@ impl EncodableSignature for EdDSASignature {
     type Encoding = ed25519::SignatureBytes;
 }
 
-impl TryFrom<(curve25519::GroupElement, curve25519::Scalar)> for EdDSASignature {
+impl TryFrom<(curve25519::Value, curve25519::Scalar)> for EdDSASignature {
     type Error = Error;
     fn try_from(
-        (public_nonce, response): (curve25519::GroupElement, curve25519::Scalar),
+        (public_nonce, response): (curve25519::Value, curve25519::Scalar),
     ) -> std::result::Result<Self, Self::Error> {
         let public_nonce: curve25519_dalek::EdwardsPoint = public_nonce.into();
         let response: curve25519_dalek::Scalar = response.into();
@@ -210,9 +426,13 @@ impl VerifyingKey<{ curve25519::SCALAR_LIMBS }> for curve25519::GroupElement {
         public_nonce: &Self,
         message: &[u8],
         hash_type: HashScheme,
+        hash_context: &HashContext,
     ) -> Result<Self::Scalar> {
         if hash_type != HashScheme::SHA512 {
-            return Err(Error::Nonstandard);
+            return Err(Error::from(ErrorKind::Nonstandard));
+        }
+        if !matches!(hash_context, HashContext::None) {
+            return Err(Error::from(ErrorKind::Nonstandard));
         }
 
         let public_nonce: curve25519_dalek::EdwardsPoint = (*public_nonce).into();
@@ -232,10 +452,14 @@ impl VerifyingKey<{ curve25519::SCALAR_LIMBS }> for curve25519::GroupElement {
         &self,
         message: &[u8],
         hash_type: HashScheme,
+        hash_context: &HashContext,
         signature: &Self::Signature,
     ) -> Result<()> {
         if hash_type != HashScheme::SHA512 {
-            return Err(Error::Nonstandard);
+            return Err(Error::from(ErrorKind::Nonstandard));
+        }
+        if !matches!(hash_context, HashContext::None) {
+            return Err(Error::from(ErrorKind::Nonstandard));
         }
 
         let signature = ed25519::Signature::from_bytes(&signature.0);
@@ -245,27 +469,27 @@ impl VerifyingKey<{ curve25519::SCALAR_LIMBS }> for curve25519::GroupElement {
 
         verifying_key
             .verify_strict(message, &signature)
-            .map_err(|_| Error::SignatureVerification)
+            .map_err(|_| Error::from(ErrorKind::SignatureVerification))
     }
 }
 
 #[derive(PartialEq, Eq, Clone, Debug, Serialize, Deserialize)]
-pub struct SchnorrkelSubstrateSignature(
+pub struct SchnorrkelSignature(
     #[serde(with = "group::helpers::const_generic_array_serialization")]
     [u8; schnorrkel::SIGNATURE_LENGTH],
 );
 
-impl From<SchnorrkelSubstrateSignature> for [u8; schnorrkel::SIGNATURE_LENGTH] {
-    fn from(value: SchnorrkelSubstrateSignature) -> Self {
+impl From<SchnorrkelSignature> for [u8; schnorrkel::SIGNATURE_LENGTH] {
+    fn from(value: SchnorrkelSignature) -> Self {
         value.0
     }
 }
 
-impl EncodableSignature for SchnorrkelSubstrateSignature {
+impl EncodableSignature for SchnorrkelSignature {
     type Encoding = [u8; schnorrkel::SIGNATURE_LENGTH];
 }
 
-impl TryFrom<(ristretto::GroupElement, ristretto::Scalar)> for SchnorrkelSubstrateSignature {
+impl TryFrom<(ristretto::GroupElement, ristretto::Scalar)> for SchnorrkelSignature {
     type Error = Error;
     fn try_from(
         (public_nonce, response): (ristretto::GroupElement, ristretto::Scalar),
@@ -284,22 +508,25 @@ impl TryFrom<(ristretto::GroupElement, ristretto::Scalar)> for SchnorrkelSubstra
 }
 
 impl VerifyingKey<{ ristretto::SCALAR_LIMBS }> for ristretto::GroupElement {
-    type Signature = SchnorrkelSubstrateSignature;
+    type Signature = SchnorrkelSignature;
 
     fn derive_challenge(
         &self,
         public_nonce: &Self,
         message: &[u8],
         hash_type: HashScheme,
+        hash_context: &HashContext,
     ) -> Result<Self::Scalar> {
         if hash_type != HashScheme::Merlin {
-            return Err(Error::Nonstandard);
+            return Err(Error::from(ErrorKind::Nonstandard));
         }
+
+        let signing_context = hash_context.schnorrkel_signing_context()?;
 
         let public_nonce: RistrettoPoint = (*public_nonce).into();
         let verifying_key: RistrettoPoint = (*self).into();
 
-        let mut t = SigningContext::new(b"substrate").bytes(message);
+        let mut t = SigningContext::new(signing_context).bytes(message);
 
         t.proto_name(b"Schnorr-sig");
         t.append_message(b"sign:pk", verifying_key.compress().as_bytes().as_slice());
@@ -313,7 +540,7 @@ impl VerifyingKey<{ ristretto::SCALAR_LIMBS }> for ristretto::GroupElement {
         {
             Ok(challenge.into())
         } else {
-            Err(Error::InternalError)
+            Err(Error::from(ErrorKind::InternalError))
         }
     }
 
@@ -321,24 +548,27 @@ impl VerifyingKey<{ ristretto::SCALAR_LIMBS }> for ristretto::GroupElement {
         &self,
         message: &[u8],
         hash_type: HashScheme,
+        hash_context: &HashContext,
         signature: &Self::Signature,
     ) -> Result<()> {
         if hash_type != HashScheme::Merlin {
-            return Err(Error::Nonstandard);
+            return Err(Error::from(ErrorKind::Nonstandard));
         }
 
+        let signing_context = hash_context.schnorrkel_signing_context()?;
+
         let signature = schnorrkel::Signature::from_bytes(&signature.0)
-            .map_err(|_| Error::SignatureVerification)?;
+            .map_err(|_| Error::from(ErrorKind::SignatureVerification))?;
 
         // Due to dependency version incompatibilities, we have to compress and decompress the point here.
         let verifying_key: RistrettoPoint = (*self).into();
         let compressed_verifying_key = verifying_key.compress().to_bytes();
         let verifying_key = schnorrkel::PublicKey::from_bytes(&compressed_verifying_key)
-            .map_err(|_| Error::SignatureVerification)?;
+            .map_err(|_| Error::from(ErrorKind::SignatureVerification))?;
 
         verifying_key
-            .verify_simple(b"substrate", message, &signature)
-            .map_err(|_| Error::SignatureVerification)
+            .verify_simple(signing_context, message, &signature)
+            .map_err(|_| Error::from(ErrorKind::SignatureVerification))
     }
 }
 

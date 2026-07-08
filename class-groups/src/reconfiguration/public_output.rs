@@ -5,12 +5,12 @@ use crate::accelerator::MultiFoldNupowAccelerator;
 use crate::dkg::compute_public_verification_keys_for_participating_party;
 use crate::encryption_key::public_parameters::Instantiate;
 use crate::equivalence_class::EquivalenceClassOps;
+use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::DealtSecretShare;
 use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
     construct_setup_parameters_per_crt_prime, CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS,
     CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, MAX_PRIMES, NUM_SECRET_SHARE_PRIMES,
     SECRET_SHARE_CRT_COEFFICIENTS, SECRET_SHARE_CRT_PRIMES_PRODUCT,
 };
-use crate::publicly_verifiable_secret_sharing::DealtSecretShare;
 use crate::reconfiguration::RANDOMIZER_LIMBS;
 use crate::setup::{DeriveFromPlaintextPublicParameters, SetupParameters};
 use crate::{
@@ -112,6 +112,13 @@ where
         encryption_key: CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
         public_verification_key_base: EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
         n_factorial: FactorialSizedNumber,
+        equivalence_class_public_parameters: &equivalence_class::PublicParameters<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        >,
+        ciphertext_space_public_parameters: &group::self_product::PublicParameters<
+            NUM_SECRET_SHARE_PRIMES,
+            crate::CiphertextSpacePublicParameters<CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+        >,
     ) -> Result<Self>
     where
         GroupElement::Scalar: Default,
@@ -139,13 +146,14 @@ where
             masked_decryption_key_by_n_factorial,
             reconstructed_commitments_to_randomizer_sharing,
             public_verification_key_base,
+            equivalence_class_public_parameters,
         );
 
         let virtual_parties_that_were_dealt_shares =
             access_structure.virtual_subset(parties_that_were_dealt_shares)?;
 
         let encryptions_of_randomizer_shares_per_crt_prime =
-            publicly_verifiable_secret_sharing::Party::<
+            publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party::<
                 NUM_SECRET_SHARE_PRIMES,
                 SECRET_KEY_SHARE_LIMBS,
                 SECRET_KEY_SHARE_WITNESS_LIMBS,
@@ -157,6 +165,7 @@ where
                 virtual_parties_that_were_dealt_shares,
                 access_structure,
                 encryptions_of_randomizer_contribution_shares_and_proofs,
+                ciphertext_space_public_parameters,
             )?
             .normalize_const_generic_values();
 
@@ -182,12 +191,18 @@ where
             HashMap<PartyID, EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
         >,
         public_verification_key_base: EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+        equivalence_class_public_parameters: &equivalence_class::PublicParameters<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        >,
     ) -> HashMap<PartyID, CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>
     where
         GroupElement::Scalar: Default,
     {
         let masked_decryption_key_commitment_by_n_factorial = public_verification_key_base
-            .scale_integer_vartime(&masked_decryption_key_by_n_factorial);
+            .scale_integer_vartime(
+                &masked_decryption_key_by_n_factorial,
+                equivalence_class_public_parameters,
+            );
 
         let commitments_to_randomizer_share: HashMap<_, _> = access_structure
             .party_to_virtual_parties()
@@ -197,6 +212,7 @@ where
                     access_structure,
                     reconstructed_commitments_to_randomizer_sharing.clone(),
                     participating_tangible_party_id,
+                    equivalence_class_public_parameters,
                 )
                 .ok()
             })
@@ -207,8 +223,11 @@ where
             .into_iter()
             .map(
                 |(dealer_virtual_party_id, reconstruct_commitment_to_randomizer_share)| {
-                    let public_verification_key = (masked_decryption_key_commitment_by_n_factorial
-                        - reconstruct_commitment_to_randomizer_share)
+                    let public_verification_key = masked_decryption_key_commitment_by_n_factorial
+                        .sub_constant_time(
+                            &reconstruct_commitment_to_randomizer_share,
+                            equivalence_class_public_parameters,
+                        )
                         .value();
 
                     (dealer_virtual_party_id, public_verification_key)
@@ -448,21 +467,22 @@ where
                 })
                 .try_collect_hash_map()?;
 
-        let randomizer_shares = publicly_verifiable_secret_sharing::Party::<
-            NUM_SECRET_SHARE_PRIMES,
-            SECRET_KEY_SHARE_LIMBS,
-            SECRET_KEY_SHARE_WITNESS_LIMBS,
-            PLAINTEXT_SPACE_SCALAR_LIMBS,
-            FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            GroupElement,
-        >::decrypt_secrets(
-            setup_parameters_per_crt_prime.clone(),
-            SECRET_SHARE_CRT_COEFFICIENTS,
-            SECRET_SHARE_CRT_PRIMES_PRODUCT,
-            encryptions_of_randomizer_shares_per_crt_prime,
-            decryption_key_per_crt_prime,
-        )?;
+        let randomizer_shares =
+            publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party::<
+                NUM_SECRET_SHARE_PRIMES,
+                SECRET_KEY_SHARE_LIMBS,
+                SECRET_KEY_SHARE_WITNESS_LIMBS,
+                PLAINTEXT_SPACE_SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >::decrypt_secrets(
+                setup_parameters_per_crt_prime.clone(),
+                SECRET_SHARE_CRT_COEFFICIENTS,
+                SECRET_SHARE_CRT_PRIMES_PRODUCT,
+                encryptions_of_randomizer_shares_per_crt_prime,
+                decryption_key_per_crt_prime,
+            )?;
 
         let decryption_key_shares = randomizer_shares
             .into_iter()

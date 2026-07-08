@@ -3,6 +3,14 @@
 
 #![allow(clippy::type_complexity)]
 #![allow(clippy::too_many_arguments)]
+// Under `unsafe_mock`, the mock `Mock*Protocol` types (selected via the per-curve `lib.rs` aliases)
+// bypass parts of the real protocol machinery — round helpers, proof/verification code, and their
+// imports become legitimately dead. Silence those lints only in mock builds; normal builds still
+// catch dead code and unused imports.
+#![cfg_attr(
+    feature = "unsafe_mock",
+    allow(dead_code, unused_imports, unused_variables)
+)]
 
 use crypto_bigint::U256;
 use merlin::Transcript;
@@ -15,17 +23,58 @@ use proof::TranscriptProtocol;
 pub mod languages;
 
 pub mod decentralized_party;
+pub mod decentralized_party_backward_compatible;
 pub mod dkg;
 pub mod ecdsa;
 pub mod presign;
 pub mod schnorr;
 pub mod sign;
 
+/// INSECURE deterministic mocks of the 2PC-MPC protocols, for speeding up downstream tests.
+/// Enabled only by the `unsafe_mock` feature. See the module docs for the (lack of) security
+/// guarantees.
+#[cfg(feature = "unsafe_mock")]
+pub mod mock;
+
 pub use sign::Protocol;
 
-/// 2PC-MPC error.
+/// 2PC-MPC error wrapper that carries a backtrace captured at construction.
+///
+/// See `group::Error` for details.
+#[derive(thiserror::Error, Clone, Debug)]
+#[error("{kind}\n{backtrace}")]
+pub struct Error {
+    pub kind: ErrorKind,
+    pub backtrace: std::sync::Arc<std::backtrace::Backtrace>,
+}
+
+impl<E> From<E> for Error
+where
+    ErrorKind: From<E>,
+{
+    fn from(value: E) -> Self {
+        Self {
+            kind: ErrorKind::from(value),
+            backtrace: std::sync::Arc::new(std::backtrace::Backtrace::capture()),
+        }
+    }
+}
+
+impl Error {
+    /// Construct an `Error` from an `ErrorKind` without going through the blanket
+    /// `From` impl. Useful in generic contexts where `Self::Error` resolution makes
+    /// `Error::from(ErrorKind::X)` ambiguous with the trait-method overload.
+    pub fn from_kind(kind: ErrorKind) -> Self {
+        Self {
+            kind,
+            backtrace: std::sync::Arc::new(std::backtrace::Backtrace::capture()),
+        }
+    }
+}
+
+/// 2PC-MPC error kind.
 #[derive(thiserror::Error, Debug, Clone)]
-pub enum Error {
+pub enum ErrorKind {
     #[error("group error")]
     Group(#[from] group::Error),
     #[error("commitment error")]
@@ -35,7 +84,7 @@ pub enum Error {
     #[error("mpc error")]
     MPC(#[from] ::mpc::Error),
     #[error("asynchronous proof aggregation error")]
-    AsyncProofAggregation(#[from] ::proof::aggregation::asynchronous::Error),
+    AsyncProofAggregation(#[from] ::proof_aggregation::asynchronous::Error),
     #[error("proof error")]
     Proof(#[from] ::proof::Error),
     #[error("maurer error")]
@@ -62,6 +111,8 @@ pub enum Error {
     InvalidPublicCentralizedKeyShare,
     #[error("signature failed to verify")]
     SignatureVerification,
+    #[error("invalid signature share")]
+    InvalidSignatureShare,
     #[error("invalid message")]
     InvalidMessage,
     #[error("an unsupported non-standard signature scheme or variant")]
@@ -76,7 +127,7 @@ pub enum Error {
 
 impl From<serde_json::Error> for Error {
     fn from(e: serde_json::Error) -> Self {
-        Error::Serialization(e.to_string())
+        Error::from(ErrorKind::Serialization(e.to_string()))
     }
 }
 
@@ -156,21 +207,87 @@ impl From<ProtocolContext> for U256 {
 
 impl From<Error> for mpc::Error {
     fn from(value: Error) -> Self {
-        match value {
-            Error::Group(e) => mpc::Error::Group(e),
-            Error::MPC(e) => e,
-            Error::AsyncProofAggregation(e) => e.into(),
-            Error::Maurer(e) => e.into(),
-            Error::Proof(e) => e.into(),
-            Error::UnresponsiveParties(parties) => mpc::Error::UnresponsiveParties(parties),
-            Error::WrongVirtualSubset(parties) => mpc::Error::InvalidMessage(parties),
-            Error::MaliciousDesignatedDecryptingParty(designated_party_id) => {
-                mpc::Error::MaliciousMessage(vec![designated_party_id])
+        match value.kind {
+            ErrorKind::Group(e) => mpc::Error::from(mpc::ErrorKind::Group(e)),
+            ErrorKind::MPC(e) => e,
+            ErrorKind::AsyncProofAggregation(e) => e.into(),
+            ErrorKind::UnresponsiveParties(parties) => {
+                mpc::Error::from(mpc::ErrorKind::UnresponsiveParties(parties))
             }
-            Error::InvalidParameters => mpc::Error::InvalidParameters,
-            Error::InvalidPublicParameters => mpc::Error::InvalidParameters,
-            Error::ClassGroup(e) => e.into(),
-            e => mpc::Error::Consumer(format!("2pc-mpc error {e:?}")),
+            ErrorKind::WrongVirtualSubset(parties) => {
+                mpc::Error::from(mpc::ErrorKind::InvalidMessage(parties))
+            }
+            ErrorKind::MaliciousDesignatedDecryptingParty(designated_party_id) => {
+                mpc::Error::from(mpc::ErrorKind::MaliciousMessage(vec![designated_party_id]))
+            }
+            ErrorKind::InvalidParameters => mpc::Error::from(mpc::ErrorKind::InvalidParameters),
+            ErrorKind::InvalidPublicParameters => {
+                mpc::Error::from(mpc::ErrorKind::InvalidParameters)
+            }
+            ErrorKind::InternalError => mpc::Error::from(mpc::ErrorKind::InternalError),
+            ErrorKind::Serialization(s) => mpc::Error::from(mpc::ErrorKind::Serialization(s)),
+            ErrorKind::WrongDecommitment
+            | ErrorKind::InvalidSignatureShare
+            | ErrorKind::InvalidMessage
+            | ErrorKind::InvalidPublicCentralizedKeyShare => {
+                mpc::Error::from(mpc::ErrorKind::MaliciousMessageAsync)
+            }
+            ErrorKind::ClassGroup(e) => e.into(),
+            ErrorKind::Commitment(e) => match e.kind {
+                commitment::ErrorKind::GroupInstantiation(g) => {
+                    mpc::Error::from(mpc::ErrorKind::Group(g))
+                }
+                commitment::ErrorKind::InvalidPublicParameters => {
+                    mpc::Error::from(mpc::ErrorKind::InvalidParameters)
+                }
+                commitment::ErrorKind::InternalError => {
+                    mpc::Error::from(mpc::ErrorKind::InternalError)
+                }
+            },
+            ErrorKind::HomomorphicEncryption(e) => match e.kind {
+                homomorphic_encryption::ErrorKind::Group(g) => {
+                    mpc::Error::from(mpc::ErrorKind::Group(g))
+                }
+                homomorphic_encryption::ErrorKind::InternalError => {
+                    mpc::Error::from(mpc::ErrorKind::InternalError)
+                }
+                homomorphic_encryption::ErrorKind::InvalidParameters
+                | homomorphic_encryption::ErrorKind::ZeroDimension
+                | homomorphic_encryption::ErrorKind::SecureFunctionEvaluation => {
+                    mpc::Error::from(mpc::ErrorKind::InvalidParameters)
+                }
+            },
+            ErrorKind::Proof(e) => match e.kind {
+                ::proof::ErrorKind::Group(g) => mpc::Error::from(mpc::ErrorKind::Group(g)),
+                ::proof::ErrorKind::InternalError => {
+                    mpc::Error::from(mpc::ErrorKind::InternalError)
+                }
+                ::proof::ErrorKind::Serialization(s) => {
+                    mpc::Error::from(mpc::ErrorKind::Serialization(s))
+                }
+                ::proof::ErrorKind::InvalidParameters => {
+                    mpc::Error::from(mpc::ErrorKind::InvalidParameters)
+                }
+                ::proof::ErrorKind::ProofVerification | ::proof::ErrorKind::OutOfRange => {
+                    mpc::Error::from(mpc::ErrorKind::MaliciousMessageAsync)
+                }
+            },
+            ErrorKind::Maurer(e) => match e.kind {
+                maurer::ErrorKind::Group(g) => mpc::Error::from(mpc::ErrorKind::Group(g)),
+                maurer::ErrorKind::InternalError => mpc::Error::from(mpc::ErrorKind::InternalError),
+                maurer::ErrorKind::Serialization(s) => {
+                    mpc::Error::from(mpc::ErrorKind::Serialization(s))
+                }
+                maurer::ErrorKind::InvalidParameters
+                | maurer::ErrorKind::InvalidPublicParameters
+                | maurer::ErrorKind::UnsupportedRepetitions => {
+                    mpc::Error::from(mpc::ErrorKind::InvalidParameters)
+                }
+                kind => {
+                    mpc::Error::from(mpc::ErrorKind::Consumer(format!("maurer error {kind:?}")))
+                }
+            },
+            kind => mpc::Error::from(mpc::ErrorKind::Consumer(format!("2pc-mpc error {kind:?}"))),
         }
     }
 }
@@ -375,6 +492,7 @@ pub mod class_groups {
         ) -> Self
         where
             GroupElement: PrimeGroupElement<SCALAR_LIMBS>
+                + Copy
                 + group::GroupElement<
                     PublicParameters = GroupPublicParameters,
                     Value = GroupElementValue,
@@ -669,17 +787,71 @@ pub mod class_groups {
         >,
     >;
 
+    pub mod asynchronous {
+        use super::*;
+
+        #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+        pub struct DKGProtocol<
+            const SCALAR_LIMBS: usize,
+            const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
+        >(PhantomData<GroupElement>)
+        where
+            Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+            Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+            Uint<SCALAR_LIMBS>: Encoding;
+    }
+
     pub mod schnorr {
         use super::*;
+        use crate::schnorr::PartialSignature;
 
         pub type Presign<
             const SCALAR_LIMBS: usize,
             const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
             const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
             GroupElement,
-        > = crate::schnorr::presign::Presign<
+        > = crate::schnorr::ahe::presign::Presign<
             group::Value<GroupElement>,
             group::Value<CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+        >;
+
+        pub type SignPartyPublicInput<
+            const SCALAR_LIMBS: usize,
+            const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            const MESSAGE_LIMBS: usize,
+            GroupElement,
+        > = crate::ecdsa::sign::decentralized_party::PublicInput<
+            DKGDecentralizedPartyVersionedOutput<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+            Presign<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+            PartialSignature<
+                <GroupElement as group::GroupElement>::Value,
+                group::ScalarValue<SCALAR_LIMBS, GroupElement>,
+            >,
+            DecryptionKeySharePublicParameters<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+            ProtocolPublicParameters<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
         >;
 
         pub mod asynchronous {
@@ -691,7 +863,7 @@ pub mod class_groups {
                 const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
                 const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
                 const MESSAGE_LIMBS: usize,
-                GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+                GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
             >(PhantomData<GroupElement>)
             where
                 Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
@@ -703,7 +875,7 @@ pub mod class_groups {
 
     pub mod ecdsa {
         use super::*;
-        use crate::ecdsa::sign::centralized_party::message::class_groups::Message as SignMessage;
+        use crate::ecdsa::sign::centralized_party::message::class_groups::SignData as EcdsaSignData;
         use maurer::extended_encryption_of_tuple;
 
         pub type Presign<
@@ -755,7 +927,7 @@ pub mod class_groups {
             const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
             const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
             GroupElement,
-        > = crate::schnorr::presign::decentralized_party::encryption_of_nonce_share_round::class_groups::asynchronous::Party<
+        > = crate::schnorr::ahe::presign::decentralized_party::encryption_of_nonce_share_round::class_groups::asynchronous::Party<
             SCALAR_LIMBS,
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -837,7 +1009,7 @@ pub mod class_groups {
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
                 GroupElement,
             >,
-            SignMessage<
+            EcdsaSignData<
                 SCALAR_LIMBS,
                 FUNDAMENTAL_DISCRIMINANT_LIMBS,
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -877,7 +1049,7 @@ pub mod class_groups {
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
                 GroupElement,
             >,
-            SignMessage<
+            EcdsaSignData<
                 SCALAR_LIMBS,
                 FUNDAMENTAL_DISCRIMINANT_LIMBS,
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -907,7 +1079,7 @@ pub mod class_groups {
                 const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
                 const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
                 const MESSAGE_LIMBS: usize,
-                GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+                GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
             >(PhantomData<GroupElement>)
             where
                 Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
@@ -915,6 +1087,66 @@ pub mod class_groups {
                 Uint<SCALAR_LIMBS>: Encoding,
                 Uint<MESSAGE_LIMBS>: Encoding;
         }
+    }
+}
+
+pub mod vss {
+    //! VSS (Verifiable Secret Sharing) based protocol infrastructure.
+    //!
+    //! This module provides an alternative to the class_groups-based protocols,
+    //! using Shamir secret sharing instead of additively homomorphic encryption.
+
+    use serde::{Deserialize, Serialize};
+
+    pub mod schnorr {
+        use super::*;
+        use crate::class_groups::{DKGDecentralizedPartyVersionedOutput, ProtocolPublicParameters};
+        use crate::schnorr::vss::Presign;
+        use crate::schnorr::PartialSignature;
+        use crypto_bigint::{Encoding, Uint};
+        use group::PrimeGroupElement;
+        use std::marker::PhantomData;
+
+        pub type SignPartyPublicInput<
+            const SCALAR_LIMBS: usize,
+            const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            GroupElement,
+        > = crate::schnorr::vss::sign::decentralized_party::PublicInput<
+            DKGDecentralizedPartyVersionedOutput<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+            Presign<<GroupElement as group::GroupElement>::Value>,
+            PartialSignature<
+                <GroupElement as group::GroupElement>::Value,
+                group::ScalarValue<SCALAR_LIMBS, GroupElement>,
+            >,
+            ProtocolPublicParameters<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+            <GroupElement as group::GroupElement>::Value,
+        >;
+
+        /// The VSS-based Schnorr protocol.
+        /// This protocol uses Shamir secret sharing for threshold signatures.
+        /// It references the class groups DKG protocol for key generation.
+        #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+        pub struct Protocol<
+            const SCALAR_LIMBS: usize,
+            const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
+        >(pub(crate) PhantomData<GroupElement>)
+        where
+            Uint<SCALAR_LIMBS>: Encoding,
+            Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+            Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding;
     }
 }
 
@@ -946,6 +1178,17 @@ pub mod secp256r1 {
             GroupElement,
         >;
 
+        // INSECURE MOCK: the per-curve ECDSA protocol export is redirected to the deterministic mock
+        // under `unsafe_mock`; production impls are never touched. See `crate::mock::ecdsa`.
+        #[cfg(feature = "unsafe_mock")]
+        pub type ECDSAProtocol = crate::mock::ecdsa::MockECDSAProtocol<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MESSAGE_LIMBS,
+            GroupElement,
+        >;
+        #[cfg(not(feature = "unsafe_mock"))]
         pub type ECDSAProtocol = crate::class_groups::ecdsa::asynchronous::Protocol<
             SCALAR_LIMBS,
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -954,7 +1197,20 @@ pub mod secp256r1 {
             GroupElement,
         >;
 
-        pub type DKGProtocol = ECDSAProtocol;
+        #[cfg(feature = "unsafe_mock")]
+        pub type DKGProtocol = crate::mock::dkg::MockDKGProtocol<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >;
+        #[cfg(not(feature = "unsafe_mock"))]
+        pub type DKGProtocol = crate::class_groups::asynchronous::DKGProtocol<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >;
 
         pub type EncryptionOfDiscreteLogProof =
             languages::class_groups::EncryptionOfDiscreteLogProof<
@@ -1003,6 +1259,17 @@ pub mod curve25519 {
             GroupElement,
         >;
 
+        // INSECURE MOCK: redirected to the deterministic Schnorr mock under `unsafe_mock`; production
+        // impls are never touched. See `crate::mock::schnorr`.
+        #[cfg(feature = "unsafe_mock")]
+        pub type EdDSAProtocol = crate::mock::schnorr::MockSchnorrProtocol<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MESSAGE_LIMBS,
+            GroupElement,
+        >;
+        #[cfg(not(feature = "unsafe_mock"))]
         pub type EdDSAProtocol = crate::class_groups::schnorr::asynchronous::Protocol<
             SCALAR_LIMBS,
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -1011,7 +1278,20 @@ pub mod curve25519 {
             GroupElement,
         >;
 
-        pub type DKGProtocol = EdDSAProtocol;
+        #[cfg(feature = "unsafe_mock")]
+        pub type DKGProtocol = crate::mock::dkg::MockDKGProtocol<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >;
+        #[cfg(not(feature = "unsafe_mock"))]
+        pub type DKGProtocol = crate::class_groups::asynchronous::DKGProtocol<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >;
 
         pub type EncryptionOfDiscreteLogProof =
             languages::class_groups::EncryptionOfDiscreteLogProof<
@@ -1029,6 +1309,28 @@ pub mod curve25519 {
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
                 GroupElement,
             >;
+    }
+
+    pub mod vss {
+        use super::*;
+
+        /// VSS-based Ed25519 protocol using Shamir secret sharing.
+        // INSECURE MOCK: redirected to the deterministic Schnorr-VSS mock under `unsafe_mock`;
+        // production impls are never touched. See `crate::mock::vss`.
+        #[cfg(feature = "unsafe_mock")]
+        pub type EdDSAVSSProtocol = crate::mock::vss::MockVSSProtocol<
+            SCALAR_LIMBS,
+            { crate::curve25519::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            { crate::curve25519::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            GroupElement,
+        >;
+        #[cfg(not(feature = "unsafe_mock"))]
+        pub type EdDSAVSSProtocol = crate::vss::schnorr::Protocol<
+            SCALAR_LIMBS,
+            { crate::curve25519::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            { crate::curve25519::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            GroupElement,
+        >;
     }
 }
 
@@ -1060,7 +1362,18 @@ pub mod ristretto {
             GroupElement,
         >;
 
-        pub type SchnorrkelSubstrateProtocol = crate::class_groups::schnorr::asynchronous::Protocol<
+        // INSECURE MOCK: redirected to the deterministic Schnorr mock under `unsafe_mock`; production
+        // impls are never touched. See `crate::mock::schnorr`.
+        #[cfg(feature = "unsafe_mock")]
+        pub type SchnorrkelProtocol = crate::mock::schnorr::MockSchnorrProtocol<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MESSAGE_LIMBS,
+            GroupElement,
+        >;
+        #[cfg(not(feature = "unsafe_mock"))]
+        pub type SchnorrkelProtocol = crate::class_groups::schnorr::asynchronous::Protocol<
             SCALAR_LIMBS,
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -1068,7 +1381,20 @@ pub mod ristretto {
             GroupElement,
         >;
 
-        pub type DKGProtocol = SchnorrkelSubstrateProtocol;
+        #[cfg(feature = "unsafe_mock")]
+        pub type DKGProtocol = crate::mock::dkg::MockDKGProtocol<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >;
+        #[cfg(not(feature = "unsafe_mock"))]
+        pub type DKGProtocol = crate::class_groups::asynchronous::DKGProtocol<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >;
 
         pub type EncryptionOfDiscreteLogProof =
             languages::class_groups::EncryptionOfDiscreteLogProof<
@@ -1086,6 +1412,28 @@ pub mod ristretto {
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
                 GroupElement,
             >;
+    }
+
+    pub mod vss {
+        use super::*;
+
+        /// VSS-based Schnorrkel protocol using Shamir secret sharing.
+        // INSECURE MOCK: redirected to the deterministic Schnorr-VSS mock under `unsafe_mock`;
+        // production impls are never touched. See `crate::mock::vss`.
+        #[cfg(feature = "unsafe_mock")]
+        pub type SchnorrkelVSSProtocol = crate::mock::vss::MockVSSProtocol<
+            SCALAR_LIMBS,
+            { crate::ristretto::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            { crate::ristretto::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            GroupElement,
+        >;
+        #[cfg(not(feature = "unsafe_mock"))]
+        pub type SchnorrkelVSSProtocol = crate::vss::schnorr::Protocol<
+            SCALAR_LIMBS,
+            { crate::ristretto::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            { crate::ristretto::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            GroupElement,
+        >;
     }
 }
 
@@ -1117,6 +1465,17 @@ pub mod secp256k1 {
             GroupElement,
         >;
 
+        // INSECURE MOCK: the per-curve ECDSA protocol export is redirected to the deterministic mock
+        // under `unsafe_mock`; production impls are never touched. See `crate::mock::ecdsa`.
+        #[cfg(feature = "unsafe_mock")]
+        pub type ECDSAProtocol = crate::mock::ecdsa::MockECDSAProtocol<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MESSAGE_LIMBS,
+            GroupElement,
+        >;
+        #[cfg(not(feature = "unsafe_mock"))]
         pub type ECDSAProtocol = crate::class_groups::ecdsa::asynchronous::Protocol<
             SCALAR_LIMBS,
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -1125,6 +1484,17 @@ pub mod secp256k1 {
             GroupElement,
         >;
 
+        // INSECURE MOCK: redirected to the deterministic Schnorr mock under `unsafe_mock`; production
+        // impls are never touched. See `crate::mock::schnorr`.
+        #[cfg(feature = "unsafe_mock")]
+        pub type TaprootProtocol = crate::mock::schnorr::MockSchnorrProtocol<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MESSAGE_LIMBS,
+            GroupElement,
+        >;
+        #[cfg(not(feature = "unsafe_mock"))]
         pub type TaprootProtocol = crate::class_groups::schnorr::asynchronous::Protocol<
             SCALAR_LIMBS,
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -1133,7 +1503,20 @@ pub mod secp256k1 {
             GroupElement,
         >;
 
-        pub type DKGProtocol = ECDSAProtocol;
+        #[cfg(feature = "unsafe_mock")]
+        pub type DKGProtocol = crate::mock::dkg::MockDKGProtocol<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >;
+        #[cfg(not(feature = "unsafe_mock"))]
+        pub type DKGProtocol = crate::class_groups::asynchronous::DKGProtocol<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >;
 
         pub type EncryptionOfDiscreteLogProof =
             languages::class_groups::EncryptionOfDiscreteLogProof<
@@ -1151,6 +1534,28 @@ pub mod secp256k1 {
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
                 GroupElement,
             >;
+    }
+
+    pub mod vss {
+        use super::*;
+
+        /// VSS-based Taproot/BIP-340 protocol using Shamir secret sharing.
+        // INSECURE MOCK: redirected to the deterministic Schnorr-VSS mock under `unsafe_mock`;
+        // production impls are never touched. See `crate::mock::vss`.
+        #[cfg(feature = "unsafe_mock")]
+        pub type TaprootVSSProtocol = crate::mock::vss::MockVSSProtocol<
+            SCALAR_LIMBS,
+            { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            GroupElement,
+        >;
+        #[cfg(not(feature = "unsafe_mock"))]
+        pub type TaprootVSSProtocol = crate::vss::schnorr::Protocol<
+            SCALAR_LIMBS,
+            { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            GroupElement,
+        >;
     }
 }
 #[cfg(any(test, feature = "test_helpers"))]
@@ -1176,10 +1581,10 @@ pub mod test_helpers {
         AdditivelyHomomorphicEncryptionKey, GroupsPublicParametersAccessors,
     };
 
-    pub(crate) fn mock_decentralized_party_dkg<
+    pub(crate) fn mock_decentralized_party_dkg_with_secrets<
         const SCALAR_LIMBS: usize,
         const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
         EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
     >(
         group_public_parameters: group::PublicParameters<GroupElement>,
@@ -1190,6 +1595,8 @@ pub mod test_helpers {
         GroupElement::Value,
         group::Value<EncryptionKey::CiphertextSpaceGroupElement>,
         group::Value<EncryptionKey::CiphertextSpaceGroupElement>,
+        group::Value<GroupElement::Scalar>,
+        group::Value<GroupElement::Scalar>,
     ) {
         let encryption_key = EncryptionKey::new(encryption_scheme_public_parameters).unwrap();
 
@@ -1254,6 +1661,116 @@ pub mod test_helpers {
             decentralized_party_public_key_share_second_part.value(),
             encryption_of_decentralized_party_secret_key_share_first_part.value(),
             encryption_of_decentralized_party_secret_key_share_second_part.value(),
+            decentralized_party_secret_key_share_first_part.value(),
+            decentralized_party_secret_key_share_second_part.value(),
+        )
+    }
+
+    pub(crate) fn mock_decentralized_party_dkg<
+        const SCALAR_LIMBS: usize,
+        const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
+        EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
+    >(
+        group_public_parameters: group::PublicParameters<GroupElement>,
+        scalar_group_public_parameters: group::PublicParameters<GroupElement::Scalar>,
+        encryption_scheme_public_parameters: &EncryptionKey::PublicParameters,
+    ) -> (
+        GroupElement::Value,
+        GroupElement::Value,
+        group::Value<EncryptionKey::CiphertextSpaceGroupElement>,
+        group::Value<EncryptionKey::CiphertextSpaceGroupElement>,
+    ) {
+        mock_decentralized_party_dkg_with_rng::<
+            SCALAR_LIMBS,
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            GroupElement,
+            EncryptionKey,
+        >(
+            group_public_parameters,
+            scalar_group_public_parameters,
+            encryption_scheme_public_parameters,
+            &mut OsCsRng,
+        )
+    }
+
+    pub(crate) fn mock_decentralized_party_dkg_with_rng<
+        const SCALAR_LIMBS: usize,
+        const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
+        EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
+    >(
+        group_public_parameters: group::PublicParameters<GroupElement>,
+        scalar_group_public_parameters: group::PublicParameters<GroupElement::Scalar>,
+        encryption_scheme_public_parameters: &EncryptionKey::PublicParameters,
+        rng: &mut impl group::CsRng,
+    ) -> (
+        GroupElement::Value,
+        GroupElement::Value,
+        group::Value<EncryptionKey::CiphertextSpaceGroupElement>,
+        group::Value<EncryptionKey::CiphertextSpaceGroupElement>,
+    ) {
+        let encryption_key = EncryptionKey::new(encryption_scheme_public_parameters).unwrap();
+
+        let generator =
+            GroupElement::generator_from_public_parameters(&group_public_parameters).unwrap();
+
+        let decentralized_party_secret_key_share_first_part =
+            GroupElement::Scalar::sample(&scalar_group_public_parameters, rng).unwrap();
+
+        let decentralized_party_secret_key_share_first_part_value: Uint<SCALAR_LIMBS> =
+            decentralized_party_secret_key_share_first_part.into();
+        let decentralized_party_secret_key_share_first_part_plaintext =
+            EncryptionKey::PlaintextSpaceGroupElement::new(
+                Uint::<PLAINTEXT_SPACE_SCALAR_LIMBS>::from(
+                    &decentralized_party_secret_key_share_first_part_value,
+                )
+                .into(),
+                encryption_scheme_public_parameters.plaintext_space_public_parameters(),
+            )
+            .unwrap();
+        let (_, encryption_of_decentralized_party_secret_key_share_first_part) = encryption_key
+            .encrypt(
+                &decentralized_party_secret_key_share_first_part_plaintext,
+                encryption_scheme_public_parameters,
+                true,
+                rng,
+            )
+            .unwrap();
+
+        let decentralized_party_secret_key_share_second_part =
+            GroupElement::Scalar::sample(&scalar_group_public_parameters, rng).unwrap();
+
+        let decentralized_party_secret_key_share_second_part_value: Uint<SCALAR_LIMBS> =
+            decentralized_party_secret_key_share_second_part.into();
+        let decentralized_party_secret_key_share_second_part_plaintext =
+            EncryptionKey::PlaintextSpaceGroupElement::new(
+                Uint::<PLAINTEXT_SPACE_SCALAR_LIMBS>::from(
+                    &decentralized_party_secret_key_share_second_part_value,
+                )
+                .into(),
+                encryption_scheme_public_parameters.plaintext_space_public_parameters(),
+            )
+            .unwrap();
+        let (_, encryption_of_decentralized_party_secret_key_share_second_part) = encryption_key
+            .encrypt(
+                &decentralized_party_secret_key_share_second_part_plaintext,
+                encryption_scheme_public_parameters,
+                true,
+                rng,
+            )
+            .unwrap();
+
+        let decentralized_party_public_key_share_first_part =
+            decentralized_party_secret_key_share_first_part * generator;
+        let decentralized_party_public_key_share_second_part =
+            decentralized_party_secret_key_share_second_part * generator;
+
+        (
+            decentralized_party_public_key_share_first_part.value(),
+            decentralized_party_public_key_share_second_part.value(),
+            encryption_of_decentralized_party_secret_key_share_first_part.value(),
+            encryption_of_decentralized_party_secret_key_share_second_part.value(),
         )
     }
 
@@ -1304,17 +1821,25 @@ pub mod test_helpers {
         crate::secp256k1::class_groups::ProtocolPublicParameters,
         crate::secp256k1::class_groups::DecryptionKey,
     ) {
+        setup_class_groups_secp256k1_with_rng(&mut OsCsRng)
+    }
+
+    pub fn setup_class_groups_secp256k1_with_rng(
+        rng: &mut impl group::CsRng,
+    ) -> (
+        crate::secp256k1::class_groups::ProtocolPublicParameters,
+        crate::secp256k1::class_groups::DecryptionKey,
+    ) {
         let setup_parameters = get_setup_parameters_secp256k1_112_bits_deterministic();
         let (encryption_scheme_public_parameters, decryption_key) =
-            Secp256k1DecryptionKey::generate_with_setup_parameters(setup_parameters, &mut OsCsRng)
-                .unwrap();
+            Secp256k1DecryptionKey::generate_with_setup_parameters(setup_parameters, rng).unwrap();
 
         let (
             decentralized_party_public_key_share_first_part,
             decentralized_party_public_key_share_second_part,
             encryption_of_decentralized_party_secret_key_share_first_part,
             encryption_of_decentralized_party_secret_key_share_second_part,
-        ) = mock_decentralized_party_dkg::<
+        ) = mock_decentralized_party_dkg_with_rng::<
             { secp256k1::SCALAR_LIMBS },
             { secp256k1::SCALAR_LIMBS },
             secp256k1::GroupElement,
@@ -1323,6 +1848,7 @@ pub mod test_helpers {
             secp256k1::group_element::PublicParameters::default(),
             secp256k1::scalar::PublicParameters::default(),
             &encryption_scheme_public_parameters,
+            rng,
         );
 
         let protocol_public_parameters = ProtocolPublicParameters::new::<
@@ -1423,5 +1949,152 @@ pub mod test_helpers {
         );
 
         (protocol_public_parameters, decryption_key)
+    }
+
+    #[allow(dead_code)]
+    pub fn setup_class_groups_secp256k1_with_secrets() -> (
+        crate::secp256k1::class_groups::ProtocolPublicParameters,
+        group::Value<secp256k1::Scalar>,
+        group::Value<secp256k1::Scalar>,
+    ) {
+        let setup_parameters = get_setup_parameters_secp256k1_112_bits_deterministic();
+        let (encryption_scheme_public_parameters, _decryption_key) =
+            Secp256k1DecryptionKey::generate_with_setup_parameters(setup_parameters, &mut OsCsRng)
+                .unwrap();
+
+        let (
+            decentralized_party_public_key_share_first_part,
+            decentralized_party_public_key_share_second_part,
+            encryption_of_decentralized_party_secret_key_share_first_part,
+            encryption_of_decentralized_party_secret_key_share_second_part,
+            decentralized_party_secret_key_share_first_part,
+            decentralized_party_secret_key_share_second_part,
+        ) = mock_decentralized_party_dkg_with_secrets::<
+            { secp256k1::SCALAR_LIMBS },
+            { secp256k1::SCALAR_LIMBS },
+            secp256k1::GroupElement,
+            Secp256k1EncryptionKey,
+        >(
+            secp256k1::group_element::PublicParameters::default(),
+            secp256k1::scalar::PublicParameters::default(),
+            &encryption_scheme_public_parameters,
+        );
+
+        let protocol_public_parameters = ProtocolPublicParameters::new::<
+            { secp256k1::SCALAR_LIMBS },
+            { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            secp256k1::GroupElement,
+        >(
+            decentralized_party_public_key_share_first_part,
+            decentralized_party_public_key_share_second_part,
+            encryption_of_decentralized_party_secret_key_share_first_part,
+            encryption_of_decentralized_party_secret_key_share_second_part,
+            encryption_scheme_public_parameters.clone(),
+        );
+
+        (
+            protocol_public_parameters,
+            decentralized_party_secret_key_share_first_part,
+            decentralized_party_secret_key_share_second_part,
+        )
+    }
+
+    #[allow(dead_code)]
+    pub fn setup_class_groups_ristretto_with_secrets() -> (
+        crate::ristretto::class_groups::ProtocolPublicParameters,
+        group::Value<ristretto::Scalar>,
+        group::Value<ristretto::Scalar>,
+    ) {
+        let setup_parameters = get_setup_parameters_ristretto_112_bits_deterministic();
+        let (encryption_scheme_public_parameters, _decryption_key) =
+            RistrettoDecryptionKey::generate_with_setup_parameters(setup_parameters, &mut OsCsRng)
+                .unwrap();
+
+        let (
+            decentralized_party_public_key_share_first_part,
+            decentralized_party_public_key_share_second_part,
+            encryption_of_decentralized_party_secret_key_share_first_part,
+            encryption_of_decentralized_party_secret_key_share_second_part,
+            decentralized_party_secret_key_share_first_part,
+            decentralized_party_secret_key_share_second_part,
+        ) = mock_decentralized_party_dkg_with_secrets::<
+            { ristretto::SCALAR_LIMBS },
+            { ristretto::SCALAR_LIMBS },
+            ristretto::GroupElement,
+            RistrettoEncryptionKey,
+        >(
+            ristretto::group_element::PublicParameters::default(),
+            ristretto::scalar::PublicParameters::default(),
+            &encryption_scheme_public_parameters,
+        );
+
+        let protocol_public_parameters = ProtocolPublicParameters::new::<
+            { ristretto::SCALAR_LIMBS },
+            { crate::ristretto::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            { crate::ristretto::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            ristretto::GroupElement,
+        >(
+            decentralized_party_public_key_share_first_part,
+            decentralized_party_public_key_share_second_part,
+            encryption_of_decentralized_party_secret_key_share_first_part,
+            encryption_of_decentralized_party_secret_key_share_second_part,
+            encryption_scheme_public_parameters.clone(),
+        );
+
+        (
+            protocol_public_parameters,
+            decentralized_party_secret_key_share_first_part,
+            decentralized_party_secret_key_share_second_part,
+        )
+    }
+
+    #[allow(dead_code)]
+    pub fn setup_class_groups_curve25519_with_secrets() -> (
+        crate::curve25519::class_groups::ProtocolPublicParameters,
+        group::Value<curve25519::Scalar>,
+        group::Value<curve25519::Scalar>,
+    ) {
+        let setup_parameters = get_setup_parameters_curve25519_112_bits_deterministic();
+        let (encryption_scheme_public_parameters, _decryption_key) =
+            Curve25519DecryptionKey::generate_with_setup_parameters(setup_parameters, &mut OsCsRng)
+                .unwrap();
+
+        let (
+            decentralized_party_public_key_share_first_part,
+            decentralized_party_public_key_share_second_part,
+            encryption_of_decentralized_party_secret_key_share_first_part,
+            encryption_of_decentralized_party_secret_key_share_second_part,
+            decentralized_party_secret_key_share_first_part,
+            decentralized_party_secret_key_share_second_part,
+        ) = mock_decentralized_party_dkg_with_secrets::<
+            { curve25519::SCALAR_LIMBS },
+            { curve25519::SCALAR_LIMBS },
+            curve25519::GroupElement,
+            Curve25519EncryptionKey,
+        >(
+            curve25519::PublicParameters::default(),
+            curve25519::scalar::PublicParameters::default(),
+            &encryption_scheme_public_parameters,
+        );
+
+        let protocol_public_parameters = ProtocolPublicParameters::new::<
+            { curve25519::SCALAR_LIMBS },
+            { crate::curve25519::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            { crate::curve25519::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            curve25519::GroupElement,
+        >(
+            decentralized_party_public_key_share_first_part,
+            decentralized_party_public_key_share_second_part,
+            encryption_of_decentralized_party_secret_key_share_first_part,
+            encryption_of_decentralized_party_secret_key_share_second_part,
+            encryption_scheme_public_parameters.clone(),
+        );
+
+        (
+            protocol_public_parameters,
+            decentralized_party_secret_key_share_first_part,
+            decentralized_party_secret_key_share_second_part,
+        )
     }
 }

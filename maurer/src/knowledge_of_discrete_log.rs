@@ -1,8 +1,6 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
-use std::ops::Mul;
-
 use serde::Serialize;
 
 use group::bounded_natural_numbers_group::MAURER_RANDOMIZER_DIFF_BITS;
@@ -34,8 +32,8 @@ pub type FischlinLanguage<const REPETITIONS: usize, Scalar, GroupElement> =
 
 impl<
         const REPETITIONS: usize,
-        Scalar: group::GroupElement + Samplable + Mul<GroupElement, Output = GroupElement> + Copy,
-        GroupElement: group::GroupElement + Scale<Scalar::Value>,
+        Scalar: group::GroupElement + Samplable + Copy,
+        GroupElement: group::GroupElement + Scale<group::Value<Scalar>>,
     > crate::Language<REPETITIONS> for private::Language<REPETITIONS, Scalar, GroupElement>
 {
     type WitnessSpaceGroupElement = Scalar;
@@ -56,14 +54,14 @@ impl<
         is_verify: bool,
     ) -> Result<Self::StatementSpaceGroupElement> {
         let generator = GroupElement::new(
-            language_public_parameters.base,
+            language_public_parameters.base.clone(),
             &language_public_parameters
                 .groups_public_parameters
                 .statement_space_public_parameters,
         )?;
 
         if is_verify {
-            Ok(generator.scale_vartime_accelerated(
+            Ok(generator.scale_vartime_by(
                 &witness.value(),
                 language_public_parameters.statement_space_public_parameters(),
             ))
@@ -77,13 +75,13 @@ impl<
                 }
             })
         {
-            Ok(generator.scale_randomized_bounded_accelerated(
+            Ok(generator.scale_randomized_public_base_bounded_by(
                 &witness.value(),
-                language_public_parameters.statement_space_public_parameters(),
                 discrete_log_upper_bound_bits,
+                language_public_parameters.statement_space_public_parameters(),
             ))
         } else {
-            Ok(generator.scale_randomized_accelerated(
+            Ok(generator.scale_randomized_public_base_by(
                 &witness.value(),
                 language_public_parameters.statement_space_public_parameters(),
             ))
@@ -124,12 +122,9 @@ impl<ScalarPublicParameters, GroupPublicParameters, GroupElementValue>
         Scalar: group::GroupElement<PublicParameters = ScalarPublicParameters>
             + group::GroupElement
             + Samplable
-            + Mul<GroupElement, Output = GroupElement>
             + Copy,
-        GroupElement: group::GroupElement<
-            Value = GroupElementValue,
-            PublicParameters = GroupPublicParameters,
-        >,
+        GroupElement: group::GroupElement<Value = GroupElementValue, PublicParameters = GroupPublicParameters>
+            + Scale<group::Value<Scalar>>,
     {
         Self {
             groups_public_parameters: GroupsPublicParameters {
@@ -229,7 +224,6 @@ pub mod test_helpers {
 #[cfg(test)]
 #[allow(clippy::type_complexity)]
 mod tests {
-    use std::collections::HashMap;
     use std::iter;
     use std::marker::PhantomData;
 
@@ -237,8 +231,7 @@ mod tests {
     use rstest::rstest;
 
     use group::CyclicGroupElement;
-    use group::{secp256k1, GroupElement, OsCsRng, PartyID};
-    use mpc::Weight;
+    use group::{secp256k1, GroupElement, OsCsRng};
 
     use crate::language::StatementSpaceGroupElement;
     use crate::test_helpers;
@@ -401,91 +394,6 @@ mod tests {
             &mut OsCsRng,
         )
     }
-
-    #[rstest]
-    #[case(1, 1)]
-    #[case(1, 2)]
-    #[case(2, 1)]
-    #[case(2, 3)]
-    #[case(5, 2)]
-    fn aggregates(#[case] number_of_parties: usize, #[case] batch_size: usize) {
-        let language_public_parameters = language_public_parameters::<SOUND_PROOFS_REPETITIONS>();
-
-        test_helpers::aggregates::<SOUND_PROOFS_REPETITIONS, Lang>(
-            &language_public_parameters,
-            number_of_parties,
-            batch_size,
-        );
-    }
-
-    #[rstest]
-    #[case(2, HashMap::from([(1, 1), (2, 1)]), 1)]
-    #[case(2, HashMap::from([(1, 1), (2, 1)]), 2)]
-    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), 1)]
-    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), 2)]
-    fn statement_aggregates_asynchronously(
-        #[case] threshold: PartyID,
-        #[case] party_to_weight: HashMap<PartyID, Weight>,
-        #[case] batch_size: usize,
-    ) {
-        let language_public_parameters = language_public_parameters::<SOUND_PROOFS_REPETITIONS>();
-
-        test_helpers::statement_aggregates_asynchronously::<SOUND_PROOFS_REPETITIONS, Lang>(
-            &language_public_parameters,
-            threshold,
-            party_to_weight,
-            batch_size,
-            &mut OsCsRng,
-        );
-    }
-
-    #[rstest]
-    #[case(2, 1)]
-    #[case(3, 1)]
-    #[case(5, 2)]
-    fn unresponsive_parties_aborts_session_identifiably(
-        #[case] number_of_parties: usize,
-        #[case] batch_size: usize,
-    ) {
-        let language_public_parameters = language_public_parameters::<SOUND_PROOFS_REPETITIONS>();
-
-        test_helpers::unresponsive_parties_aborts_session_identifiably::<
-            SOUND_PROOFS_REPETITIONS,
-            Lang,
-        >(&language_public_parameters, number_of_parties, batch_size);
-    }
-
-    #[rstest]
-    #[case(2, 1)]
-    #[case(3, 1)]
-    #[case(5, 2)]
-    fn wrong_decommitment_aborts_session_identifiably(
-        #[case] number_of_parties: usize,
-        #[case] batch_size: usize,
-    ) {
-        let language_public_parameters = language_public_parameters::<SOUND_PROOFS_REPETITIONS>();
-
-        test_helpers::wrong_decommitment_aborts_session_identifiably::<
-            SOUND_PROOFS_REPETITIONS,
-            Lang,
-        >(&language_public_parameters, number_of_parties, batch_size);
-    }
-
-    #[rstest]
-    #[case(2, 1)]
-    #[case(3, 1)]
-    #[case(5, 2)]
-    fn failed_proof_share_verification_aborts_session_identifiably(
-        #[case] number_of_parties: usize,
-        #[case] batch_size: usize,
-    ) {
-        let language_public_parameters = language_public_parameters::<SOUND_PROOFS_REPETITIONS>();
-
-        test_helpers::failed_proof_share_verification_aborts_session_identifiably::<
-            SOUND_PROOFS_REPETITIONS,
-            Lang,
-        >(&language_public_parameters, number_of_parties, batch_size);
-    }
 }
 
 #[cfg(feature = "benchmarking")]
@@ -517,13 +425,6 @@ pub(crate) mod benches {
         let fischlin_language_public_parameters16 = language_public_parameters::<16>();
         test_helpers::benchmark_fischlin_proof::<16, FischlinLang<16>>(
             &fischlin_language_public_parameters16,
-        );
-
-        test_helpers::benchmark_aggregation::<SOUND_PROOFS_REPETITIONS, Lang>(
-            &maurer_language_public_parameters,
-            None,
-            false,
-            None,
         );
     }
 }

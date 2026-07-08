@@ -30,7 +30,9 @@ use crate::accelerator::MultiFoldNupowAccelerator;
 use crate::decryption_key::{DecryptionKey, DiscreteLogInF};
 use crate::equivalence_class::{EquivalenceClass, EquivalenceClassOps};
 use crate::ibqf::compact::CompactIbqf;
-use crate::{encryption_key, Error, SecretKeyShareSizedInteger, SECRET_KEY_SHARE_WITNESS_LIMBS};
+use crate::{
+    encryption_key, Error, ErrorKind, SecretKeyShareSizedInteger, SECRET_KEY_SHARE_WITNESS_LIMBS,
+};
 use crate::{equivalence_class, Result};
 use crate::{CiphertextSpaceGroupElement, EncryptionKey};
 
@@ -313,11 +315,19 @@ where
         #[cfg(feature = "parallel")]
         let iter = ciphertexts.par_iter();
 
+        let equivalence_class_public_parameters = public_parameters
+            .encryption_scheme_public_parameters
+            .setup_parameters
+            .equivalence_class_public_parameters();
+
         let decryption_share_bases: Vec<_> = iter
             .map(|ciphertext| {
                 ciphertext
-                    .scale_vartime(&public_parameters.n_factorial)
-                    .scale_vartime(&binomial_coefficient)
+                    .scale_vartime(
+                        &public_parameters.n_factorial,
+                        equivalence_class_public_parameters,
+                    )
+                    .scale_vartime(&binomial_coefficient, equivalence_class_public_parameters)
             })
             .collect();
 
@@ -417,6 +427,11 @@ where
                     })
             }).collect();
 
+        let equivalence_class_public_parameters = public_parameters
+            .encryption_scheme_public_parameters
+            .setup_parameters
+            .equivalence_class_public_parameters();
+
         let (have_enough_expected_decrypters, combined_decryption_shares) =
             interpolate_decryption_shares(
                 decryption_shares,
@@ -426,6 +441,7 @@ where
                 public_parameters.number_of_parties,
                 public_parameters.n_factorial,
                 batch_size,
+                equivalence_class_public_parameters,
             )?;
 
         // We have two modes of decryptions, the expected case and unexpected case. In the unexpected case the parties have to "divide" in the exponent to fix the computation, which in a group of unknown order demands another multiplication by n!.
@@ -450,12 +466,18 @@ where
                 // Raise `ciphertext` by `n!^3` or `n!^4` based on whether we are in the expected or unexpected case
                 let second_ciphertext_by_delta_cubed = (1..=decryption_factor_n_factorial_degree)
                     .fold(second_ciphertext, |acc, _| {
-                        acc.scale_vartime(&public_parameters.n_factorial)
+                        acc.scale_vartime(
+                            &public_parameters.n_factorial,
+                            equivalence_class_public_parameters,
+                        )
                     });
 
                 // $ \bar{M} = ct_2^{\delta^3} \cdot W^{-1} = f^{\delta^3 \cdot m}$
-                let message_by_decryption_factor_in_the_exponent =
-                    second_ciphertext_by_delta_cubed - combined_decryption_share;
+                let message_by_decryption_factor_in_the_exponent = second_ciphertext_by_delta_cubed
+                    .sub_vartime(
+                        &combined_decryption_share,
+                        equivalence_class_public_parameters,
+                    );
 
                 let solved_message = DecryptionKey::<
                     PLAINTEXT_SPACE_SCALAR_LIMBS,
@@ -469,7 +491,7 @@ where
                         .setup_parameters,
                 )
                 .into_option()
-                .ok_or(Error::InternalError); // $ CLSolve(PP_{cl}, \bar{M}) $
+                .ok_or_else(|| Error::from(ErrorKind::InternalError)); // $ CLSolve(PP_{cl}, \bar{M}) $
 
                 solved_message.and_then(|m| {
                     let message_by_delta_cubed = GroupElement::Scalar::new(
@@ -480,7 +502,14 @@ where
                     );
 
                     // $ CLSolve(PP_{cl}, \bar{M}) \cdot \delta^{-3} mod q $
-                    Ok(message_by_delta_cubed.map(|m| m.scale(&decryption_factor))?)
+                    Ok(message_by_delta_cubed.map(|m| {
+                        m.scale(
+                            &decryption_factor,
+                            public_parameters
+                                .encryption_scheme_public_parameters
+                                .plaintext_space_public_parameters(),
+                        )
+                    })?)
                 })
             })
             .collect::<Result<Vec<_>>>()
@@ -508,7 +537,7 @@ where
                 .map(|(party_id, (decryption_shares, proof))| {
                     let res = if decryption_shares.len() != batch_size || proof.len() != batch_size
                     {
-                        Err(Error::InvalidMessage)
+                        Err(Error::from(ErrorKind::InvalidMessage))
                     } else {
                         Ok((decryption_shares, proof))
                     };
@@ -524,7 +553,13 @@ where
             .map(|ciphertext| {
                 let [first_ciphertext, _]: [_; 2] = ciphertext.into();
 
-                first_ciphertext.scale_vartime(&public_parameters.n_factorial)
+                first_ciphertext.scale_vartime(
+                    &public_parameters.n_factorial,
+                    public_parameters
+                        .encryption_scheme_public_parameters
+                        .setup_parameters
+                        .equivalence_class_public_parameters(),
+                )
             })
             .collect();
 
@@ -560,13 +595,19 @@ where
                     *party_id,
                     public_verification_key
                         .zip(binomial_coefficient)
-                        .ok_or(Error::InvalidParameters)
+                        .ok_or_else(|| Error::from(ErrorKind::InvalidParameters))
                         .and_then(|(public_verification_key, binomial_coefficient)| {
                             decryption_share_bases
                                 .clone()
                                 .into_iter()
                                 .map(|decryption_share_base| {
-                                    decryption_share_base.scale_vartime(binomial_coefficient)
+                                    decryption_share_base.scale_vartime(
+                                        binomial_coefficient,
+                                        public_parameters
+                                            .encryption_scheme_public_parameters
+                                            .setup_parameters
+                                            .equivalence_class_public_parameters(),
+                                    )
                                 })
                                 .zip(decryption_shares.into_iter().zip(proofs))
                                 .map(|(decryption_share_base, (decryption_share, proof))| {
@@ -640,7 +681,7 @@ where
             .values()
             .next()
             .map(|shares| shares.len())
-            .ok_or(Error::InvalidParameters)?;
+            .ok_or_else(|| Error::from(ErrorKind::InvalidParameters))?;
 
         // Instantiate decryption shares.
         let (parties_sending_invalid_decryption_shares, invalid_semi_honest_decryption_shares) = invalid_semi_honest_decryption_shares
@@ -660,7 +701,7 @@ where
                         })
                         .collect()
                 } else {
-                    Err(Error::InvalidMessage)
+                    Err(Error::from(ErrorKind::InvalidMessage))
                 };
 
                 (party_id, decryption_shares)
@@ -684,12 +725,17 @@ where
                         })
                         .collect()
                 } else {
-                    Err(Error::InvalidMessage)
+                    Err(Error::from(ErrorKind::InvalidMessage))
                 };
 
                 decryption_shares.map(|decryption_shares| (party_id, decryption_shares))
             })
-            .try_collect_hash_map().map_err(|_| Error::InvalidParameters)?;
+            .try_collect_hash_map().map_err(|_| Error::from(ErrorKind::InvalidParameters))?;
+
+        let equivalence_class_public_parameters = public_parameters
+            .encryption_scheme_public_parameters
+            .setup_parameters
+            .equivalence_class_public_parameters();
 
         let malicious_decrypters = identify_malicious_semi_honest_decrypters(
             invalid_semi_honest_decryption_shares,
@@ -700,6 +746,7 @@ where
             public_parameters.binomial_coefficients.clone(),
             public_parameters.n_factorial,
             batch_size,
+            equivalence_class_public_parameters,
         )?;
 
         Ok(parties_sending_invalid_decryption_shares
@@ -808,7 +855,7 @@ where
         GroupElement::Scalar: group::GroupElement<PublicParameters = ScalarPublicParameters>,
     {
         if u32::from(threshold) > MAX_THRESHOLD || u32::from(number_of_parties) > MAX_PLAYERS {
-            return Err(crate::Error::InvalidParameters);
+            return Err(crate::Error::from(crate::ErrorKind::InvalidParameters));
         }
 
         let precomputed_values = PrecomputedValues::<group::Value<GroupElement::Scalar>>::new::<

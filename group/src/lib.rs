@@ -1,17 +1,12 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
-use core::{
-    fmt::Debug,
-    iter,
-    ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign},
-};
+use core::{fmt::Debug, iter, ops::Mul};
 
 use crypto_bigint::{Int, Uint, U128, U64};
 use serde::{Deserialize, Serialize};
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq, CtOption};
 
-pub use linear_combination::LinearlyCombinable;
 pub use reduce::Reduce;
 
 pub mod helpers;
@@ -30,10 +25,11 @@ pub mod ristretto;
 pub mod scalar;
 pub mod secp256k1;
 pub mod secp256r1;
+mod seedable_collection;
 pub mod self_product;
 mod transcription;
 
-pub use hash_to_scalar::{hash_to_scalar, HashScheme};
+pub use hash_to_scalar::{hash, hash_to_scalar, HashContext, HashScheme};
 pub use transcription::Transcribeable;
 #[cfg(any(test, feature = "test_helpers"))]
 #[allow(unused_imports)]
@@ -41,9 +37,12 @@ pub mod test_helpers {
     pub use crate::transcription::test_helpers::*;
 }
 
+use crate::linear_combination::linearly_combine_bounded;
 #[cfg(any(test, feature = "os_rng"))]
 pub use csrng::OsCsRng;
 pub use csrng::{CsRng, SeedableRng};
+pub use linear_combination::linearly_combine_bounded_or_scale;
+pub use seedable_collection::SeedableCollection;
 
 /// Represents an unsigned integer sized based on the computation security parameter, denoted as
 /// $\kappa$.
@@ -56,9 +55,39 @@ pub type StatisticalSecuritySizedNumber = U64;
 /// A unique identifier of a party in an MPC protocol.
 pub type PartyID = u16;
 
-/// Group error.
+/// Group error wrapper that carries a backtrace captured at construction.
+///
+/// The backtrace is captured by `Backtrace::capture()`, gated by `RUST_BACKTRACE`
+/// (or `RUST_LIB_BACKTRACE`) — set to `1` (or `full`) to see the line where
+/// each error was minted (or, for cross-crate `?` chains, the conversion site).
+#[derive(thiserror::Error, Clone, Debug)]
+#[error("{kind}\n{backtrace}")]
+pub struct Error {
+    pub kind: ErrorKind,
+    pub backtrace: std::sync::Arc<std::backtrace::Backtrace>,
+}
+
+impl PartialEq for Error {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+    }
+}
+
+impl<E> From<E> for Error
+where
+    ErrorKind: From<E>,
+{
+    fn from(value: E) -> Self {
+        Self {
+            kind: ErrorKind::from(value),
+            backtrace: std::sync::Arc::new(std::backtrace::Backtrace::capture()),
+        }
+    }
+}
+
+/// Group error kind.
 #[derive(thiserror::Error, Clone, Debug, PartialEq)]
-pub enum Error {
+pub enum ErrorKind {
     #[error("unsupported public parameters: the implementation doesn't support the public parameters, whether it identifies a valid group."
     )]
     UnsupportedPublicParameters,
@@ -98,26 +127,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 ///
 /// All group operations are guaranteed to be constant time
 pub trait GroupElement:
-    Neg<Output = Self>
-    + Add<Self, Output = Self>
-    + for<'r> Add<&'r Self, Output = Self>
-    + Sub<Self, Output = Self>
-    + for<'r> Sub<&'r Self, Output = Self>
-    + AddAssign<Self>
-    + for<'r> AddAssign<&'r Self>
-    + SubAssign<Self>
-    + for<'r> SubAssign<&'r Self>
-    + Into<Self::Value>
-    + Debug
-    + PartialEq
-    + Eq
-    + Copy
-    + Clone
-    + LinearlyCombinable
-    + ConstantTimeEq
-    + ConditionallySelectable
-    + Send
-    + Sync
+    Into<Self::Value> + Debug + PartialEq + Eq + Clone + ConstantTimeEq + Send + Sync
 {
     /// The actual value of the group point used for encoding/decoding.
     ///
@@ -143,15 +153,13 @@ pub trait GroupElement:
         + PartialEq
         + Eq
         + ConstantTimeEq
-        + ConditionallySelectable
-        + Copy
         + Default
         + Send
         + Sync;
 
     /// Returns the value of this group element.
     fn value(&self) -> Self::Value {
-        (*self).into()
+        self.clone().into()
     }
 
     /// Perform a batched conversion of group elements to their values.
@@ -197,6 +205,18 @@ pub trait GroupElement:
     /// element of the group either here or in deserialization.
     fn new(value: Self::Value, public_parameters: &Self::PublicParameters) -> Result<Self>;
 
+    /// Instantiate the group element from its value and the caller supplied parameters.
+    ///
+    /// *** SECURITY NOTICE ***: `Self::new_unchecked()` might not check that the
+    /// `value` belongs to the group identified by `params` if it is computation costly,
+    /// and as such is generally UNSAFE unless proven secure in a very specific protocol and context.
+    fn new_unchecked(
+        value: Self::Value,
+        public_parameters: &Self::PublicParameters,
+    ) -> Result<Self> {
+        Self::new(value, public_parameters)
+    }
+
     /// Returns the additive identity, also known as the "neutral element".
     fn neutral(&self) -> Self;
 
@@ -208,32 +228,54 @@ pub trait GroupElement:
         self.value().ct_eq(&self.neutral().value())
     }
 
+    /// Constant-time addition.
+    fn add_constant_time(&self, other: &Self, public_parameters: &Self::PublicParameters) -> Self;
+
+    /// Constant-time subtraction.
+    fn sub_constant_time(&self, other: &Self, public_parameters: &Self::PublicParameters) -> Self;
+
+    /// Constant-time negation.
+    fn neg_constant_time(&self, public_parameters: &Self::PublicParameters) -> Self;
+
     /// Constant-time Multiplication by (any bounded) natural number (scalar)
-    fn scale<const LIMBS: usize>(&self, scalar: &Uint<LIMBS>) -> Self {
-        self.scale_bounded(scalar, Uint::<LIMBS>::BITS)
-    }
+    fn scale<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self;
 
     /// Constant-time Multiplication by (any bounded) integer (scalar)
-    fn scale_integer<const LIMBS: usize>(&self, integer: &Int<LIMBS>) -> Self {
-        self.scale_integer_bounded(integer, Uint::<LIMBS>::BITS)
-    }
+    fn scale_integer<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self;
 
     /// Variable-time Multiplication by (any bounded) natural number (scalar)
-    fn scale_vartime<const LIMBS: usize>(&self, scalar: &Uint<LIMBS>) -> Self {
-        self.scale_bounded_vartime(scalar, scalar.bits_vartime())
-    }
+    fn scale_vartime<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self;
 
     /// Variable-time Multiplication by (any bounded) integer (scalar)
-    fn scale_integer_vartime<const LIMBS: usize>(&self, scalar: &Int<LIMBS>) -> Self {
-        self.scale_integer_bounded_vartime(scalar, scalar.abs().bits_vartime())
-    }
+    fn scale_integer_vartime<const LIMBS: usize>(
+        &self,
+        scalar: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self;
 
     /// Constant-time Multiplication by (any bounded) natural number (scalar),
     /// with `scalar_bits` representing the number of (least significant) bits
     /// to take into account for the scalar.
     ///
     /// NOTE: `scalar_bits` may be leaked in the time pattern.
-    fn scale_bounded<const LIMBS: usize>(&self, scalar: &Uint<LIMBS>, scalar_bits: u32) -> Self;
+    fn scale_bounded<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self;
 
     /// Constant-time Multiplication by (any bounded) integer (scalar),
     /// with `scalar_bits` representing the number of (least significant) bits
@@ -244,16 +286,8 @@ pub trait GroupElement:
         &self,
         integer: &Int<LIMBS>,
         scalar_bits: u32,
-    ) -> Self {
-        let positive = self.scale_bounded(&integer.abs(), scalar_bits);
-        let negated = positive.neg();
-
-        <Self as ConditionallySelectable>::conditional_select(
-            &positive,
-            &negated,
-            integer.is_negative().into(),
-        )
-    }
+        public_parameters: &Self::PublicParameters,
+    ) -> Self;
 
     /// Variable-time Multiplication by (any bounded) natural number (scalar),
     /// with `scalar_bits` representing the number of (least significant) bits
@@ -262,6 +296,7 @@ pub trait GroupElement:
         &self,
         scalar: &Uint<LIMBS>,
         scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
     ) -> Self;
 
     /// Variable-time Multiplication by (any bounded) integer (scalar),
@@ -271,117 +306,677 @@ pub trait GroupElement:
         &self,
         integer: &Int<LIMBS>,
         scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
     ) -> Self {
-        let positive = self.scale_bounded_vartime(&integer.abs(), scalar_bits);
+        let positive = self.scale_bounded_vartime(&integer.abs(), scalar_bits, public_parameters);
 
         if bool::from(integer.is_negative()) {
-            positive.neg()
+            positive.neg_constant_time(public_parameters)
         } else {
             positive
         }
     }
 
+    /// Multiplication by (any bounded) natural number (scalar),
+    /// variable-time in the scalar value, constant-time in the base.
+    /// Computes `bits_vartime()` to determine the number of bits to process,
+    /// but uses constant-time scalar multiplication.
+    fn scale_vartime_scalar<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self;
+
     /// Multiplication by (any bounded) integer (scalar),
-    /// variable-time in respect to the sign of `integer` only.
-    /// `scalar_bits` representing the number of (least significant) bits
+    /// variable-time in the scalar value, constant-time in the base.
+    /// Computes `abs().bits_vartime()` to determine the number of bits to process,
+    /// but uses constant-time scalar multiplication (and variable-time sign handling).
+    fn scale_integer_vartime_scalar<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        let abs = integer.abs();
+        let positive = self.scale_vartime_scalar(&abs, public_parameters);
+
+        if bool::from(integer.is_negative()) {
+            positive.neg_constant_time(public_parameters)
+        } else {
+            positive
+        }
+    }
+
+    /// Constant-time Multiplication by (any bounded) natural number (scalar),
+    /// where the base is public (known to all parties).
+    /// Implementations may use acceleration (e.g. precomputed tables) when available.
+    fn scale_public_base<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self;
+
+    /// Constant-time Multiplication by (any bounded) natural number (scalar),
+    /// where the base is public (known to all parties),
+    /// with `scalar_bits` representing the number of (least significant) bits
     /// to take into account for the scalar.
-    fn scale_integer_bounded_vartime_scalar<const LIMBS: usize>(
+    /// Implementations may use acceleration (e.g. precomputed tables) when available.
+    fn scale_public_base_bounded<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self;
+
+    /// Constant-time Multiplication by (any bounded) integer (scalar),
+    /// where the base is public (known to all parties).
+    /// Implementations may use acceleration (e.g. precomputed tables) when available.
+    fn scale_integer_public_base<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self;
+
+    /// Constant-time Multiplication by (any bounded) integer (scalar),
+    /// where the base is public (known to all parties),
+    /// with `scalar_bits` representing the number of (least significant) bits
+    /// to take into account for the scalar.
+    /// Implementations may use acceleration (e.g. precomputed tables) when available.
+    fn scale_integer_public_base_bounded<const LIMBS: usize>(
         &self,
         integer: &Int<LIMBS>,
         scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self;
+
+    /// Constant-time Multiplication by (any bounded) natural number (scalar),
+    /// using randomized arithmetic (e.g. randomized representation in class groups).
+    /// Defaults to `scale()` for groups without randomized arithmetic.
+    fn scale_randomized<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self;
+
+    /// Constant-time Multiplication by (any bounded) natural number (scalar),
+    /// using randomized arithmetic,
+    /// with `scalar_bits` representing the number of (least significant) bits
+    /// to take into account for the scalar.
+    fn scale_randomized_bounded<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self;
+
+    /// Constant-time Multiplication by (any bounded) natural number (scalar),
+    /// using randomized arithmetic, where the base is public (known to all parties).
+    /// Implementations may use acceleration (e.g. precomputed tables) when available.
+    fn scale_randomized_public_base<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self;
+
+    /// Constant-time Multiplication by (any bounded) natural number (scalar),
+    /// using randomized arithmetic, where the base is public (known to all parties),
+    /// with `scalar_bits` representing the number of (least significant) bits
+    /// to take into account for the scalar.
+    fn scale_randomized_public_base_bounded<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self;
+
+    /// Constant-time Multiplication by (any bounded) integer (scalar),
+    /// using randomized arithmetic.
+    /// Defaults to `scale_integer()` for groups without randomized arithmetic.
+    fn scale_integer_randomized<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self;
+
+    /// Constant-time Multiplication by (any bounded) integer (scalar),
+    /// using randomized arithmetic,
+    /// with `scalar_bits` representing the number of (least significant) bits
+    /// to take into account for the scalar.
+    fn scale_integer_randomized_bounded<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self;
+
+    /// Constant-time Multiplication by (any bounded) integer (scalar),
+    /// using randomized arithmetic, where the base is public (known to all parties).
+    /// Implementations may use acceleration (e.g. precomputed tables) when available.
+    fn scale_integer_randomized_public_base<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self;
+
+    /// Constant-time Multiplication by (any bounded) integer (scalar),
+    /// using randomized arithmetic, where the base is public (known to all parties),
+    /// with `scalar_bits` representing the number of (least significant) bits
+    /// to take into account for the scalar.
+    fn scale_integer_randomized_public_base_bounded<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self;
+
+    /// Multiplication by (any bounded) natural number (scalar),
+    /// using randomized arithmetic,
+    /// variable-time in the scalar value, constant-time in the base.
+    fn scale_randomized_vartime_scalar<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self;
+
+    /// Multiplication by (any bounded) integer (scalar),
+    /// using randomized arithmetic,
+    /// variable-time in the scalar value, constant-time in the base.
+    fn scale_integer_randomized_vartime_scalar<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
     ) -> Self {
-        let positive = self.scale_bounded(&integer.abs(), scalar_bits);
+        let abs = integer.abs();
+        let positive = self.scale_randomized_vartime_scalar(&abs, public_parameters);
 
         if bool::from(integer.is_negative()) {
-            positive.neg()
+            positive.neg_constant_time(public_parameters)
         } else {
             positive
         }
     }
 
     /// Add two randomized group elements in constant-time.
-    fn add_randomized(self, other: &Self) -> Self;
+    fn add_randomized(&self, other: &Self, public_parameters: &Self::PublicParameters) -> Self;
 
     /// Variable-time Addition.
-    fn add_vartime(self, other: &Self) -> Self;
+    fn add_vartime(&self, other: &Self, public_parameters: &Self::PublicParameters) -> Self;
 
     /// Sub two randomized group elements in constant-time.
-    fn sub_randomized(self, other: &Self) -> Self;
+    fn sub_randomized(&self, other: &Self, public_parameters: &Self::PublicParameters) -> Self;
 
     /// Variable-time Subtraction.
-    fn sub_vartime(self, other: &Self) -> Self;
+    fn sub_vartime(&self, other: &Self, public_parameters: &Self::PublicParameters) -> Self;
 
     /// Double this point in constant-time.
     #[must_use]
-    fn double(&self) -> Self;
+    fn double(&self, public_parameters: &Self::PublicParameters) -> Self;
 
     /// Double this point in variable-time.
     #[must_use]
-    fn double_vartime(&self) -> Self;
+    fn double_vartime(&self, public_parameters: &Self::PublicParameters) -> Self;
+
+    /// Performs constant-time "modular multi-exponentiation" (i.e. linear combination).
+    fn linearly_combine<const RHS_LIMBS: usize>(
+        bases_and_multiplicands: Vec<(Self, Uint<RHS_LIMBS>)>,
+        public_parameters: &Self::PublicParameters,
+    ) -> crate::Result<Self> {
+        Self::linearly_combine_bounded(
+            bases_and_multiplicands,
+            Uint::<RHS_LIMBS>::BITS,
+            public_parameters,
+        )
+    }
+
+    /// Performs constant-time "modular multi-exponentiation" (i.e. linear combination).
+    /// `exponent_bits` represents the number of bits to take into account for the exponent.
+    fn linearly_combine_bounded<const RHS_LIMBS: usize>(
+        bases_and_multiplicands: Vec<(Self, Uint<RHS_LIMBS>)>,
+        exponent_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> crate::Result<Self>;
+
+    /// Performs variable-time "modular multi-exponentiation" (i.e. linear combination).
+    fn linearly_combine_vartime<const RHS_LIMBS: usize>(
+        bases_and_multiplicands: Vec<(Self, Uint<RHS_LIMBS>)>,
+        public_parameters: &Self::PublicParameters,
+    ) -> crate::Result<Self> {
+        let multiplicand_bits_upper_bound = bases_and_multiplicands
+            .iter()
+            .map(|(_, multiplicand)| multiplicand.bits_vartime())
+            .max()
+            .unwrap_or(Uint::<RHS_LIMBS>::BITS);
+
+        Self::linearly_combine_bounded_vartime(
+            bases_and_multiplicands,
+            multiplicand_bits_upper_bound,
+            public_parameters,
+        )
+    }
+
+    /// Performs variable-time "modular multi-exponentiation" (i.e. linear combination).
+    /// `exponent_bits` represents the number of bits to take into account for the exponent.
+    fn linearly_combine_bounded_vartime<const RHS_LIMBS: usize>(
+        bases_and_multiplicands: Vec<(Self, Uint<RHS_LIMBS>)>,
+        exponent_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> crate::Result<Self>;
 }
 
-/// Scale a randomized base by a scalar of type `T`, supporting acceleration if possible.
-/// Note: `self` may be leaked in the time pattern, so must be public.
-pub trait Scale<T>: GroupElement {
-    /// Constant-time Multiplication by a Scalar
-    fn scale_randomized_accelerated(
-        &self,
-        scalar: &T,
-        public_parameters: &Self::PublicParameters,
-    ) -> Self;
+/// A bench implementation for groups whose underlying implementation does not expose a
+/// bounded multiplication function, using linear combination of just one value, it operates in double-and-add fashion.
+pub fn scale_bounded<const LIMBS: usize, T: GroupElement + Copy + ConditionallySelectable>(
+    group_element: &T,
+    scalar: &Uint<LIMBS>,
+    scalar_bits: u32,
+    constant_time: bool,
+    public_parameters: &T::PublicParameters,
+) -> T {
+    // Safe to unwrap, can only fail on sanity checks that aren't relevant here
+    linearly_combine_bounded(
+        vec![(*group_element, *scalar)],
+        scalar_bits,
+        constant_time,
+        public_parameters,
+    )
+    .unwrap()
+}
 
-    /// Variable-time Multiplication by a Scalar
-    fn scale_vartime_accelerated(
-        &self,
-        scalar: &T,
-        public_parameters: &Self::PublicParameters,
-    ) -> Self;
+/// Constant-time multiplication by a bounded integer, using `ConditionallySelectable` for the sign.
+///
+/// This is the shared implementation for `GroupElement::scale_integer_bounded` for types that are
+/// `Copy + ConditionallySelectable`. Concrete `GroupElement` implementations should call this
+/// from their `scale_integer_bounded` method.
+pub fn scale_integer_bounded<
+    const LIMBS: usize,
+    T: GroupElement + Copy + ConditionallySelectable,
+>(
+    group_element: &T,
+    integer: &Int<LIMBS>,
+    scalar_bits: u32,
+    public_parameters: &T::PublicParameters,
+) -> T {
+    let positive = group_element.scale_bounded(&integer.abs(), scalar_bits, public_parameters);
+    let negated = positive.neg_constant_time(public_parameters);
+
+    <T as ConditionallySelectable>::conditional_select(
+        &positive,
+        &negated,
+        integer.is_negative().into(),
+    )
+}
+
+/// Constant-time multiplication by a bounded integer where the base is public.
+/// Uses `ConditionallySelectable` for constant-time sign handling.
+pub fn scale_integer_public_base_bounded<
+    const LIMBS: usize,
+    T: GroupElement + Copy + ConditionallySelectable,
+>(
+    group_element: &T,
+    integer: &Int<LIMBS>,
+    scalar_bits: u32,
+    public_parameters: &T::PublicParameters,
+) -> T {
+    let positive =
+        group_element.scale_public_base_bounded(&integer.abs(), scalar_bits, public_parameters);
+    let negated = positive.neg_constant_time(public_parameters);
+
+    <T as ConditionallySelectable>::conditional_select(
+        &positive,
+        &negated,
+        integer.is_negative().into(),
+    )
+}
+
+/// Constant-time multiplication by a bounded integer using randomized arithmetic.
+/// Uses `ConditionallySelectable` for constant-time sign handling.
+pub fn scale_integer_randomized_bounded<
+    const LIMBS: usize,
+    T: GroupElement + Copy + ConditionallySelectable,
+>(
+    group_element: &T,
+    integer: &Int<LIMBS>,
+    scalar_bits: u32,
+    public_parameters: &T::PublicParameters,
+) -> T {
+    let positive =
+        group_element.scale_randomized_bounded(&integer.abs(), scalar_bits, public_parameters);
+    let negated = positive.neg_constant_time(public_parameters);
+
+    <T as ConditionallySelectable>::conditional_select(
+        &positive,
+        &negated,
+        integer.is_negative().into(),
+    )
+}
+
+/// Constant-time multiplication by a bounded integer using randomized arithmetic,
+/// where the base is public. Uses `ConditionallySelectable` for constant-time sign handling.
+pub fn scale_integer_randomized_public_base_bounded<
+    const LIMBS: usize,
+    T: GroupElement + Copy + ConditionallySelectable,
+>(
+    group_element: &T,
+    integer: &Int<LIMBS>,
+    scalar_bits: u32,
+    public_parameters: &T::PublicParameters,
+) -> T {
+    let positive = group_element.scale_randomized_public_base_bounded(
+        &integer.abs(),
+        scalar_bits,
+        public_parameters,
+    );
+    let negated = positive.neg_constant_time(public_parameters);
+
+    <T as ConditionallySelectable>::conditional_select(
+        &positive,
+        &negated,
+        integer.is_negative().into(),
+    )
+}
+
+pub type Value<G> = <G as GroupElement>::Value;
+
+pub type PublicParameters<G> = <G as GroupElement>::PublicParameters;
+
+/// Scale a base by a scalar of type `T`.
+/// This trait provides a generic interface for scaling by different scalar types
+/// (e.g. native Scalar, Value<Scalar>, Uint, Int), delegating to the appropriate
+/// GroupElement methods. Method names use `scale_by` prefix to avoid collision
+/// with GroupElement methods.
+pub trait Scale<T>: GroupElement {
+    /// Constant-time Multiplication of a base by a Scalar.
+    fn scale_by(&self, scalar: &T, public_parameters: &Self::PublicParameters) -> Self;
+
+    /// Variable-time Multiplication by a Scalar.
+    fn scale_vartime_by(&self, scalar: &T, public_parameters: &Self::PublicParameters) -> Self;
 
     /// Constant-time Multiplication by a scalar,
     /// with `scalar_bits` representing the number of (least significant) bits
     /// to take into account for the scalar.
     ///
     /// NOTE: `scalar_bits` may be leaked in the time pattern.
-    fn scale_randomized_bounded_accelerated(
+    fn scale_bounded_by(
         &self,
         scalar: &T,
-        public_parameters: &Self::PublicParameters,
         scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
     ) -> Self;
 
     /// Variable-time Multiplication by a scalar,
     /// with `scalar_bits` representing the number of (least significant) bits
     /// to take into account for the scalar.
-    fn scale_bounded_vartime_accelerated(
+    fn scale_bounded_vartime_by(
+        &self,
+        scalar: &T,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self;
+
+    /// Multiplication by a scalar, variable-time in the scalar value,
+    /// constant-time in the base.
+    fn scale_vartime_scalar_by(
         &self,
         scalar: &T,
         public_parameters: &Self::PublicParameters,
+    ) -> Self;
+
+    /// Constant-time Multiplication by a scalar where the base is public
+    /// (known to all parties). May use acceleration when available.
+    fn scale_public_base_by(&self, scalar: &T, public_parameters: &Self::PublicParameters) -> Self;
+
+    /// Constant-time Multiplication by a scalar where the base is public,
+    /// with `scalar_bits` representing the number of (least significant) bits
+    /// to take into account for the scalar. May use acceleration when available.
+    fn scale_public_base_bounded_by(
+        &self,
+        scalar: &T,
         scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self;
+
+    /// Constant-time Multiplication by a scalar using randomized arithmetic.
+    fn scale_randomized_by(&self, scalar: &T, public_parameters: &Self::PublicParameters) -> Self;
+
+    /// Constant-time Multiplication by a scalar using randomized arithmetic,
+    /// with `scalar_bits` representing the number of (least significant) bits
+    /// to take into account for the scalar.
+    fn scale_randomized_bounded_by(
+        &self,
+        scalar: &T,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self;
+
+    /// Multiplication by a scalar using randomized arithmetic,
+    /// variable-time in the scalar value, constant-time in the base.
+    fn scale_randomized_vartime_scalar_by(
+        &self,
+        scalar: &T,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self;
+
+    /// Constant-time Multiplication by a scalar using randomized arithmetic,
+    /// where the base is public. May use acceleration when available.
+    fn scale_randomized_public_base_by(
+        &self,
+        scalar: &T,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self;
+
+    /// Constant-time Multiplication by a scalar using randomized arithmetic,
+    /// where the base is public, with `scalar_bits` bound.
+    /// May use acceleration when available.
+    fn scale_randomized_public_base_bounded_by(
+        &self,
+        scalar: &T,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
     ) -> Self;
 }
 
-/// A bench implementation for groups whose underlying implementation does not expose a
-/// bounded multiplication function, and operates in constant-time. This implementation
-/// simply assures that only the required bits out of the multiplied value is taken; this
-/// is a correctness adaptation and not a performance one.
-pub fn scale_bounded<const LIMBS: usize, T: GroupElement>(
-    group_element: &T,
-    scalar: &Uint<LIMBS>,
-    scalar_bits: u32,
-) -> T {
-    // First, take only the `scalar_bits` least significant bits
-    let mask = (Uint::<LIMBS>::ONE.wrapping_shl(scalar_bits)).wrapping_sub(&Uint::<LIMBS>::ONE);
-    let scalar = scalar & mask;
+/// Blanket implementation of `Scale<Uint<LIMBS>>` for all `GroupElement` types.
+///
+/// Delegates to the corresponding `GroupElement::scale*` methods.
+impl<const LIMBS: usize, G: GroupElement> Scale<Uint<LIMBS>> for G {
+    fn scale_by(&self, scalar: &Uint<LIMBS>, public_parameters: &Self::PublicParameters) -> Self {
+        self.scale(scalar, public_parameters)
+    }
 
-    // Call the underlying scalar mul function, which now only use the `scalar_bits` least
-    // significant bits, but will still take the same time to compute due to
-    // constant-timeness.
-    group_element.scale(&scalar)
+    fn scale_vartime_by(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_vartime(scalar, public_parameters)
+    }
+
+    fn scale_bounded_by(
+        &self,
+        scalar: &Uint<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_bounded(scalar, scalar_bits, public_parameters)
+    }
+
+    fn scale_bounded_vartime_by(
+        &self,
+        scalar: &Uint<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_bounded_vartime(scalar, scalar_bits, public_parameters)
+    }
+
+    fn scale_vartime_scalar_by(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_vartime_scalar(scalar, public_parameters)
+    }
+
+    fn scale_public_base_by(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_public_base(scalar, public_parameters)
+    }
+
+    fn scale_public_base_bounded_by(
+        &self,
+        scalar: &Uint<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_public_base_bounded(scalar, scalar_bits, public_parameters)
+    }
+
+    fn scale_randomized_by(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_randomized(scalar, public_parameters)
+    }
+
+    fn scale_randomized_bounded_by(
+        &self,
+        scalar: &Uint<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_randomized_bounded(scalar, scalar_bits, public_parameters)
+    }
+
+    fn scale_randomized_vartime_scalar_by(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_randomized_vartime_scalar(scalar, public_parameters)
+    }
+
+    fn scale_randomized_public_base_by(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_randomized_public_base(scalar, public_parameters)
+    }
+
+    fn scale_randomized_public_base_bounded_by(
+        &self,
+        scalar: &Uint<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_randomized_public_base_bounded(scalar, scalar_bits, public_parameters)
+    }
 }
 
-pub type Value<G> = <G as GroupElement>::Value;
+/// Blanket implementation of `Scale<Int<LIMBS>>` for all `GroupElement` types.
+///
+/// Delegates to the corresponding `GroupElement::scale_integer*` methods.
+impl<const LIMBS: usize, G: GroupElement> Scale<Int<LIMBS>> for G {
+    fn scale_by(&self, scalar: &Int<LIMBS>, public_parameters: &Self::PublicParameters) -> Self {
+        self.scale_integer(scalar, public_parameters)
+    }
 
-pub type PublicParameters<G> = <G as GroupElement>::PublicParameters;
+    fn scale_vartime_by(
+        &self,
+        scalar: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_integer_vartime(scalar, public_parameters)
+    }
+
+    fn scale_bounded_by(
+        &self,
+        scalar: &Int<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_integer_bounded(scalar, scalar_bits, public_parameters)
+    }
+
+    fn scale_bounded_vartime_by(
+        &self,
+        scalar: &Int<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_integer_bounded_vartime(scalar, scalar_bits, public_parameters)
+    }
+
+    fn scale_vartime_scalar_by(
+        &self,
+        scalar: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_integer_vartime_scalar(scalar, public_parameters)
+    }
+
+    fn scale_public_base_by(
+        &self,
+        scalar: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_integer_public_base(scalar, public_parameters)
+    }
+
+    fn scale_public_base_bounded_by(
+        &self,
+        scalar: &Int<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_integer_public_base_bounded(scalar, scalar_bits, public_parameters)
+    }
+
+    fn scale_randomized_by(
+        &self,
+        scalar: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_integer_randomized(scalar, public_parameters)
+    }
+
+    fn scale_randomized_bounded_by(
+        &self,
+        scalar: &Int<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_integer_randomized_bounded(scalar, scalar_bits, public_parameters)
+    }
+
+    fn scale_randomized_vartime_scalar_by(
+        &self,
+        scalar: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_integer_randomized_vartime_scalar(scalar, public_parameters)
+    }
+
+    fn scale_randomized_public_base_by(
+        &self,
+        scalar: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_integer_randomized_public_base(scalar, public_parameters)
+    }
+
+    fn scale_randomized_public_base_bounded_by(
+        &self,
+        scalar: &Int<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_integer_randomized_public_base_bounded(scalar, scalar_bits, public_parameters)
+    }
+}
 
 /// A marker-trait for an element of an abelian group of bounded (by [`Uint<SCALAR_LIMBS>::MAX`])
 /// order, in additive notation.
@@ -431,8 +1026,11 @@ impl<
         T: GroupElement + BoundedGroupElement<SCALAR_LIMBS> + Into<Uint<SCALAR_LIMBS>> + Samplable,
     > NumbersGroupElement<SCALAR_LIMBS> for T
 where
-    T::Value:
-        From<Uint<SCALAR_LIMBS>> + Into<Uint<SCALAR_LIMBS>> + Reduce<SCALAR_LIMBS> + PartialOrd,
+    T::Value: From<Uint<SCALAR_LIMBS>>
+        + Into<Uint<SCALAR_LIMBS>>
+        + Reduce<SCALAR_LIMBS>
+        + PartialOrd
+        + ConditionallySelectable,
 {
     type ValueExt = Self::Value;
 }
@@ -540,6 +1138,22 @@ pub trait Samplable: GroupElement {
 pub trait Invert: Sized {
     /// Invert a field element.
     fn invert(&self) -> CtOption<Self>;
+
+    /// Batch invert a slice of field elements in-place using Montgomery's trick for supported types.
+    ///
+    /// This is much more efficient than inverting each element individually:
+    /// instead of `n` inversions, it performs `1` inversion and `3(n-1)` multiplications.
+    ///
+    /// Zero elements are left as zero.
+    fn batch_invert(elements: &mut [Self]) {
+        // Default implementation: invert each element individually
+        // Implementations should override this with an optimized batch inversion
+        for element in elements.iter_mut() {
+            if let Some(inv) = Option::<Self>::from(element.invert()) {
+                *element = inv;
+            }
+        }
+    }
 }
 
 /// Uniform encoding of arbitrary sequences for bytes to group elements.

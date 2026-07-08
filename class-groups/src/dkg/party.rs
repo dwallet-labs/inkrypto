@@ -24,7 +24,7 @@ use crate::setup::DeriveFromPlaintextPublicParameters;
 use crate::setup::SetupParameters;
 use crate::{
     equivalence_class, publicly_verifiable_secret_sharing, CompactIbqf, EquivalenceClass, Error,
-    Result,
+    ErrorKind, Result,
 };
 use crate::{SECRET_KEY_SHARE_LIMBS, SECRET_KEY_SHARE_WITNESS_LIMBS};
 
@@ -240,7 +240,7 @@ where
                     rng,
                 )
             }
-            _ => Err(Error::InvalidParameters),
+            _ => Err(Error::from(ErrorKind::InvalidParameters)),
         }
     }
 
@@ -317,7 +317,7 @@ where
         [Uint<CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS>; MAX_PRIMES],
         BaseProtocolContext,
         BaseProtocolContext,
-        publicly_verifiable_secret_sharing::Party<
+        publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
@@ -327,8 +327,8 @@ where
             GroupElement,
         >,
     )> {
-        let decryption_key_per_crt_prime =
-            decryption_key_per_crt_prime.ok_or(Error::InvalidParameters)?;
+        let decryption_key_per_crt_prime = decryption_key_per_crt_prime
+            .ok_or_else(|| Error::from(ErrorKind::InvalidParameters))?;
 
         let setup_parameters =
             SetupParameters::derive_from_plaintext_parameters::<GroupElement::Scalar>(
@@ -357,7 +357,7 @@ where
         };
 
         // In the DKG, dealers deal shares to themselves, i.e. the participating parties are the same as the dealers.
-        let pvss_party = publicly_verifiable_secret_sharing::Party::<
+        let pvss_party = publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party::<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,

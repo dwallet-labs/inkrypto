@@ -73,7 +73,7 @@ impl<Message, ProtocolPublicParameters, CentralizedPartyKeyShareVerification>
 impl<
         const SCALAR_LIMBS: usize,
         const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
         EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
         Message: Clone + Serialize + Debug + PartialEq + Eq + Send + Sync + Send + Sync,
         ProtocolPublicParameters: Clone + Serialize + Debug + PartialEq + Eq + Send + Sync + Send + Sync,
@@ -124,12 +124,12 @@ where
         let protocol_public_parameters = protocol_public_parameters.as_ref();
 
         let public_key_share = GroupElement::new(
-            public_key_share_value,
+            public_key_share_value.clone(),
             &protocol_public_parameters.group_public_parameters,
         )?;
 
         let centralized_party_public_key_share = GroupElement::new(
-            centralized_party_public_key_share_value,
+            centralized_party_public_key_share_value.clone(),
             &protocol_public_parameters.group_public_parameters,
         )?;
 
@@ -144,7 +144,12 @@ where
             knowledge_of_secret_key_share_proof,
         )?;
 
-        let public_key = (centralized_party_public_key_share + public_key_share).value();
+        let public_key = centralized_party_public_key_share
+            .add_vartime(
+                &public_key_share,
+                &protocol_public_parameters.group_public_parameters,
+            )
+            .value();
 
         let output = Output {
             public_key_share: public_key_share_value,
@@ -160,7 +165,7 @@ where
 impl<
         const SCALAR_LIMBS: usize,
         const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
         EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
         Message: Clone + Serialize + Debug + PartialEq + Eq + Send + Sync + Send + Sync,
         ProtocolPublicParameters: Clone + Serialize + Debug + PartialEq + Eq + Send + Sync + Send + Sync,

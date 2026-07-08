@@ -24,6 +24,7 @@ use crate::dkg::{
 };
 use crate::encryption_key::public_parameters::Instantiate;
 use crate::equivalence_class::EquivalenceClassOps;
+use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::DealtSecretShare;
 use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
     construct_setup_parameters_per_crt_prime,
     SecretKeyShareCRTPrimeEncryptionSchemePublicParameters, SecretKeyShareCRTPrimeSetupParameters,
@@ -31,12 +32,11 @@ use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
     NUM_ENCRYPTION_OF_DECRYPTION_KEY_PRIMES, NUM_SECRET_SHARE_PRIMES,
     SECRET_SHARE_CRT_COEFFICIENTS, SECRET_SHARE_CRT_PRIMES_PRODUCT,
 };
-use crate::publicly_verifiable_secret_sharing::DealtSecretShare;
 use crate::setup::{DeriveFromPlaintextPublicParameters, SetupParameters};
 use crate::{
     decryption_key_share, encryption_key, equivalence_class, publicly_verifiable_secret_sharing,
     CiphertextSpaceGroupElement, CiphertextSpaceValue, CompactIbqf, EquivalenceClass, Error,
-    Result, SecretKeyShareSizedInteger, DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+    ErrorKind, Result, SecretKeyShareSizedInteger, DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
     SECRET_KEY_SHARE_LIMBS, SECRET_KEY_SHARE_WITNESS_LIMBS,
 };
 
@@ -104,6 +104,9 @@ where
     pub fn new<GroupElement: PrimeGroupElement<PLAINTEXT_SPACE_SCALAR_LIMBS>>(
         access_structure: &WeightedThresholdAccessStructure,
         setup_parameters_per_crt_prime: [SecretKeyShareCRTPrimeSetupParameters; MAX_PRIMES],
+        equivalence_class_public_parameters: &equivalence_class::PublicParameters<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        >,
         malicious_decryption_key_contribution_dealers: Vec<PartyID>,
         interpolation_subset: HashSet<PartyID>,
         adjusted_lagrange_coefficients: HashMap<PartyID, AdjustedLagrangeCoefficientSizedNumber>,
@@ -150,11 +153,18 @@ where
         >,
         n_factorial: FactorialSizedNumber,
     ) -> Result<Self> {
+        let ciphertext_space_public_parameters = group::self_product::PublicParameters(
+            setup_parameters_per_crt_prime[0]
+                .groups_public_parameters
+                .ciphertext_space_public_parameters
+                .clone(),
+        );
         let encryptions_of_shares_per_crt_prime = Self::sum_encryptions_of_shares::<GroupElement>(
             access_structure,
             malicious_decryption_key_contribution_dealers.clone(),
             parties_that_were_dealt_shares,
             encryptions_of_shares_and_proofs,
+            &ciphertext_space_public_parameters,
         )?
         .normalize_const_generic_values();
 
@@ -179,14 +189,17 @@ where
             .collect();
 
         // The elliptic curve Class-Group encryption key $\textsf{pk}_{q}$
-        let encryption_key =
-            Self::compute_encryption_key(decryption_key_contribution_commitments)?.value();
+        let encryption_key = Self::compute_encryption_key(
+            decryption_key_contribution_commitments,
+            equivalence_class_public_parameters,
+        )?
+        .value();
 
         // Prepare for interpolation: keep just encryptions, only from the parties in the interpolation subset.
         let encryptions_of_decryption_key_shares: HashMap<_, _> =
             encryptions_of_decryption_key_shares_and_proofs
-                .into_iter()
-                .flat_map(|(_, encryptions_of_decryption_key_shares_and_proofs)| {
+                .into_values()
+                .flat_map(|encryptions_of_decryption_key_shares_and_proofs| {
                     encryptions_of_decryption_key_shares_and_proofs
                         .into_iter()
                         .filter(|(dealer_virtual_party_id, _)| {
@@ -249,17 +262,22 @@ where
                 n_factorial,
                 None,
                 false,
+                setup_parameters_per_crt_prime[i].ciphertext_space_public_parameters(),
             )
             .map_err(Error::from)
             .and_then(|encryption_of_decryption_key_share| {
                 encryption_of_decryption_key_share
                     .first()
-                    .ok_or(Error::InternalError)
+                    .ok_or_else(|| Error::from(ErrorKind::InternalError))
                     .map(|encryption_of_decryption_key_share| {
                         // This effectively divides the message by $n^-2$,
                         // reaching an encryption of the decryption key modulo $Q'_{m'}$.
                         encryption_of_decryption_key_share
-                            .scale_vartime(&n_factorial_square_inverse_mod_crt_prime)
+                            .scale_vartime(
+                                &n_factorial_square_inverse_mod_crt_prime,
+                                setup_parameters_per_crt_prime[i]
+                                    .ciphertext_space_public_parameters(),
+                            )
                             .value()
                     })
             })
@@ -289,11 +307,14 @@ where
             PartyID,
             EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
         >,
+        equivalence_class_public_parameters: &equivalence_class::PublicParameters<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        >,
     ) -> Result<EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>> {
         decryption_key_contribution_commitments
             .into_values()
-            .reduce(|a, b| a + b)
-            .ok_or(Error::InvalidParameters)
+            .reduce(|a, b| a.add_vartime(&b, equivalence_class_public_parameters))
+            .ok_or_else(|| Error::from(ErrorKind::InvalidParameters))
     }
 
     /// This function filters out the malicious parties
@@ -324,6 +345,10 @@ where
                 >,
             >,
         >,
+        ciphertext_space_public_parameters: &group::self_product::PublicParameters<
+            NUM_SECRET_SHARE_PRIMES,
+            crate::CiphertextSpacePublicParameters<CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+        >,
     ) -> Result<
         HashMap<
             PartyID,
@@ -341,19 +366,21 @@ where
         let virtual_parties_that_were_dealt_shares =
             access_structure.virtual_subset(parties_that_were_dealt_shares)?;
 
-        let encryptions_of_shares_per_crt_prime = publicly_verifiable_secret_sharing::Party::<
-            NUM_SECRET_SHARE_PRIMES,
-            SECRET_KEY_SHARE_LIMBS,
-            SECRET_KEY_SHARE_WITNESS_LIMBS,
-            PLAINTEXT_SPACE_SCALAR_LIMBS,
-            FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            GroupElement,
-        >::sum_encryptions_of_additively_shared_secrets(
-            virtual_parties_that_were_dealt_shares,
-            access_structure,
-            encryptions_of_shares_and_proofs,
-        )?;
+        let encryptions_of_shares_per_crt_prime =
+            publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party::<
+                NUM_SECRET_SHARE_PRIMES,
+                SECRET_KEY_SHARE_LIMBS,
+                SECRET_KEY_SHARE_WITNESS_LIMBS,
+                PLAINTEXT_SPACE_SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >::sum_encryptions_of_additively_shared_secrets(
+                virtual_parties_that_were_dealt_shares,
+                access_structure,
+                encryptions_of_shares_and_proofs,
+                ciphertext_space_public_parameters,
+            )?;
 
         Ok(encryptions_of_shares_per_crt_prime)
     }
@@ -367,6 +394,7 @@ where
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             >,
         >,
+        setup_parameters_per_crt_prime: &[SecretKeyShareCRTPrimeSetupParameters; MAX_PRIMES],
     ) -> Result<
         [EquivalenceClass<CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>;
             NUM_ENCRYPTION_OF_DECRYPTION_KEY_PRIMES],
@@ -383,8 +411,13 @@ where
 
                     *threshold_encryption_key_share_per_crt_prime
                 })
-                .reduce(|a, b| a.add_vartime(&b))
-                .ok_or(Error::InternalError)
+                .reduce(|a, b| {
+                    a.add_vartime(
+                        &b,
+                        setup_parameters_per_crt_prime[i].equivalence_class_public_parameters(),
+                    )
+                })
+                .ok_or_else(|| Error::from(ErrorKind::InternalError))
         })
         .flat_map_results()
     }
@@ -675,7 +708,6 @@ where
         let virtual_subset = access_structure.virtual_subset(HashSet::from([tangible_party_id]))?;
 
         let encryptions_of_shares_per_crt_prime = encryptions_of_shares_per_crt_prime
-            .clone()
             .into_iter()
             .filter(|(virtual_party_id, _)| virtual_subset.contains(virtual_party_id))
             .map(|(virtual_party_id, encryption_of_share_per_crt_prime)| {
@@ -691,7 +723,7 @@ where
             })
             .try_collect_hash_map()?;
 
-        publicly_verifiable_secret_sharing::Party::<
+        publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party::<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
@@ -721,6 +753,9 @@ where
                 HashMap<PartyID, EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
             >,
         >,
+        equivalence_class_public_parameters: &equivalence_class::PublicParameters<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        >,
     ) -> HashMap<PartyID, EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>> {
         // Filter malicious parties out.
         let reconstructed_commitments_to_sharing: HashMap<_, _> =
@@ -749,6 +784,7 @@ where
                     access_structure,
                     reconstructed_commitments_to_sharing.clone(),
                     participating_tangible_party_id,
+                    equivalence_class_public_parameters,
                 )
                 .ok()
             })

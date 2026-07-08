@@ -5,10 +5,12 @@ members = [
     "group",
     "commitment",
     "proof",
+    "proof-aggregation",
     "homomorphic-encryption",
     "mpc",
     "enhanced-maurer",
     "maurer",
+    "maurer-aggregation",
     "tiresias",
     "2pc-mpc",
     "class-groups",
@@ -39,7 +41,7 @@ rand_core = { version = "0.9", default-features = false }
 rstest = "0.26"
 rand = { version = "0.9", default-features = false }
 rand_chacha = { version = "0.9", default-features = false }
-curve25519-dalek = { version = "5.0.0-pre.1", features = ["rand_core"] }
+curve25519-dalek = { version = "=5.0.0-pre.1", default-features = false, features = ["rand_core"] }
 criterion = { version = "0.7", default-features = false }
 getrandom = { version = "0.3" }
 k256 = { version = "0.14.0-pre.11", default-features = false }
@@ -47,12 +49,22 @@ p256 = { version = "0.14.0-pre.11", default-features = false }
 hash2curve = { version = "0.14.0-rc.2" }
 sha2 = "0.11.0-rc.2"
 sha3 = "0.11.0-rc.3"
-ecdsa = { version = "0.17.0-rc.7" }
+blake2b_simd = { version = "1", default-features = false }
+ecdsa = { version = "0.17.0-rc.7", default-features = false }
 itertools = "0.14.0"
 bcs = "0.1"
 ed25519 = { version = "3.0.0-rc.1", default-features = false }
 ed25519-dalek = { version = "3.0.0-pre.1", default-features = false }
 schnorrkel = { version = "0.11", default-features = false }
 
+hpke = { git = "https://github.com/ycscaly/rust-hpke.git", rev = "94b318c", default-features = false, features = ["alloc", "x25519"] }
+aead = "0.5"
+generic-array = "0.14"
+chacha20poly1305 = "0.10"
+
 [patch.crates-io]
 crypto-bigint = { git = 'https://github.com/ycscaly/crypto-bigint.git', rev = '8aabcee5' }
+der = { git = "https://github.com/RustCrypto/formats", tag = "der/v0.8.0-rc.8" }
+
+[workspace.lints.clippy]
+or_fun_call = "deny"

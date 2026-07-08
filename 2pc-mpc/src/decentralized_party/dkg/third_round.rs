@@ -21,7 +21,6 @@ use class_groups::{
 use commitment::CommitmentSizedNumber;
 use group::direct_product::ThreeWayGroupElement;
 use group::helpers::DeduplicateAndSort;
-use group::secp256k1::{GroupElement, Scalar, SCALAR_LIMBS};
 use group::{ristretto, secp256k1, secp256r1, CsRng, PartyID};
 use mpc::secret_sharing::shamir::over_the_integers::factorial;
 use mpc::{
@@ -32,7 +31,7 @@ use crate::decentralized_party::dkg::{Message, PublicOutput};
 use crate::languages::{
     verify_equality_of_discrete_log_proof, EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters,
 };
-use crate::{Error, Result};
+use crate::{Error, ErrorKind, Result};
 
 use super::{EqualityOfCoefficientsCommitmentsProof, PublicInput};
 
@@ -45,21 +44,21 @@ impl super::Party {
         equality_of_discrete_log_in_hidden_order_group_base_protocol_context: publicly_verifiable_secret_sharing::BaseProtocolContext,
         public_input: &PublicInput,
         equality_of_coefficients_commitments_language_public_parameters: EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters<
-            SECRET_KEY_SHARE_WITNESS_LIMBS,
+            SECRET_KEY_SHARE_LIMBS,
             ThreeWayGroupElement<
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
             >,
         >,
-        decryption_key_contribution_pvss_party: &publicly_verifiable_secret_sharing::Party<
+        decryption_key_contribution_pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
-            SCALAR_LIMBS,
+            { secp256k1::SCALAR_LIMBS },
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            GroupElement,
+            secp256k1::GroupElement,
         >,
         deal_decryption_key_contribution_and_prove_coefficient_commitments_messages: HashMap<
             PartyID,
@@ -114,31 +113,31 @@ impl super::Party {
         access_structure: &WeightedThresholdAccessStructure,
         equality_of_discrete_log_in_hidden_order_group_base_protocol_context: publicly_verifiable_secret_sharing::BaseProtocolContext,
         class_groups_public_input: &class_groups::dkg::PublicInput<
-            SCALAR_LIMBS,
+            { secp256k1::SCALAR_LIMBS },
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            group::PublicParameters<Scalar>,
+            group::PublicParameters<secp256k1::Scalar>,
         >,
         secp256k1_setup_parameters: &Secp256k1SetupParameters,
         ristretto_setup_parameters: &RistrettoSetupParameters,
         curve25519_setup_parameters: &Curve25519SetupParameters,
         secp256r1_setup_parameters: &Secp256r1SetupParameters,
         equality_of_coefficients_commitments_language_public_parameters: EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters<
-            SECRET_KEY_SHARE_WITNESS_LIMBS,
+            SECRET_KEY_SHARE_LIMBS,
             ThreeWayGroupElement<
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
             >,
         >,
-        decryption_key_contribution_pvss_party: &publicly_verifiable_secret_sharing::Party<
+        decryption_key_contribution_pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
-            SCALAR_LIMBS,
+            { secp256k1::SCALAR_LIMBS },
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            GroupElement,
+            secp256k1::GroupElement,
         >,
         deal_decryption_key_contribution_and_prove_coefficient_commitments_messages: HashMap<
             PartyID,
@@ -187,10 +186,10 @@ impl super::Party {
             malicious_decryption_key_contribution_dealers,
             encryptions_of_decryption_key_shares_and_proofs,
         ) = class_groups::dkg::Party::<
-            SCALAR_LIMBS,
+            { secp256k1::SCALAR_LIMBS },
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            GroupElement,
+            secp256k1::GroupElement,
         >::advance_third_round_internal(
             tangible_party_id,
             session_id,
@@ -233,30 +232,34 @@ impl super::Party {
             &malicious_parties,
             equality_of_coefficients_commitments_proofs_and_statements,
             access_structure,
+            secp256k1_setup_parameters.equivalence_class_public_parameters(),
         );
 
         let secp256k1_encryption_key = class_groups::dkg::PublicOutput::<
-            SCALAR_LIMBS,
+            { secp256k1::SCALAR_LIMBS },
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
         >::compute_encryption_key(
-            secp256k1_decryption_key_contribution_commitments
+            secp256k1_decryption_key_contribution_commitments,
+            secp256k1_setup_parameters.equivalence_class_public_parameters(),
         )?;
 
         let ristretto_encryption_key = class_groups::dkg::PublicOutput::<
-            SCALAR_LIMBS,
+            { secp256k1::SCALAR_LIMBS },
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
         >::compute_encryption_key(
-            ristretto_decryption_key_contribution_commitments
+            ristretto_decryption_key_contribution_commitments,
+            ristretto_setup_parameters.equivalence_class_public_parameters(),
         )?;
 
         let secp256r1_encryption_key = class_groups::dkg::PublicOutput::<
-            SCALAR_LIMBS,
+            { secp256k1::SCALAR_LIMBS },
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
         >::compute_encryption_key(
-            secp256r1_decryption_key_contribution_commitments
+            secp256r1_decryption_key_contribution_commitments,
+            secp256r1_setup_parameters.equivalence_class_public_parameters(),
         )?;
 
         let (
@@ -281,6 +284,8 @@ impl super::Party {
             rng,
         )?;
 
+        let malicious_coefficients_committers = malicious_parties.iter().copied().collect();
+
         let message = Message::EncryptDecryptionKeySharesAndSecretKeyShares {
             malicious_coefficients_committers,
             encrypt_decryption_key_shares_message:
@@ -302,7 +307,7 @@ impl super::Party {
         access_structure: &WeightedThresholdAccessStructure,
         equality_of_coefficients_commitments_base_protocol_context: crate::BaseProtocolContext,
         equality_of_coefficients_commitments_language_public_parameters: EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters<
-            SECRET_KEY_SHARE_WITNESS_LIMBS,
+            SECRET_KEY_SHARE_LIMBS,
             ThreeWayGroupElement<
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
@@ -367,6 +372,9 @@ impl super::Party {
             ),
         >,
         access_structure: &WeightedThresholdAccessStructure,
+        equivalence_class_public_parameters: &class_groups::equivalence_class::PublicParameters<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        >,
     ) -> (
         HashMap<PartyID, EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
         HashMap<PartyID, EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
@@ -394,11 +402,11 @@ impl super::Party {
                     let ristretto_secret_contribution_contribution_commitment = ristretto_coefficient_commitments[0];
                     let ristretto_reconstructed_commitments_to_secret_contribution_sharing: HashMap<_, _> =
                         (1..=access_structure.number_of_virtual_parties()).map(|virtual_party_id| {
-                            let commitment_to_share = publicly_verifiable_secret_sharing::Party::<
+                            let commitment_to_share = publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party::<
                                 NUM_SECRET_SHARE_PRIMES,
                                 SECRET_KEY_SHARE_LIMBS,
                                 SECRET_KEY_SHARE_WITNESS_LIMBS,
-                                SCALAR_LIMBS,
+                                { secp256k1::SCALAR_LIMBS },
                                 FUNDAMENTAL_DISCRIMINANT_LIMBS,
                                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
                                 ristretto::GroupElement,
@@ -406,6 +414,7 @@ impl super::Party {
                                 n_factorial,
                                 virtual_party_id,
                                 ristretto_coefficient_commitments.clone(),
+                                equivalence_class_public_parameters,
                             );
 
                             (virtual_party_id, commitment_to_share)
@@ -414,11 +423,11 @@ impl super::Party {
                     let secp256r1_secret_contribution_commitment = secp256r1_coefficient_commitments[0];
                     let secp256r1_reconstructed_commitments_to_secret_contribution_sharing: HashMap<_, _> =
                         (1..=access_structure.number_of_virtual_parties()).map(|virtual_party_id| {
-                            let commitment_to_share = publicly_verifiable_secret_sharing::Party::<
+                            let commitment_to_share = publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party::<
                                 NUM_SECRET_SHARE_PRIMES,
                                 SECRET_KEY_SHARE_LIMBS,
                                 SECRET_KEY_SHARE_WITNESS_LIMBS,
-                                SCALAR_LIMBS,
+                                { secp256k1::SCALAR_LIMBS },
                                 FUNDAMENTAL_DISCRIMINANT_LIMBS,
                                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
                                 secp256r1::GroupElement,
@@ -426,6 +435,7 @@ impl super::Party {
                                 n_factorial,
                                 virtual_party_id,
                                 secp256r1_coefficient_commitments.clone(),
+                                equivalence_class_public_parameters,
                             );
 
                             (virtual_party_id, commitment_to_share)
@@ -591,6 +601,9 @@ impl super::Party {
                 >,
             ),
         >,
+        equivalence_class_public_parameters: &class_groups::equivalence_class::PublicParameters<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        >,
     ) -> Result<(
         Vec<PartyID>,
         Vec<PartyID>,
@@ -601,7 +614,7 @@ impl super::Party {
         HashMap<
             PartyID,
             class_groups::dkg::Message<
-                SCALAR_LIMBS,
+                { secp256k1::SCALAR_LIMBS },
                 FUNDAMENTAL_DISCRIMINANT_LIMBS,
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             >,
@@ -634,7 +647,7 @@ impl super::Party {
                         curve25519_encryption_of_secret_key_shares_message,
                         secp256r1_encryption_of_secret_key_shares_message,
                     )),
-                    _ => Err(Error::InvalidMessage),
+                    _ => Err(Error::from(ErrorKind::InvalidMessage)),
                 };
 
                 (dealer_party_id, res)
@@ -710,6 +723,7 @@ impl super::Party {
             &malicious_coefficients_committers,
             equality_of_coefficients_commitments_proofs_and_statements,
             access_structure,
+            equivalence_class_public_parameters,
         );
 
         let third_round_malicious_parties: Vec<_> =

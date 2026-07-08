@@ -11,7 +11,7 @@ use group::CsRng;
 
 use crate::discriminant::Discriminant;
 use crate::helpers::CtMinMax;
-use crate::{EquivalenceClass, Error, RandomnessSpacePublicParameters};
+use crate::{EquivalenceClass, Error, ErrorKind, RandomnessSpacePublicParameters};
 
 /// A triple of [EquivalenceClass]es that can be used in fast constant-time scaling untrusted
 /// [EquivalenceClass]es with a secret exponent, without leaking information through exponentation
@@ -81,14 +81,14 @@ where
             rng,
         )
         .into_option()
-        .ok_or(Error::InternalError)?;
+        .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
         let m2 = random_element::<HALF, DISCRIMINANT_LIMBS, DOUBLE, RANDOMNESS_LIMBS>(
             base_class,
             randomness_bits,
             rng,
         )
         .into_option()
-        .ok_or(Error::InternalError)?;
+        .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
         let m3 = m1
             .pow_bounded_with_base_randomized(m2, &exponent, exponent_bits_bound)
             .expect("successful; m1 and m2 have the same discriminant");
@@ -128,14 +128,14 @@ where
             rng,
         )
         .into_option()
-        .ok_or(Error::InternalError)?;
+        .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
         let m2 = random_element::<HALF, DISCRIMINANT_LIMBS, DOUBLE, RANDOMNESS_LIMBS>(
             base_class,
             randomness_bits,
             rng,
         )
         .into_option()
-        .ok_or(Error::InternalError)?;
+        .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
         let m3 = m1
             .pow_bounded_int_randomized_with_base(m2, &exponent, exponent_bits_bound)
             .expect("successful; m1 and m2 have the same discriminant");
@@ -261,14 +261,14 @@ where
             rng,
         )
         .into_option()
-        .ok_or(Error::InternalError)?;
+        .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
         let m2 = random_element::<HALF, DISCRIMINANT_LIMBS, DOUBLE, RANDOMNESS_LIMBS>(
             randomization_base,
             randomness_bits,
             rng,
         )
         .into_option()
-        .ok_or(Error::InternalError)?;
+        .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
 
         let m3 = m2
             .pow_bounded_with_base_randomized(m1, &exponent, exponent_bits)

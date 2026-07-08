@@ -7,8 +7,33 @@ use crypto_bigint::{
 };
 use group::CsRng;
 
-#[derive(thiserror::Error, Debug, PartialEq)]
-pub enum Error {
+#[derive(thiserror::Error, Debug, Clone)]
+#[error("{kind}\n{backtrace}")]
+pub struct Error {
+    pub kind: ErrorKind,
+    pub backtrace: std::sync::Arc<std::backtrace::Backtrace>,
+}
+
+impl PartialEq for Error {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+    }
+}
+
+impl<E> From<E> for Error
+where
+    ErrorKind: From<E>,
+{
+    fn from(value: E) -> Self {
+        Self {
+            kind: ErrorKind::from(value),
+            backtrace: std::sync::Arc::new(std::backtrace::Backtrace::capture()),
+        }
+    }
+}
+
+#[derive(thiserror::Error, Debug, PartialEq, Clone)]
+pub enum ErrorKind {
     #[error("invalid Params")]
     InvalidParameters,
     #[error("at least one equation is wrong")]
@@ -50,11 +75,11 @@ pub fn batch_verification<
     let number_of_equations = bases_lhs.len();
 
     if number_of_equations <= 1 {
-        return Err(Error::InvalidParameters);
+        return Err(Error::from(ErrorKind::InvalidParameters));
     }
 
     if bases_rhs.len() != number_of_equations {
-        return Err(Error::InvalidParameters);
+        return Err(Error::from(ErrorKind::InvalidParameters));
     }
 
     let randomizers: Vec<Uint<COMPUTATIONAL_SECURITY_LIMBS>> = (1..=number_of_equations)
@@ -70,7 +95,7 @@ pub fn batch_verification<
     {
         return Ok(());
     }
-    Err(Error::EquationsVerificationError())
+    Err(Error::from(ErrorKind::EquationsVerificationError()))
 }
 
 fn batch_equation_side<

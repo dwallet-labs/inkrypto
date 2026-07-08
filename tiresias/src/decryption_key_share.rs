@@ -30,7 +30,7 @@ use mpc::HandleInvalidMessages;
 use crate::{
     encryption_key, error::SanityCheckError, proofs::ProofOfEqualityOfDiscreteLogs,
     AsNaturalNumber, AsRingElement, CiphertextSpaceGroupElement, CiphertextSpaceValue,
-    EncryptionKey, Error, LargeBiPrimeSizedNumber, PaillierModulusSizedNumber,
+    EncryptionKey, Error, ErrorKind, LargeBiPrimeSizedNumber, PaillierModulusSizedNumber,
     PlaintextSpaceGroupElement, PlaintextSpaceValue, Result, SecretKeyShareSizedNumber,
     PLAINTEXT_SPACE_SCALAR_LIMBS,
 };
@@ -96,7 +96,14 @@ impl AdditivelyHomomorphicDecryptionKeyShare<PLAINTEXT_SPACE_SCALAR_LIMBS, Encry
         expected_decrypters: HashSet<PartyID>,
         public_parameters: &Self::PublicParameters,
     ) -> CtOption<Self::DecryptionShare> {
-        let decryption_share_base = ciphertext.scale_bounded_vartime(&U64::from(2u8), 2);
+        let ciphertext_space_public_parameters = public_parameters
+            .encryption_scheme_public_parameters
+            .ciphertext_space_public_parameters();
+        let decryption_share_base = ciphertext.scale_bounded_vartime(
+            &U64::from(2u8),
+            2,
+            ciphertext_space_public_parameters,
+        );
 
         // The only way the generate_decryption_share_semi_honst may fail is if the size of the decryption key share is out of the specified bounds. This is never the case as the DKG and Reconfiguration protocols guarantee that the outputted decryption key shares are bounded by the correct values.
         // Thus this check may never fail for a honest party and as such cannot reveal information on the secret share.
@@ -252,6 +259,9 @@ impl AdditivelyHomomorphicDecryptionKeyShare<PLAINTEXT_SPACE_SCALAR_LIMBS, Encry
             })
             .collect();
 
+        let ciphertext_space_public_parameters = public_parameters
+            .encryption_scheme_public_parameters
+            .ciphertext_space_public_parameters();
         let (have_enough_expected_decrypters, combined_decryption_shares) =
             interpolate_decryption_shares(
                 decryption_shares,
@@ -261,6 +271,7 @@ impl AdditivelyHomomorphicDecryptionKeyShare<PLAINTEXT_SPACE_SCALAR_LIMBS, Encry
                 public_parameters.number_of_parties,
                 public_parameters.n_factorial,
                 batch_size,
+                ciphertext_space_public_parameters,
             )?;
 
         let decryption_factor = if have_enough_expected_decrypters {
@@ -285,7 +296,11 @@ impl AdditivelyHomomorphicDecryptionKeyShare<PLAINTEXT_SPACE_SCALAR_LIMBS, Encry
                 // Shared functionality computes $\left[\prod_{j\in T} \ct_j^{\Delta_n\lambda_{T,j}^0} \mod N^2 \right]$,
                 // we need  $\left[\prod_{j\in T} \ct_j^{2\Delta_n\lambda_{T,j}^0} \mod N^2 \right]$ so we multiply by 2.
                 let c_prime: PaillierModulusSizedNumber = c_prime
-                    .scale_bounded_vartime(&PaillierModulusSizedNumber::from(2u8), 2)
+                    .scale_bounded_vartime(
+                        &PaillierModulusSizedNumber::from(2u8),
+                        2,
+                        ciphertext_space_public_parameters,
+                    )
                     .into();
 
                 // $c` >= 1$ so safe to perform a `.wrapping_sub()` here which will not overflow
@@ -332,7 +347,9 @@ impl AdditivelyHomomorphicDecryptionKeyShare<PLAINTEXT_SPACE_SCALAR_LIMBS, Encry
                 .into_iter()
                 .map(|(party_id, (decryption_shares, proof))| {
                     let res = if decryption_shares.len() != batch_size {
-                        Err(Error::SanityCheckError(SanityCheckError::InvalidParameters))
+                        Err(Error::from(ErrorKind::SanityCheckError(
+                            SanityCheckError::InvalidParameters,
+                        )))
                     } else {
                         Ok((decryption_shares, proof))
                     };
@@ -369,7 +386,9 @@ impl AdditivelyHomomorphicDecryptionKeyShare<PLAINTEXT_SPACE_SCALAR_LIMBS, Encry
                     .binomial_coefficients
                     .contains_key(party_id)
         }) {
-            return Err(Error::SanityCheckError(SanityCheckError::InvalidParameters));
+            return Err(Error::from(ErrorKind::SanityCheckError(
+                SanityCheckError::InvalidParameters,
+            )));
         }
 
         let malicious_decrypters: Vec<PartyID> = decrypters
@@ -459,7 +478,11 @@ impl AdditivelyHomomorphicDecryptionKeyShare<PLAINTEXT_SPACE_SCALAR_LIMBS, Encry
             .values()
             .next()
             .map(|shares| shares.len())
-            .ok_or(Error::SanityCheckError(SanityCheckError::InvalidParameters))?;
+            .ok_or_else(|| {
+                Error::from(ErrorKind::SanityCheckError(
+                    SanityCheckError::InvalidParameters,
+                ))
+            })?;
 
         // Instantiate decryption shares.
         let (parties_sending_invalid_decryption_shares, invalid_semi_honest_decryption_shares) =
@@ -491,7 +514,9 @@ impl AdditivelyHomomorphicDecryptionKeyShare<PLAINTEXT_SPACE_SCALAR_LIMBS, Encry
                             })
                             .collect()
                     } else {
-                        Err(Error::SanityCheckError(SanityCheckError::InvalidParameters))
+                        Err(Error::from(ErrorKind::SanityCheckError(
+                            SanityCheckError::InvalidParameters,
+                        )))
                     };
 
                     (party_id, decryption_shares)
@@ -525,13 +550,19 @@ impl AdditivelyHomomorphicDecryptionKeyShare<PLAINTEXT_SPACE_SCALAR_LIMBS, Encry
                         })
                         .collect()
                 } else {
-                    Err(Error::SanityCheckError(SanityCheckError::InvalidParameters))
+                    Err(Error::from(ErrorKind::SanityCheckError(
+                        SanityCheckError::InvalidParameters,
+                    )))
                 };
 
                 decryption_shares.map(|decryption_shares| (party_id, decryption_shares))
             })
             .try_collect_hash_map()
-            .map_err(|_| Error::SanityCheckError(SanityCheckError::InvalidParameters))?;
+            .map_err(|_| {
+                Error::from(ErrorKind::SanityCheckError(
+                    SanityCheckError::InvalidParameters,
+                ))
+            })?;
 
         let malicious_decrypters = identify_malicious_semi_honest_decrypters(
             invalid_semi_honest_decryption_shares,
@@ -542,6 +573,9 @@ impl AdditivelyHomomorphicDecryptionKeyShare<PLAINTEXT_SPACE_SCALAR_LIMBS, Encry
             public_parameters.binomial_coefficients.clone(),
             public_parameters.n_factorial,
             batch_size,
+            public_parameters
+                .encryption_scheme_public_parameters
+                .ciphertext_space_public_parameters(),
         )?;
 
         Ok(parties_sending_invalid_decryption_shares
@@ -561,10 +595,17 @@ impl DecryptionKeyShare {
         Vec<PaillierModulusSizedNumber>,
         Vec<PaillierModulusSizedNumber>,
     ) {
+        let ciphertext_space_public_parameters = public_parameters
+            .encryption_scheme_public_parameters
+            .ciphertext_space_public_parameters();
         let decryption_share_bases: Vec<CiphertextSpaceGroupElement> = decryption_share_bases
             .into_iter()
             .map(|decryption_share_base| {
-                decryption_share_base.scale_bounded_vartime(&U64::from(2u8), 2)
+                decryption_share_base.scale_bounded_vartime(
+                    &U64::from(2u8),
+                    2,
+                    ciphertext_space_public_parameters,
+                )
             })
             .collect();
 
@@ -635,9 +676,9 @@ impl PublicParameters {
         encryption_scheme_public_parameters: encryption_key::PublicParameters,
     ) -> crate::Result<PublicParameters> {
         if u32::from(number_of_parties) > MAX_PLAYERS {
-            return Err(crate::Error::SanityCheckError(
+            return Err(crate::Error::from(crate::ErrorKind::SanityCheckError(
                 crate::SanityCheckError::InvalidParameters,
-            ));
+            )));
         }
 
         let paillier_associate_bi_prime = *encryption_scheme_public_parameters

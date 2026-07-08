@@ -11,10 +11,12 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, default-features = false, features = ["alloc"] }
 group = { path = "../group" }
 proof = { path = "../proof" }
+proof_aggregation = { path = "../proof-aggregation" }
 mpc = { path = "../mpc" }
 homomorphic_encryption = { path = "../homomorphic-encryption" }
 commitment = { path = "../commitment" }
 maurer = { path = "../maurer" }
+maurer_aggregation = { path = "../maurer-aggregation" }
 tiresias = { path = "../tiresias" }
 thiserror = { workspace = true }
 
@@ -29,6 +31,7 @@ curve25519-dalek = { workspace = true, features = ["serde"] }
 rstest = { workspace = true }
 proof = { path = "../proof", features = ["test_helpers"] }
 maurer = { path = "../maurer", features = ["test_helpers"] }
+maurer_aggregation = { path = "../maurer-aggregation", features = ["test_helpers"] }
 mpc = { path = "../mpc", features = ["test_helpers"] }
 class_groups = { path = "../class-groups", features = ["test_helpers"] }
 criterion = { workspace = true, features = ["html_reports"] }
@@ -42,3 +45,6 @@ benchmarking = ["test_helpers", "mpc/parallel", "proof/parallel"]
 [[bench]]
 name = "benches"
 harness = false
+
+[lints]
+workspace = true

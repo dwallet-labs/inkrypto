@@ -7,7 +7,7 @@ use crypto_bigint::{Encoding, Int, Uint};
 use serde::{Deserialize, Serialize};
 
 use group::helpers::{const_generic_array_serialization, TryCollectHashMap};
-use group::{ristretto, secp256k1, PartyID, PrimeGroupElement};
+use group::{ristretto, secp256k1, GroupElement as _, PartyID, PrimeGroupElement};
 use mpc::secret_sharing::shamir::over_the_integers::{
     compute_binomial_coefficients, factorial, BinomialCoefficientSizedNumber, FactorialSizedNumber,
     MAX_PLAYERS, MAX_THRESHOLD,
@@ -25,10 +25,12 @@ use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
     CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, MAX_PRIMES, NUM_ENCRYPTION_OF_DECRYPTION_KEY_PRIMES,
     NUM_SECRET_SHARE_PRIMES,
 };
-use crate::publicly_verifiable_secret_sharing::{DealSecretMessage, DealtSecretShareMessage};
+use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
+    DealSecretMessage, DealtSecretShareMessage,
+};
 use crate::setup::{DeriveFromPlaintextPublicParameters, SetupParameters};
 use crate::{
-    equivalence_class, CompactIbqf, EquivalenceClass, Error, Result,
+    equivalence_class, CompactIbqf, EquivalenceClass, Error, ErrorKind, Result,
     DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
 };
 use crate::{
@@ -303,17 +305,17 @@ where
     {
         if computational_security_parameter != DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER {
             // Our sizes are optimized for 112-bits security, need to recompile to allow 128-bit security.
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         if u32::from(access_structure.threshold) > MAX_THRESHOLD
             || u32::from(access_structure.number_of_virtual_parties()) > MAX_PLAYERS
         {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         if FUNDAMENTAL_DISCRIMINANT_LIMBS != CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         let setup_parameters_per_crt_prime =
@@ -355,6 +357,9 @@ pub fn compute_public_verification_keys_for_participating_party<
         HashMap<PartyID, EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
     >,
     participating_tangible_party_id: &PartyID,
+    equivalence_class_public_parameters: &equivalence_class::PublicParameters<
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    >,
 ) -> Result<HashMap<PartyID, EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>>
 where
     Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
@@ -374,7 +379,7 @@ where
     let party_to_virtual_parties = access_structure.party_to_virtual_parties();
     let virtual_subset = party_to_virtual_parties
         .get(participating_tangible_party_id)
-        .ok_or(Error::InvalidParameters)?;
+        .ok_or_else(|| Error::from(ErrorKind::InvalidParameters))?;
 
     virtual_subset
         .iter()
@@ -386,16 +391,19 @@ where
                     commitments_to_shares
                         .get(&participating_virtual_party_id)
                         .cloned()
-                        .ok_or(Error::InvalidParameters)
+                        .ok_or_else(|| Error::from(ErrorKind::InvalidParameters))
                 })
                 .collect::<Result<Vec<_>>>()
                 .and_then(|commitments_to_shares| {
                     commitments_to_shares
                         .into_iter()
                         .reduce(|public_verification_key_accumulator, commitment_to_share| {
-                            public_verification_key_accumulator + commitment_to_share
+                            public_verification_key_accumulator.add_vartime(
+                                &commitment_to_share,
+                                equivalence_class_public_parameters,
+                            )
                         })
-                        .ok_or(Error::InvalidParameters)
+                        .ok_or_else(|| Error::from(ErrorKind::InvalidParameters))
                 })
                 .map(|public_verification_key| {
                     (participating_virtual_party_id, public_verification_key)
@@ -431,6 +439,7 @@ pub mod test_helpers {
 
     use crate::decryption_key::SecretKey;
     use crate::encryption_key::public_parameters::Instantiate;
+    use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::test_helpers::construct_encryption_keys_and_proofs_per_crt_prime_secp256k1;
     use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
         construct_knowledge_of_decryption_key_public_parameters_per_crt_prime,
         construct_setup_parameters_per_crt_prime, generate_keypairs_per_crt_prime,
@@ -440,7 +449,6 @@ pub mod test_helpers {
         ENCRYPTION_OF_DECRYPTION_KEY_CRT_COEFFICIENTS,
         ENCRYPTION_OF_DECRYPTION_KEY_CRT_PRIMES_PRODUCT,
     };
-    use crate::publicly_verifiable_secret_sharing::test_helpers::construct_encryption_keys_and_proofs_per_crt_prime_secp256k1;
     use crate::{
         decryption_key_share, dkg, CiphertextSpaceGroupElement, RistrettoDecryptionKeyShare,
         Secp256k1DecryptionKeyShare, SecretKeyShareSizedInteger, SecretKeyShareSizedNumber,
@@ -766,7 +774,7 @@ pub mod test_helpers {
         });
 
         let decrypted_encryption_of_decryption_key =
-            crate::publicly_verifiable_secret_sharing::Party::<
+            crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party::<
                 NUM_ENCRYPTION_OF_DECRYPTION_KEY_PRIMES,
                 SECRET_KEY_SHARE_LIMBS,
                 SECRET_KEY_SHARE_WITNESS_LIMBS,
@@ -878,6 +886,7 @@ pub mod test_helpers {
             0,
             number_of_parties,
             n_factorial,
+            &discrete_log_group_public_parameters,
         )
         .unwrap()[0];
         Uint::from(&((interpolated_decryption_key.value().abs() / n_factorial) / n_factorial))
@@ -1203,22 +1212,23 @@ mod tests {
             .unwrap()
         });
 
-        let decrypted_encryption_of_decryption_key = publicly_verifiable_secret_sharing::Party::<
-            NUM_ENCRYPTION_OF_DECRYPTION_KEY_PRIMES,
-            SECRET_KEY_SHARE_LIMBS,
-            SECRET_KEY_SHARE_WITNESS_LIMBS,
-            SECP256K1_SCALAR_LIMBS,
-            SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            secp256k1::GroupElement,
-        >::decrypt_and_crt_reconstruct_internal(
-            ENCRYPTION_OF_DECRYPTION_KEY_CRT_COEFFICIENTS,
-            ENCRYPTION_OF_DECRYPTION_KEY_CRT_PRIMES_PRODUCT,
-            threshold_encryption_scheme_public_parameters_per_crt_prime,
-            decryption_key_per_crt_primes,
-            encryption_of_decryption_key_per_crt_prime.each_ref(),
-        )
-        .unwrap();
+        let decrypted_encryption_of_decryption_key =
+            publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party::<
+                NUM_ENCRYPTION_OF_DECRYPTION_KEY_PRIMES,
+                SECRET_KEY_SHARE_LIMBS,
+                SECRET_KEY_SHARE_WITNESS_LIMBS,
+                SECP256K1_SCALAR_LIMBS,
+                SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                secp256k1::GroupElement,
+            >::decrypt_and_crt_reconstruct_internal(
+                ENCRYPTION_OF_DECRYPTION_KEY_CRT_COEFFICIENTS,
+                ENCRYPTION_OF_DECRYPTION_KEY_CRT_PRIMES_PRODUCT,
+                threshold_encryption_scheme_public_parameters_per_crt_prime,
+                decryption_key_per_crt_primes,
+                encryption_of_decryption_key_per_crt_prime.each_ref(),
+            )
+            .unwrap();
 
         assert_eq!(
             Uint::from(&decrypted_encryption_of_decryption_key.abs()),

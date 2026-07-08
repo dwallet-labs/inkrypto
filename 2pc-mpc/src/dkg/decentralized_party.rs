@@ -229,7 +229,7 @@ where
 pub struct Party<
     const SCALAR_LIMBS: usize,
     const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
     EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
     ProtocolPublicParameters,
     CentralizedPartyKeyShareVerification,
@@ -243,7 +243,7 @@ pub struct Party<
 impl<
         const SCALAR_LIMBS: usize,
         const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
         EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
         ProtocolPublicParameters,
         CentralizedPartyKeyShareVerification,
@@ -306,7 +306,7 @@ where
 
         // $X_{A}$
         let centralized_party_public_key_share = GroupElement::new(
-            public_key_share_and_proof.public_key_share,
+            public_key_share_and_proof.public_key_share.clone(),
             &protocol_public_parameters.group_public_parameters,
         )?;
 
@@ -340,7 +340,10 @@ where
         )?;
 
         // === 3(d) Set $X=X_{A}+X_{B}$. ===
-        let public_key = centralized_party_public_key_share + public_key_share;
+        let public_key = centralized_party_public_key_share.add_vartime(
+            &public_key_share,
+            &protocol_public_parameters.group_public_parameters,
+        );
 
         let output = Output {
             public_key_share: public_key_share.value(),
@@ -362,6 +365,85 @@ where
 
         // === 3(f) Output (and record) ===
         Ok(versioned_output)
+    }
+
+    /// Compute the decentralized party DKG output for threshold mode (no centralized party).
+    ///
+    /// Uses identity for the centralized party's public key share and a default proof in the
+    /// Fiat-Shamir transcript. Skips proof verification. The decentralized party's randomized
+    /// public key share becomes the full public key.
+    pub fn threshold_dkg_output(
+        protocol_public_parameters: &ProtocolPublicParameters,
+        session_id: CommitmentSizedNumber,
+    ) -> crate::Result<
+        VersionedOutput<
+            SCALAR_LIMBS,
+            GroupElement::Value,
+            group::Value<EncryptionKey::CiphertextSpaceGroupElement>,
+        >,
+    > {
+        let protocol_public_parameters = protocol_public_parameters.as_ref();
+
+        let neutral_value = GroupElement::neutral_from_public_parameters(
+            &protocol_public_parameters.group_public_parameters,
+        )?
+        .value();
+
+        let default_proof =
+            KnowledgeOfDiscreteLogUCProof::<SCALAR_LIMBS, GroupElement>::new_default(
+                &protocol_public_parameters.scalar_group_public_parameters,
+                &protocol_public_parameters.group_public_parameters,
+            )?;
+
+        let (
+            first_key_public_randomizer,
+            second_key_public_randomizer,
+            free_coefficient_key_public_randomizer,
+            encryption_of_secret_key_share,
+            public_key_share,
+        ) = derive_randomized_decentralized_party_public_key_share_and_encryption_of_secret_key_share::<
+            SCALAR_LIMBS,
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            GroupElement,
+            EncryptionKey,
+        >(
+            session_id,
+            protocol_public_parameters
+                .encryption_of_decentralized_party_secret_key_share_first_part
+                .clone(),
+            protocol_public_parameters
+                .encryption_of_decentralized_party_secret_key_share_second_part
+                .clone(),
+            protocol_public_parameters
+                .decentralized_party_public_key_share_first_part
+                .clone(),
+            protocol_public_parameters
+                .decentralized_party_public_key_share_second_part
+                .clone(),
+            &neutral_value,
+            &default_proof,
+            &protocol_public_parameters.group_public_parameters,
+            &protocol_public_parameters.encryption_scheme_public_parameters,
+        )?;
+
+        // public_key = identity + X_B = X_B
+        let output = Output {
+            public_key_share: public_key_share.value(),
+            public_key: public_key_share.value(),
+            encryption_of_secret_key_share: encryption_of_secret_key_share.value(),
+            centralized_party_public_key_share: neutral_value,
+        };
+
+        let global_decentralized_party_output_commitment =
+            protocol_public_parameters.global_decentralized_party_output_commitment()?;
+
+        Ok(VersionedOutput::UniversalPublicDKGOutput {
+            output,
+            first_key_public_randomizer,
+            second_key_public_randomizer,
+            free_coefficient_key_public_randomizer,
+            global_decentralized_party_output_commitment,
+        })
     }
 }
 
@@ -419,7 +501,7 @@ impl<
 impl<
         const SCALAR_LIMBS: usize,
         const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
         EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
         ProtocolPublicParameters: Clone + Serialize + Debug + PartialEq + Eq + Send + Sync + Send + Sync,
         CentralizedPartyKeyShareVerification: Clone + Serialize + Debug + PartialEq + Eq + Send + Sync + Send + Sync,
@@ -455,7 +537,7 @@ where
 impl<
         const SCALAR_LIMBS: usize,
         const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
         EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
         ProtocolPublicParameters: Clone + Serialize + Debug + PartialEq + Eq + Send + Sync,
         CentralizedPartyKeyShareVerification: Clone + Serialize + Debug + PartialEq + Eq + Send + Sync + Send + Sync,

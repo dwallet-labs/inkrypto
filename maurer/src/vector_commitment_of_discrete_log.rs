@@ -11,7 +11,7 @@ use group::{
 };
 use proof::{CanonicalGroupsPublicParameters, GroupsPublicParameters};
 
-use crate::{Error, Result, SOUND_PROOFS_REPETITIONS};
+use crate::{Error, ErrorKind, Result, SOUND_PROOFS_REPETITIONS};
 
 /// Vector Commitment of Discrete Log Maurer Language
 ///
@@ -45,8 +45,7 @@ impl<
         Scalar: BoundedGroupElement<SCALAR_LIMBS>
             + Samplable
             + Mul<GroupElement, Output = GroupElement>
-            + for<'r> Mul<&'r GroupElement, Output = GroupElement>
-            + Copy,
+            + for<'r> Mul<&'r GroupElement, Output = GroupElement>,
         GroupElement: CyclicGroupElement,
         CommitmentScheme: HomomorphicCommitmentScheme<
             SCALAR_LIMBS,
@@ -81,11 +80,12 @@ impl<
         _is_verify: bool,
     ) -> Result<Self::StatementSpaceGroupElement> {
         if BATCH_SIZE == 0 {
-            return Err(Error::InvalidPublicParameters);
+            return Err(Error::from(ErrorKind::InvalidPublicParameters));
         }
 
         let bases = language_public_parameters
             .bases
+            .clone()
             .map(|base| {
                 GroupElement::new(base, language_public_parameters.group_public_parameters())
             })
@@ -96,15 +96,24 @@ impl<
 
         let neutral = bases[0].neutral();
 
+        let commitment_space_public_parameters = language_public_parameters
+            .commitment_scheme_public_parameters
+            .commitment_space_public_parameters();
+
         let vector_commitment_of_discrete_logs = commitment_scheme.commit(
             witness.commitment_message(),
             witness.commitment_randomness(),
+            commitment_space_public_parameters,
         );
+
+        let group_public_parameters = language_public_parameters.group_public_parameters();
 
         let linear_combination_of_discrete_logs = bases
             .iter()
             .zip::<&[Scalar; BATCH_SIZE]>(witness.commitment_message().into())
-            .fold(neutral, |acc, (base, message)| acc + (*message * base));
+            .fold(neutral, |acc, (base, message)| {
+                acc.add_constant_time(&(message.clone() * base), group_public_parameters)
+            });
 
         Ok((
             vector_commitment_of_discrete_logs,
@@ -517,14 +526,12 @@ pub mod test_helpers {
 }
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use std::iter;
 
     use crypto_bigint::U256;
     use rstest::rstest;
 
-    use group::{secp256k1, GroupElement, OsCsRng, PartyID};
-    use mpc::Weight;
+    use group::{secp256k1, GroupElement, OsCsRng};
 
     use crate::language::StatementSpaceGroupElement;
     use crate::test_helpers::batch_verifies;
@@ -725,91 +732,6 @@ mod tests {
             &mut OsCsRng,
         )
     }
-
-    #[rstest]
-    #[case(1, 1)]
-    #[case(1, 2)]
-    #[case(2, 1)]
-    #[case(2, 3)]
-    #[case(5, 2)]
-    fn aggregates(#[case] number_of_parties: usize, #[case] batch_size: usize) {
-        let language_public_parameters = language_public_parameters();
-
-        test_helpers::aggregates::<SOUND_PROOFS_REPETITIONS, Lang>(
-            &language_public_parameters,
-            number_of_parties,
-            batch_size,
-        );
-    }
-
-    #[rstest]
-    #[case(2, HashMap::from([(1, 1), (2, 1)]), 1)]
-    #[case(2, HashMap::from([(1, 1), (2, 1)]), 2)]
-    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), 1)]
-    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), 2)]
-    fn statement_aggregates_asynchronously(
-        #[case] threshold: PartyID,
-        #[case] party_to_weight: HashMap<PartyID, Weight>,
-        #[case] batch_size: usize,
-    ) {
-        let language_public_parameters = language_public_parameters();
-
-        test_helpers::statement_aggregates_asynchronously::<SOUND_PROOFS_REPETITIONS, Lang>(
-            &language_public_parameters,
-            threshold,
-            party_to_weight,
-            batch_size,
-            &mut OsCsRng,
-        );
-    }
-
-    #[rstest]
-    #[case(2, 1)]
-    #[case(3, 1)]
-    #[case(5, 2)]
-    fn unresponsive_parties_aborts_session_identifiably(
-        #[case] number_of_parties: usize,
-        #[case] batch_size: usize,
-    ) {
-        let language_public_parameters = language_public_parameters();
-
-        test_helpers::unresponsive_parties_aborts_session_identifiably::<
-            SOUND_PROOFS_REPETITIONS,
-            Lang,
-        >(&language_public_parameters, number_of_parties, batch_size);
-    }
-
-    #[rstest]
-    #[case(2, 1)]
-    #[case(3, 1)]
-    #[case(5, 2)]
-    fn wrong_decommitment_aborts_session_identifiably(
-        #[case] number_of_parties: usize,
-        #[case] batch_size: usize,
-    ) {
-        let language_public_parameters = language_public_parameters();
-
-        test_helpers::wrong_decommitment_aborts_session_identifiably::<
-            SOUND_PROOFS_REPETITIONS,
-            Lang,
-        >(&language_public_parameters, number_of_parties, batch_size);
-    }
-
-    #[rstest]
-    #[case(2, 1)]
-    #[case(3, 1)]
-    #[case(5, 2)]
-    fn failed_proof_share_verification_aborts_session_identifiably(
-        #[case] number_of_parties: usize,
-        #[case] batch_size: usize,
-    ) {
-        let language_public_parameters = language_public_parameters();
-
-        test_helpers::failed_proof_share_verification_aborts_session_identifiably::<
-            SOUND_PROOFS_REPETITIONS,
-            Lang,
-        >(&language_public_parameters, number_of_parties, batch_size);
-    }
 }
 
 #[cfg(feature = "benchmarking")]
@@ -835,23 +757,9 @@ pub mod benches {
             None,
         );
 
-        test_helpers::benchmark_aggregation::<SOUND_PROOFS_REPETITIONS, Lang>(
-            &language_public_parameters,
-            Some("pedersen of 2".to_string()),
-            false,
-            None,
-        );
-
         let vector_language_public_parameters = vector_language_public_parameters();
 
         test_helpers::benchmark_proof::<SOUND_PROOFS_REPETITIONS, VectorLang>(
-            &vector_language_public_parameters,
-            Some("multi-pedersen of 2".to_string()),
-            false,
-            None,
-        );
-
-        test_helpers::benchmark_aggregation::<SOUND_PROOFS_REPETITIONS, VectorLang>(
             &vector_language_public_parameters,
             Some("multi-pedersen of 2".to_string()),
             false,

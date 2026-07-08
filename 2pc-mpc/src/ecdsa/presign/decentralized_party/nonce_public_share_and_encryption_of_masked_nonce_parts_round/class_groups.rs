@@ -13,7 +13,7 @@ use crate::languages::class_groups::{
     construct_scaling_of_discrete_log_public_parameters, ScalingOfDiscreteLogProof,
     ScalingOfDiscreteLogPublicParameters,
 };
-use crate::{Error, ProtocolContext, Result};
+use crate::{Error, ErrorKind, ProtocolContext, Result};
 use class_groups::equivalence_class::EquivalenceClassOps;
 use class_groups::{
     encryption_key, equivalence_class, CiphertextSpaceGroupElement,
@@ -34,7 +34,7 @@ impl<
         const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         const MESSAGE_LIMBS: usize,
-        GroupElement: VerifyingKey<SCALAR_LIMBS>,
+        GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
     >
     Party<
         SCALAR_LIMBS,
@@ -108,7 +108,7 @@ where
         >,
         encryption_of_mask: CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
     ) -> Result<
-        proof::aggregation::asynchronous::PublicInput<
+        proof_aggregation::asynchronous::PublicInput<
             ProtocolContext,
             ScalingOfDiscreteLogPublicParameters<
                 SCALAR_LIMBS,
@@ -141,7 +141,7 @@ where
                 .clone(),
         )?;
 
-        let aggregation_public_input = proof::aggregation::asynchronous::PublicInput {
+        let aggregation_public_input = proof_aggregation::asynchronous::PublicInput {
             protocol_context: public_input
                 .nonce_public_share_and_encryption_of_masked_nonce_round_protocol_context_v1(
                     session_id,
@@ -215,7 +215,7 @@ where
                 encryption_of_mask,
             )?;
 
-        let (proof, statement_values) = proof::aggregation::asynchronous::Party::<
+        let (proof, statement_values) = proof_aggregation::asynchronous::Party::<
             ScalingOfDiscreteLogProof<
                 SCALAR_LIMBS,
                 FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -294,7 +294,7 @@ where
                     Message::NoncePublicShareAndEncryptionOfMaskedNonceShareAndProof(message) => {
                         Ok(message)
                     }
-                    _ => Err(Error::InvalidParameters),
+                    _ => Err(Error::from(ErrorKind::InvalidParameters)),
                 };
 
                 (party_id, res)
@@ -314,7 +314,7 @@ where
                 encryption_of_mask,
             )?;
 
-        let (malicious_provers, aggregated_statements) = proof::aggregation::asynchronous::Party::<
+        let (malicious_provers, aggregated_statements) = proof_aggregation::asynchronous::Party::<
             ScalingOfDiscreteLogProof<
                 SCALAR_LIMBS,
                 FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -335,7 +335,7 @@ where
                 [first_statement, second_statement] => {
                     Ok([first_statement.value(), second_statement.value()])
                 }
-                _ => Err(Error::InternalError),
+                _ => Err(Error::from(ErrorKind::InternalError)),
             }?;
 
         let malicious_parties = parties_sending_invalid_nonce_public_share_and_encryption_of_masked_nonce_share_messages

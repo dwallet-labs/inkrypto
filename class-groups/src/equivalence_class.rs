@@ -16,7 +16,7 @@ use crate::accelerator::MultiFoldNupowAccelerator;
 use crate::helpers::{math, CtMinMax};
 use crate::randomizer::{ExponentWithFormMask, ScalingRandomizer};
 use crate::DEFAULT_ACCELERATOR_FOLDING_DEGREE;
-use crate::{discriminant::Discriminant, ibqf::Ibqf, Error};
+use crate::{discriminant::Discriminant, ibqf::Ibqf, Error, ErrorKind};
 
 mod group_element;
 pub(crate) mod public_parameters;
@@ -112,7 +112,7 @@ where
     /// Compute `self^exp`.
     ///
     /// ### Randomized
-    /// Assumes `self` to be a random form. With this assumption in place, a faster exponentation
+    /// Assumes `self` to be a random form. With this assumption in place, a faster exponentiation
     /// algorithm can be exploited. Might return `None` if the assumption proves incorrect.
     fn pow_randomized<const EXPONENT_LIMBS: usize>(&self, exp: &Uint<EXPONENT_LIMBS>) -> Self {
         self.pow_bounded_randomized(exp, Uint::<EXPONENT_LIMBS>::BITS)
@@ -121,7 +121,7 @@ where
     /// Compute `self^exp`.
     ///
     /// ### Randomized
-    /// Assumes `self` to be a random form. With this assumption in place, a faster exponentation
+    /// Assumes `self` to be a random form. With this assumption in place, a faster exponentiation
     /// algorithm can be exploited. Might return `None` if the assumption proves incorrect.
     ///
     /// ### Public Base
@@ -136,7 +136,7 @@ where
     /// Compute `self^exp`.
     ///
     /// ### Randomized
-    /// Assumes `self` to be a random form. With this assumption in place, a faster exponentation
+    /// Assumes `self` to be a random form. With this assumption in place, a faster exponentiation
     /// algorithm can be exploited. Might return `None` if the assumption proves incorrect.
     ///
     /// ### Public Base
@@ -153,7 +153,7 @@ where
     ///
     /// ### Randomized
     /// Assumes `self` is a random form. With this assumption in place, a faster
-    /// exponentation algorithm can be exploited. Will return an `Error` if the assumption proves
+    /// exponentiation algorithm can be exploited. Will return an `Error` if the assumption proves
     /// incorrect.
     fn pow_bounded_randomized<const EXPONENT_LIMBS: usize>(
         &self,
@@ -178,7 +178,7 @@ where
     ///
     /// ### Randomized
     /// Assumes `self` is a random form. With this assumption in place, a faster
-    /// exponentation algorithm can be exploited. Will return an `Error` if the assumption proves
+    /// exponentiation algorithm can be exploited. Will return an `Error` if the assumption proves
     /// incorrect.
     ///
     /// ### Public Base
@@ -194,7 +194,7 @@ where
     ///
     /// ### Randomized
     /// Assumes `self` is a random form. With this assumption in place, a faster
-    /// exponentation algorithm can be exploited. Will return an `Error` if the assumption proves
+    /// exponentiation algorithm can be exploited. Will return an `Error` if the assumption proves
     /// incorrect.
     ///
     /// ### Public Base
@@ -216,7 +216,7 @@ where
     ///
     /// ### Randomized
     /// Assumes `self` is a random form. With this assumption in place, a faster
-    /// exponentation algorithm can be exploited. Will return an `Error` if the assumption proves
+    /// exponentiation algorithm can be exploited. Will return an `Error` if the assumption proves
     /// incorrect.
     fn pow_bounded_multifold_accelerated_randomized<const EXPONENT_LIMBS: usize>(
         accelerator: &MultiFoldNupowAccelerator<DISCRIMINANT_LIMBS>,
@@ -413,11 +413,11 @@ where
 
         let b = CtOption::from(b.try_into_int())
             .into_option()
-            .ok_or(Error::InternalError)?;
+            .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
 
         EquivalenceClass::new_from_coefficients_reduced_vartime_discriminant(p, b, discriminant)
             .into_option()
-            .ok_or(Error::InternalError)
+            .ok_or_else(|| Error::from(ErrorKind::InternalError))
     }
 }
 
@@ -466,7 +466,7 @@ where
     /// Multiply `self` with `rhs`.
     pub fn mul(&self, rhs: &Self) -> Result<Self, Error> {
         if !self.is_from_the_same_class_as(rhs) {
-            return Err(Error::CombiningRequiresSameDiscriminant);
+            return Err(Error::from(ErrorKind::CombiningRequiresSameDiscriminant));
         }
 
         let res = self.representative.nucomp(rhs.representative);
@@ -480,7 +480,7 @@ where
     /// algorithm can be exploited. Might return `None` if the assumption proves incorrect.
     pub fn mul_randomized(&self, rhs: &Self) -> Result<Self, Error> {
         if !self.is_from_the_same_class_as(rhs) {
-            return Err(Error::CombiningRequiresSameDiscriminant);
+            return Err(Error::from(ErrorKind::CombiningRequiresSameDiscriminant));
         }
 
         let res = self.representative.nucomp_randomized(rhs.representative);
@@ -493,7 +493,7 @@ where
     /// `rhs.representative`.
     pub fn mul_vartime(&self, rhs: &Self) -> Result<Self, Error> {
         if !self.is_from_the_same_class_as(rhs) {
-            return Err(Error::CombiningRequiresSameDiscriminant);
+            return Err(Error::from(ErrorKind::CombiningRequiresSameDiscriminant));
         }
 
         let res = self.representative.nucomp_vartime(rhs.representative);
@@ -503,7 +503,7 @@ where
     /// Divide `self` by `rhs`.
     pub fn div(&self, rhs: &Self) -> Result<Self, Error> {
         if !self.is_from_the_same_class_as(rhs) {
-            return Err(Error::CombiningRequiresSameDiscriminant);
+            return Err(Error::from(ErrorKind::CombiningRequiresSameDiscriminant));
         }
 
         let res = self.representative.nucompinv(rhs.representative);
@@ -516,7 +516,7 @@ where
     /// `rhs.representative`.
     pub fn div_vartime(&self, rhs: &Self) -> Result<Self, Error> {
         if !self.is_from_the_same_class_as(rhs) {
-            return Err(Error::CombiningRequiresSameDiscriminant);
+            return Err(Error::from(ErrorKind::CombiningRequiresSameDiscriminant));
         }
 
         let res = self.representative.nucompinv_vartime(&rhs.representative);
@@ -573,7 +573,7 @@ where
     /// Executes in variable time w.r.t. `k` only.
     ///
     /// ### Randomized
-    /// Assumes `self` is a random form. With this assumption in place, a faster exponentation
+    /// Assumes `self` is a random form. With this assumption in place, a faster exponentiation
     /// algorithm can be exploited. Might return `None` if the assumption proves incorrect.
     pub fn pow_2k_randomized(&self, k: u32) -> Self {
         let res = self.representative.nupow2k_randomized(k);
@@ -616,7 +616,7 @@ where
     ///
     /// ### Randomized
     /// Assumes `self` is a random form. With this assumption in place, a faster
-    /// exponentation algorithm can be exploited. Will return an `Error` if the assumption proves
+    /// exponentiation algorithm can be exploited. Will return an `Error` if the assumption proves
     /// incorrect.
     pub fn pow_bounded_with_base_randomized<const EXPONENT_LIMBS: usize>(
         &self,
@@ -625,7 +625,7 @@ where
         exp_bits: u32,
     ) -> Result<Self, Error> {
         if exp_bits > Uint::<EXPONENT_LIMBS>::BITS {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         let res = self.representative.nupow_bounded_randomized_with_base(
@@ -667,7 +667,7 @@ where
     ///
     /// ### Bounded
     /// Requires `exp_bits ≤ Uint::<EXPONENT_LIMBS>::BITS`; will return an
-    /// [Error::ScalarBoundTooLarge] otherwise.
+    /// [Error::from(ErrorKind::ScalarBoundTooLarge)] otherwise.
     ///
     /// ### Vartime
     /// Executes in variable time w.r.t. `self.representative` and `exp`, but not in `exp_bits`.
@@ -678,7 +678,7 @@ where
         exp_bits: u32,
     ) -> Result<Self, Error> {
         if exp_bits > Uint::<EXPONENT_LIMBS>::BITS {
-            return Err(Error::ScalarBoundTooLarge);
+            return Err(Error::from(ErrorKind::ScalarBoundTooLarge));
         }
 
         let res = self
@@ -691,7 +691,7 @@ where
     ///
     /// ### Exponent with Form-Mask
     /// This exponentiation operation does not compute `self^exponent` directly, but instead
-    /// masks `self` before, and de-masks the result after the exponentation.
+    /// masks `self` before, and de-masks the result after the exponentiation.
     ///
     /// In addition to the `exponent` value, `exponent_with_mask` contains the masking elements
     /// `m1`, `m2`, and `m3 = m2^exponent_bits · m1^exponent`. With these masks in place, we can
@@ -732,7 +732,7 @@ where
             || !self.is_from_the_same_class_as(&m2)
             || !self.is_from_the_same_class_as(&m3)
         {
-            return Err(Error::CombiningRequiresSameDiscriminant);
+            return Err(Error::from(ErrorKind::CombiningRequiresSameDiscriminant));
         }
 
         let res = self
@@ -753,7 +753,7 @@ where
     /// of `exp`.
     ///
     /// ### Multiplicatively masked
-    /// This function masks `self` before exponentation, and then performs the exponentation using
+    /// This function masks `self` before exponentiation, and then performs the exponentiation using
     /// randomized operations.
     ///
     /// Requires that `randomizer.scalar_bits_bound == min(exp_bits, Uint::<EXPONENT_LIMBS>::BITS)`;
@@ -775,13 +775,13 @@ where
             || !self.is_from_the_same_class_as(&m2)
             || !self.is_from_the_same_class_as(&m3)
         {
-            return Err(Error::CombiningRequiresSameDiscriminant);
+            return Err(Error::from(ErrorKind::CombiningRequiresSameDiscriminant));
         }
 
         let exp_bits = u32::ct_min(&exp_bits, &Uint::<EXPONENT_LIMBS>::BITS);
         let equal_target_bits = scalar_bits_bound.ct_eq(&exp_bits);
         if (!equal_target_bits).into() {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         let res = self
@@ -796,7 +796,7 @@ where
     /// Raise `self` to the `exp`.
     ///
     /// ### Multiplicatively masked
-    /// This function masks `self` before exponentation, and then performs the exponentation using
+    /// This function masks `self` before exponentiation, and then performs the exponentiation using
     /// randomized operations.
     ///
     /// Requires that `randomizer.scalar_bits_bound == Uint::<EXPONENT_LIMBS>::BITS`; will return
@@ -813,7 +813,7 @@ where
     /// of `exp`.
     ///
     /// ### Multiplicatively masked / vartime
-    /// This function masks `self` before exponentation, and then performs the exponentation using
+    /// This function masks `self` before exponentiation, and then performs the exponentiation using
     /// **vartime** operations.
     ///
     /// Requires that `randomizer.scalar_bits_bound == min(exp_bits, Uint::<EXPONENT_LIMBS>::BITS)`;
@@ -830,7 +830,7 @@ where
             || !self.is_from_the_same_class_as(&randomizer.m2)
             || !self.is_from_the_same_class_as(&randomizer.m3)
         {
-            return Err(Error::CombiningRequiresSameDiscriminant);
+            return Err(Error::from(ErrorKind::CombiningRequiresSameDiscriminant));
         }
 
         let ScalingRandomizer {
@@ -843,7 +843,7 @@ where
         let exp_bits = u32::ct_min(&exp_bits, &Uint::<EXPONENT_LIMBS>::BITS);
         let equal_target_bits = scalar_bits_bound.ct_eq(&exp_bits);
         if (!equal_target_bits).into() {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         let res = self
@@ -857,7 +857,7 @@ where
     /// Raise `self` to the `exp`.
     ///
     /// ### Multiplicatively masked / vartime
-    /// This function masks `self` before exponentation, and then performs the exponentation using
+    /// This function masks `self` before exponentiation, and then performs the exponentiation using
     /// **vartime** operations.
     ///
     /// Requires that `randomizer.scalar_bits_bound == exp.bits()`; will return `None` otherwise.

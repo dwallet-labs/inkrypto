@@ -7,6 +7,7 @@ use crypto_bigint::{ConcatMixed, Encoding, Int, Uint};
 
 use crate::class_groups::ecdsa::asynchronous::Protocol;
 use crate::class_groups::ecdsa::{PresignAsyncECDSAParty, VersionedPresign};
+use crate::dkg;
 use crate::ecdsa::presign::decentralized_party::PublicInput;
 use crate::ecdsa::VerifyingKey;
 use ::class_groups::{
@@ -28,7 +29,7 @@ impl<
         const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         const MESSAGE_LIMBS: usize,
-        GroupElement: VerifyingKey<SCALAR_LIMBS>,
+        GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
     > super::Protocol
     for Protocol<
         SCALAR_LIMBS,
@@ -133,6 +134,12 @@ where
     Uint<MESSAGE_LIMBS>: Encoding,
     group::PublicParameters<GroupElement::Scalar>: Default,
 {
+    type DKGProtocol = crate::class_groups::asynchronous::DKGProtocol<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        GroupElement,
+    >;
     type Presign = VersionedPresign<
         SCALAR_LIMBS,
         FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -140,11 +147,15 @@ where
         GroupElement,
     >;
 
+    type HPKEEncryptionKey = ();
+
     type PresignPublicInput = PublicInput<
         GroupElement::Value,
         CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
-        Self::ProtocolPublicParameters,
+        <Self::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
     >;
+
+    type PresignPrivateInput = ();
 
     type PresignParty = PresignAsyncECDSAParty<
         SCALAR_LIMBS,

@@ -1,18 +1,17 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
-use std::ops::{Add, AddAssign, BitAnd, Mul, Neg, Sub, SubAssign};
+use std::ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign};
 
 use crypto_bigint::modular::ConstMontyParams;
-use crypto_bigint::{Encoding, NonZero, RandomMod, Uint, U64};
+use crypto_bigint::{Encoding, Int, NonZero, RandomMod, Uint, U64};
 use serde::{Deserialize, Serialize};
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 
-use crate::linear_combination::linearly_combine_bounded_or_scale;
 use crate::{
     const_additive, BoundedGroupElement, ComputationalSecuritySizedNumber, CsRng,
-    CyclicGroupElement, Error, GroupElement as _, LinearlyCombinable, MulByGenerator, PartyID,
-    Result, Samplable, StatisticalSecuritySizedNumber, Transcribeable,
+    CyclicGroupElement, Error, ErrorKind, MulByGenerator, PartyID, Result, Samplable,
+    StatisticalSecuritySizedNumber, Transcribeable,
 };
 
 /// An element of the additive group of integers for a power-of-two modulo `n = modulus`
@@ -20,8 +19,6 @@ use crate::{
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub struct GroupElement<const LIMBS: usize> {
     value: Uint<LIMBS>,
-    // The number of bits that should never be overflown, used for computations like `scale_bounded`.
-    pub upper_bound_bits: u32,
 }
 
 /// The number of bits to add when sampling a randomizer
@@ -84,7 +81,7 @@ where
             || order_bits <= upper_bound_bits
             || upper_bound_bits <= sample_bits
         {
-            return Err(Error::InvalidPublicParameters);
+            return Err(Error::from(ErrorKind::InvalidPublicParameters));
         }
 
         Ok(Self {
@@ -97,7 +94,7 @@ where
     pub fn new_with_randomizer_upper_bound(sample_bits: u32) -> Result<Self> {
         let upper_bound_bits = sample_bits
             .checked_add(MAURER_PROOFS_DIFF_UPPER_BOUND_BITS)
-            .ok_or(Error::InvalidPublicParameters)?;
+            .ok_or_else(|| Error::from(ErrorKind::InvalidPublicParameters))?;
 
         Self::new(sample_bits, upper_bound_bits)
     }
@@ -116,7 +113,6 @@ where
 
         Ok(Self {
             value: Uint::<LIMBS>::random_mod(rng, &upper_bound),
-            upper_bound_bits: public_parameters.upper_bound_bits,
         })
     }
 
@@ -127,37 +123,17 @@ where
         let randomizer_bits = public_parameters
             .sample_bits
             .checked_add(MAURER_RANDOMIZER_DIFF_BITS)
-            .ok_or(Error::InvalidPublicParameters)?;
+            .ok_or_else(|| Error::from(ErrorKind::InvalidPublicParameters))?;
 
         if public_parameters.upper_bound_bits <= randomizer_bits {
-            return Err(Error::InvalidPublicParameters);
+            return Err(Error::from(ErrorKind::InvalidPublicParameters));
         }
 
         let upper_bound = NonZero::new(Uint::<LIMBS>::ONE << randomizer_bits).unwrap();
 
         Ok(Self {
             value: Uint::<LIMBS>::random_mod(rng, &upper_bound),
-            upper_bound_bits: public_parameters.upper_bound_bits,
         })
-    }
-}
-
-impl<const LIMBS: usize> LinearlyCombinable for GroupElement<LIMBS>
-where
-    Uint<LIMBS>: Encoding,
-{
-    fn linearly_combine_bounded<const RHS_LIMBS: usize>(
-        bases_and_multiplicands: Vec<(Self, Uint<RHS_LIMBS>)>,
-        exponent_bits: u32,
-    ) -> crate::Result<Self> {
-        linearly_combine_bounded_or_scale(bases_and_multiplicands, exponent_bits, true)
-    }
-
-    fn linearly_combine_bounded_vartime<const RHS_LIMBS: usize>(
-        bases_and_multiplicands: Vec<(Self, Uint<RHS_LIMBS>)>,
-        exponent_bits: u32,
-    ) -> Result<Self> {
-        linearly_combine_bounded_or_scale(bases_and_multiplicands, exponent_bits, false)
     }
 }
 
@@ -175,87 +151,286 @@ where
         // the largest supported sequence of group operations with this type.
         let response_upper_bound = public_parameters.sample_bits + MAURER_RESPONSE_DIFF_BITS;
         if value.bits() > response_upper_bound {
-            return Err(Error::InvalidGroupElement);
+            return Err(Error::from(ErrorKind::InvalidGroupElement));
         }
 
-        Ok(Self {
-            value,
-            upper_bound_bits: public_parameters.upper_bound_bits,
-        })
+        Ok(Self { value })
     }
 
     fn neutral(&self) -> Self {
         Self {
             value: Uint::<LIMBS>::ZERO,
-            upper_bound_bits: self.upper_bound_bits,
         }
     }
 
     fn neutral_from_public_parameters(
-        public_parameters: &Self::PublicParameters,
+        _public_parameters: &Self::PublicParameters,
     ) -> crate::Result<Self> {
         Ok(Self {
             value: Uint::<LIMBS>::ZERO,
-            upper_bound_bits: public_parameters.upper_bound_bits,
         })
     }
 
-    fn scale<const RHS_LIMBS: usize>(&self, scalar: &Uint<RHS_LIMBS>) -> Self {
-        let value = self.value * scalar;
-        assert!(value.bits() <= self.upper_bound_bits);
+    fn add_constant_time(&self, other: &Self, public_parameters: &Self::PublicParameters) -> Self {
+        let result = *self + *other;
+        assert!(result.value.bits() <= public_parameters.upper_bound_bits);
+        result
+    }
 
-        Self {
-            value,
-            upper_bound_bits: self.upper_bound_bits,
-        }
+    fn sub_constant_time(&self, other: &Self, public_parameters: &Self::PublicParameters) -> Self {
+        let result = *self - *other;
+        assert!(result.value.bits() <= public_parameters.upper_bound_bits);
+        result
+    }
+
+    fn neg_constant_time(&self, _public_parameters: &Self::PublicParameters) -> Self {
+        (*self).neg()
+    }
+
+    fn scale<const RHS_LIMBS: usize>(
+        &self,
+        scalar: &Uint<RHS_LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        let value = self.value * scalar;
+        assert!(value.bits() <= public_parameters.upper_bound_bits);
+
+        Self { value }
     }
 
     fn scale_bounded<const RHS_LIMBS: usize>(
         &self,
         scalar: &Uint<RHS_LIMBS>,
         scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
     ) -> Self {
-        assert!(scalar.bits() <= scalar_bits);
-
-        crate::scale_bounded(self, scalar, scalar_bits)
+        let result = crate::scale_bounded(self, scalar, scalar_bits, true, public_parameters);
+        debug_assert!(result.value.bits() <= public_parameters.upper_bound_bits);
+        result
     }
 
     fn scale_bounded_vartime<const RHS_LIMBS: usize>(
         &self,
         scalar: &Uint<RHS_LIMBS>,
         scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
     ) -> Self {
-        self.scale_bounded(scalar, scalar_bits)
+        crate::scale_bounded(self, scalar, scalar_bits, false, public_parameters)
     }
 
-    fn add_randomized(self, other: &Self) -> Self {
-        self + other
+    fn scale_integer_bounded<const RHS_LIMBS: usize>(
+        &self,
+        integer: &Int<RHS_LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        let result = crate::scale_integer_bounded(self, integer, scalar_bits, public_parameters);
+        debug_assert!(result.value.bits() <= public_parameters.upper_bound_bits);
+        result
     }
 
-    fn add_vartime(self, other: &Self) -> Self {
-        self + other
+    fn scale_integer<const RHS_LIMBS: usize>(
+        &self,
+        integer: &Int<RHS_LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_integer_bounded(integer, Uint::<RHS_LIMBS>::BITS, public_parameters)
     }
 
-    fn sub_randomized(self, other: &Self) -> Self {
-        self - other
+    fn scale_vartime<const RHS_LIMBS: usize>(
+        &self,
+        scalar: &Uint<RHS_LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_bounded_vartime(scalar, scalar.bits_vartime(), public_parameters)
     }
 
-    fn sub_vartime(self, other: &Self) -> Self {
-        self - other
+    fn scale_integer_vartime<const RHS_LIMBS: usize>(
+        &self,
+        scalar: &Int<RHS_LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_integer_bounded_vartime(scalar, scalar.abs().bits_vartime(), public_parameters)
     }
 
-    fn double(&self) -> Self {
+    fn scale_vartime_scalar<const RHS_LIMBS: usize>(
+        &self,
+        scalar: &Uint<RHS_LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_bounded(scalar, scalar.bits_vartime(), public_parameters)
+    }
+
+    fn scale_public_base<const RHS_LIMBS: usize>(
+        &self,
+        scalar: &Uint<RHS_LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_bounded(scalar, Uint::<RHS_LIMBS>::BITS, public_parameters)
+    }
+
+    fn scale_public_base_bounded<const RHS_LIMBS: usize>(
+        &self,
+        scalar: &Uint<RHS_LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_bounded(scalar, scalar_bits, public_parameters)
+    }
+
+    fn scale_integer_public_base<const RHS_LIMBS: usize>(
+        &self,
+        integer: &Int<RHS_LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_integer_public_base_bounded(integer, Uint::<RHS_LIMBS>::BITS, public_parameters)
+    }
+
+    fn scale_integer_public_base_bounded<const RHS_LIMBS: usize>(
+        &self,
+        integer: &Int<RHS_LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        crate::scale_integer_public_base_bounded(self, integer, scalar_bits, public_parameters)
+    }
+
+    fn scale_randomized<const RHS_LIMBS: usize>(
+        &self,
+        scalar: &Uint<RHS_LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_bounded(scalar, Uint::<RHS_LIMBS>::BITS, public_parameters)
+    }
+
+    fn scale_randomized_bounded<const RHS_LIMBS: usize>(
+        &self,
+        scalar: &Uint<RHS_LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_bounded(scalar, scalar_bits, public_parameters)
+    }
+
+    fn scale_randomized_public_base<const RHS_LIMBS: usize>(
+        &self,
+        scalar: &Uint<RHS_LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_bounded(scalar, Uint::<RHS_LIMBS>::BITS, public_parameters)
+    }
+
+    fn scale_randomized_public_base_bounded<const RHS_LIMBS: usize>(
+        &self,
+        scalar: &Uint<RHS_LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_bounded(scalar, scalar_bits, public_parameters)
+    }
+
+    fn scale_integer_randomized<const RHS_LIMBS: usize>(
+        &self,
+        integer: &Int<RHS_LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_integer_randomized_bounded(integer, Uint::<RHS_LIMBS>::BITS, public_parameters)
+    }
+
+    fn scale_integer_randomized_bounded<const RHS_LIMBS: usize>(
+        &self,
+        integer: &Int<RHS_LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        crate::scale_integer_randomized_bounded(self, integer, scalar_bits, public_parameters)
+    }
+
+    fn scale_integer_randomized_public_base<const RHS_LIMBS: usize>(
+        &self,
+        integer: &Int<RHS_LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_integer_randomized_public_base_bounded(
+            integer,
+            Uint::<RHS_LIMBS>::BITS,
+            public_parameters,
+        )
+    }
+
+    fn scale_integer_randomized_public_base_bounded<const RHS_LIMBS: usize>(
+        &self,
+        integer: &Int<RHS_LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        crate::scale_integer_randomized_public_base_bounded(
+            self,
+            integer,
+            scalar_bits,
+            public_parameters,
+        )
+    }
+
+    fn scale_randomized_vartime_scalar<const RHS_LIMBS: usize>(
+        &self,
+        scalar: &Uint<RHS_LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        self.scale_bounded(scalar, scalar.bits_vartime(), public_parameters)
+    }
+
+    fn add_randomized(&self, other: &Self, _public_parameters: &Self::PublicParameters) -> Self {
+        *self + other
+    }
+
+    fn add_vartime(&self, other: &Self, _public_parameters: &Self::PublicParameters) -> Self {
+        *self + other
+    }
+
+    fn sub_randomized(&self, other: &Self, _public_parameters: &Self::PublicParameters) -> Self {
+        *self - other
+    }
+
+    fn sub_vartime(&self, other: &Self, _public_parameters: &Self::PublicParameters) -> Self {
+        *self - other
+    }
+
+    fn double(&self, public_parameters: &Self::PublicParameters) -> Self {
         let value = self.value + self.value;
-        assert!(value.bits() <= self.upper_bound_bits);
+        assert!(value.bits() <= public_parameters.upper_bound_bits);
 
-        Self {
-            value,
-            upper_bound_bits: self.upper_bound_bits,
-        }
+        Self { value }
     }
 
-    fn double_vartime(&self) -> Self {
-        self.double()
+    fn double_vartime(&self, _public_parameters: &Self::PublicParameters) -> Self {
+        self.double(_public_parameters)
+    }
+
+    fn linearly_combine_bounded<const RHS_LIMBS: usize>(
+        bases_and_multiplicands: Vec<(Self, Uint<RHS_LIMBS>)>,
+        exponent_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> crate::Result<Self> {
+        crate::linear_combination::linearly_combine_bounded_or_scale(
+            bases_and_multiplicands,
+            exponent_bits,
+            true,
+            public_parameters,
+        )
+    }
+
+    fn linearly_combine_bounded_vartime<const RHS_LIMBS: usize>(
+        bases_and_multiplicands: Vec<(Self, Uint<RHS_LIMBS>)>,
+        exponent_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> crate::Result<Self> {
+        crate::linear_combination::linearly_combine_bounded_or_scale(
+            bases_and_multiplicands,
+            exponent_bits,
+            false,
+            public_parameters,
+        )
     }
 }
 
@@ -272,12 +447,8 @@ impl<const LIMBS: usize> Add<Self> for GroupElement<LIMBS> {
 
     fn add(self, rhs: Self) -> Self::Output {
         let value = self.value.add(rhs.value);
-        assert!(value.bits() <= self.upper_bound_bits);
 
-        Self {
-            value,
-            upper_bound_bits: self.upper_bound_bits,
-        }
+        Self { value }
     }
 }
 
@@ -286,12 +457,8 @@ impl<'r, const LIMBS: usize> Add<&'r Self> for GroupElement<LIMBS> {
 
     fn add(self, rhs: &'r Self) -> Self::Output {
         let value = self.value.add(rhs.value);
-        assert!(value.bits() <= self.upper_bound_bits);
 
-        Self {
-            value,
-            upper_bound_bits: self.upper_bound_bits,
-        }
+        Self { value }
     }
 }
 
@@ -300,12 +467,8 @@ impl<const LIMBS: usize> Sub<Self> for GroupElement<LIMBS> {
 
     fn sub(self, rhs: Self) -> Self::Output {
         let value = self.value.sub(rhs.value);
-        assert!(value.bits() <= self.upper_bound_bits);
 
-        Self {
-            value,
-            upper_bound_bits: self.upper_bound_bits,
-        }
+        Self { value }
     }
 }
 
@@ -314,44 +477,32 @@ impl<'r, const LIMBS: usize> Sub<&'r Self> for GroupElement<LIMBS> {
 
     fn sub(self, rhs: &'r Self) -> Self::Output {
         let value = self.value.sub(rhs.value);
-        assert!(value.bits() <= self.upper_bound_bits);
 
-        Self {
-            value,
-            upper_bound_bits: self.upper_bound_bits,
-        }
+        Self { value }
     }
 }
 
 impl<const LIMBS: usize> AddAssign<Self> for GroupElement<LIMBS> {
     fn add_assign(&mut self, rhs: Self) {
         self.value.add_assign(rhs.value);
-
-        assert!(self.value.bits() <= self.upper_bound_bits);
     }
 }
 
 impl<'r, const LIMBS: usize> AddAssign<&'r Self> for GroupElement<LIMBS> {
     fn add_assign(&mut self, rhs: &'r Self) {
         self.value.add_assign(rhs.value);
-
-        assert!(self.value.bits() <= self.upper_bound_bits);
     }
 }
 
 impl<const LIMBS: usize> SubAssign<Self> for GroupElement<LIMBS> {
     fn sub_assign(&mut self, rhs: Self) {
         self.value = self.value - rhs.value;
-
-        assert!(self.value.bits() <= self.upper_bound_bits);
     }
 }
 
 impl<'r, const LIMBS: usize> SubAssign<&'r Self> for GroupElement<LIMBS> {
     fn sub_assign(&mut self, rhs: &'r Self) {
         self.value = self.value - rhs.value;
-
-        assert!(self.value.bits() <= self.upper_bound_bits);
     }
 }
 
@@ -360,11 +511,7 @@ where
     Uint<LIMBS>: Encoding,
 {
     fn mul_by_generator(&self, scalar: Uint<LIMBS>) -> Self {
-        let res = self.mul_by_generator(&scalar);
-
-        assert!(res.value.bits() <= self.upper_bound_bits);
-
-        res
+        self.mul_by_generator(&scalar)
     }
 }
 
@@ -375,10 +522,7 @@ where
     fn mul_by_generator(&self, scalar: &Uint<LIMBS>) -> Self {
         // In the additive group, the generator is 1 and multiplication by it is simply returning
         // the same number modulu the order.
-        Self {
-            value: *scalar,
-            upper_bound_bits: self.upper_bound_bits,
-        }
+        Self { value: *scalar }
     }
 }
 
@@ -387,12 +531,7 @@ impl<const LIMBS: usize> Mul<Self> for &GroupElement<LIMBS> {
 
     fn mul(self, rhs: Self) -> Self::Output {
         let value = self.value.mul(rhs.value);
-        assert!(value.bits() <= self.upper_bound_bits);
-
-        GroupElement::<LIMBS> {
-            value,
-            upper_bound_bits: self.upper_bound_bits,
-        }
+        GroupElement::<LIMBS> { value }
     }
 }
 
@@ -401,72 +540,7 @@ impl<'r, const LIMBS: usize> Mul<&'r Self> for &'r GroupElement<LIMBS> {
 
     fn mul(self, rhs: &'r Self) -> Self::Output {
         let value = self.value.mul(rhs.value);
-        assert!(value.bits() <= self.upper_bound_bits);
-
-        GroupElement::<LIMBS> {
-            value,
-            upper_bound_bits: self.upper_bound_bits,
-        }
-    }
-}
-
-impl<const LIMBS: usize> Mul<Uint<LIMBS>> for GroupElement<LIMBS>
-where
-    Uint<LIMBS>: Encoding,
-{
-    type Output = Self;
-
-    fn mul(self, rhs: Uint<LIMBS>) -> Self::Output {
-        let res = self.scale(&rhs);
-
-        assert!(res.value.bits() <= self.upper_bound_bits);
-
-        res
-    }
-}
-
-impl<'r, const LIMBS: usize> Mul<&'r Uint<LIMBS>> for GroupElement<LIMBS>
-where
-    Uint<LIMBS>: Encoding,
-{
-    type Output = Self;
-
-    fn mul(self, rhs: &'r Uint<LIMBS>) -> Self::Output {
-        let res = self.scale(rhs);
-
-        assert!(res.value.bits() <= self.upper_bound_bits);
-
-        res
-    }
-}
-
-impl<const LIMBS: usize> Mul<Uint<LIMBS>> for &GroupElement<LIMBS>
-where
-    Uint<LIMBS>: Encoding,
-{
-    type Output = GroupElement<LIMBS>;
-
-    fn mul(self, rhs: Uint<LIMBS>) -> Self::Output {
-        let res = self.scale(&rhs);
-
-        assert!(res.value.bits() <= self.upper_bound_bits);
-
-        res
-    }
-}
-
-impl<'r, const LIMBS: usize> Mul<&'r Uint<LIMBS>> for &'r GroupElement<LIMBS>
-where
-    Uint<LIMBS>: Encoding,
-{
-    type Output = GroupElement<LIMBS>;
-
-    fn mul(self, rhs: &'r Uint<LIMBS>) -> Self::Output {
-        let res = self.scale(rhs);
-
-        assert!(res.value.bits() <= self.upper_bound_bits);
-
-        res
+        GroupElement::<LIMBS> { value }
     }
 }
 
@@ -507,9 +581,7 @@ where
     Uint<LIMBS>: Encoding,
 {
     fn ct_eq(&self, other: &Self) -> Choice {
-        self.value
-            .ct_eq(&other.value)
-            .bitand(self.upper_bound_bits.ct_eq(&other.upper_bound_bits))
+        self.value.ct_eq(&other.value)
     }
 }
 
@@ -522,11 +594,6 @@ where
             value: <Uint<LIMBS> as ConditionallySelectable>::conditional_select(
                 &a.value, &b.value, choice,
             ),
-            upper_bound_bits: <u32 as ConditionallySelectable>::conditional_select(
-                &a.upper_bound_bits,
-                &b.upper_bound_bits,
-                choice,
-            ),
         }
     }
 }
@@ -538,7 +605,6 @@ where
     fn generator(&self) -> Self {
         Self {
             value: Uint::<LIMBS>::ONE,
-            upper_bound_bits: self.upper_bound_bits,
         }
     }
 
@@ -546,17 +612,6 @@ where
         _public_parameters: &Self::PublicParameters,
     ) -> Self::Value {
         Uint::<LIMBS>::ONE
-    }
-}
-
-impl<const LIMBS: usize, T: crate::GroupElement> Mul<T> for GroupElement<LIMBS>
-where
-    Uint<LIMBS>: Encoding,
-{
-    type Output = T;
-
-    fn mul(self, rhs: T) -> Self::Output {
-        rhs.scale_bounded(&self.value, self.upper_bound_bits)
     }
 }
 

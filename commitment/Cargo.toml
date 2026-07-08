@@ -21,3 +21,6 @@ serde_json = { workspace = true, default-features = false, features = ["alloc"] 
 test_helpers = ["group/os_rng"]
 
 
+
+[lints]
+workspace = true

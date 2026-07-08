@@ -16,7 +16,7 @@ use crate::reconfiguration::{Message, Party, PublicInput};
 use crate::setup::{DeriveFromPlaintextPublicParameters, SetupParameters};
 use crate::{
     equivalence_class, publicly_verifiable_secret_sharing, CompactIbqf, EquivalenceClass, Error,
-    Result, SECRET_KEY_SHARE_LIMBS, SECRET_KEY_SHARE_WITNESS_LIMBS,
+    ErrorKind, Result, SECRET_KEY_SHARE_LIMBS, SECRET_KEY_SHARE_WITNESS_LIMBS,
 };
 
 impl<
@@ -82,7 +82,7 @@ where
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             >,
         >,
-        randomizer_contribution_to_upcoming_pvss_party: &publicly_verifiable_secret_sharing::Party<
+        randomizer_contribution_to_upcoming_pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
@@ -130,7 +130,7 @@ where
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             >,
         >,
-        randomizer_contribution_to_upcoming_pvss_party: &publicly_verifiable_secret_sharing::Party<
+        randomizer_contribution_to_upcoming_pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
@@ -202,15 +202,15 @@ where
                                 if verified_dealers_to_upcoming.is_some() {
                                     Ok(verified_dealers_to_upcoming)
                                 } else {
-                                    Err(Error::InvalidMessage)
+                                    Err(Error::from(ErrorKind::InvalidMessage))
                                 }
                             } else if verified_dealers_to_upcoming.is_none() {
                                 Ok(verified_dealers_to_upcoming)
                             } else {
-                                Err(Error::InvalidMessage)
+                                Err(Error::from(ErrorKind::InvalidMessage))
                             }
                         }
-                        _ => Err(Error::InvalidParameters),
+                        _ => Err(Error::from(ErrorKind::InvalidParameters)),
                     };
 
                     (dealer_tangible_party_id, res)

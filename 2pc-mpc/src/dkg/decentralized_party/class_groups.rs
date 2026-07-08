@@ -22,7 +22,7 @@ impl<
         const SCALAR_LIMBS: usize,
         const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
     > AsynchronouslyAdvanceable
     for crate::class_groups::DKGDecentralizedParty<
         SCALAR_LIMBS,
@@ -120,8 +120,12 @@ where
                 .encryption_of_decentralized_party_secret_key_share_first_part,
             protocol_public_parameters
                 .encryption_of_decentralized_party_secret_key_share_second_part,
-            protocol_public_parameters.decentralized_party_public_key_share_first_part,
-            protocol_public_parameters.decentralized_party_public_key_share_second_part,
+            protocol_public_parameters
+                .decentralized_party_public_key_share_first_part
+                .clone(),
+            protocol_public_parameters
+                .decentralized_party_public_key_share_second_part
+                .clone(),
             &public_input.protocol_public_parameters,
             session_id,
         )?;

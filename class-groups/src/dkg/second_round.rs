@@ -19,7 +19,7 @@ use crate::setup::DeriveFromPlaintextPublicParameters;
 use crate::setup::SetupParameters;
 use crate::{
     equivalence_class, publicly_verifiable_secret_sharing, CompactIbqf, EquivalenceClass, Error,
-    Result, SECRET_KEY_SHARE_LIMBS, SECRET_KEY_SHARE_WITNESS_LIMBS,
+    ErrorKind, Result, SECRET_KEY_SHARE_LIMBS, SECRET_KEY_SHARE_WITNESS_LIMBS,
 };
 
 impl<
@@ -71,7 +71,7 @@ where
         tangible_party_id: PartyID,
         access_structure: &WeightedThresholdAccessStructure,
         setup_parameters_per_crt_prime: &[SecretKeyShareCRTPrimeSetupParameters; MAX_PRIMES],
-        pvss_party: &publicly_verifiable_secret_sharing::Party<
+        pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
@@ -116,7 +116,7 @@ where
         tangible_party_id: PartyID,
         access_structure: &WeightedThresholdAccessStructure,
         setup_parameters_per_crt_prime: &[SecretKeyShareCRTPrimeSetupParameters; MAX_PRIMES],
-        pvss_party: &publicly_verifiable_secret_sharing::Party<
+        pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
@@ -157,7 +157,7 @@ where
                 reconstructed_commitments_to_sharing,
                 rng,
             )?
-            .ok_or(Error::InternalError)?;
+            .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
 
         // We don't report those that sent invalid shares, because for consistency they will be validated in the next round regardless.
         Ok((first_round_malicious_parties, verified_dealers))
@@ -174,7 +174,7 @@ where
             >,
         >,
     ) -> Result<(Vec<PartyID>, HashMap<PartyID, HashSet<PartyID>>)> {
-        // Make sure everyone sent the second round message - weather or not they recieved a valid share.
+        // Make sure everyone sent the second round message - weather or not they received a valid share.
         // This yields a mapping `PartyID -> HashSet<PartyID>` of parties that self-reportedly verified their shares from the set of parties.
         let (second_round_malicious_parties, verified_dealers) = verified_dealers_messages
             .clone()
@@ -182,7 +182,7 @@ where
             .map(|(party_id, message)| {
                 let res = match message {
                     Message::VerifiedDealers(verified_dealers) => Ok(verified_dealers),
-                    _ => Err(Error::InvalidParameters),
+                    _ => Err(Error::from(ErrorKind::InvalidParameters)),
                 };
 
                 (party_id, res)

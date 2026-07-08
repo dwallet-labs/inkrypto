@@ -9,15 +9,15 @@ use crypto_bigint::{
 };
 use serde::{Deserialize, Serialize};
 
-use group::{CsRng, LinearlyCombinable};
-use group::{GroupElement as _, PrimeGroupElement, Scale};
+use group::CsRng;
+use group::{GroupElement as _, PrimeGroupElement};
 use group::{KnownOrderGroupElement, Samplable};
 use homomorphic_encryption::{AdditivelyHomomorphicEncryptionKey, GroupsPublicParametersAccessors};
 pub use public_parameters::PublicParameters;
 
 use crate::equivalence_class::EquivalenceClass;
 use crate::parameters::Parameters;
-use crate::{CiphertextSpaceGroupElement, Error, RandomnessSpaceGroupElement};
+use crate::{CiphertextSpaceGroupElement, Error, ErrorKind, RandomnessSpaceGroupElement};
 
 pub mod public_parameters;
 
@@ -350,7 +350,7 @@ where
 
         let (h_r, pk_r) = encoded_randomness;
         if !pk_r.is_from_the_same_class_as(&encoded_plaintext) {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         let c1 = h_r;
@@ -483,7 +483,9 @@ where
         CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
     > {
         if DIMENSION == 0 {
-            return Err(homomorphic_encryption::Error::ZeroDimension);
+            return Err(homomorphic_encryption::Error::from(
+                homomorphic_encryption::ErrorKind::ZeroDimension,
+            ));
         }
 
         let linear_combination = if is_vartime {
@@ -497,22 +499,32 @@ where
                 .map(|coefficient| coefficient.bits_vartime())
                 .iter()
                 .max()
-                .ok_or(homomorphic_encryption::Error::InvalidParameters)?;
+                .ok_or_else(|| {
+                    homomorphic_encryption::Error::from(
+                        homomorphic_encryption::ErrorKind::InvalidParameters,
+                    )
+                })?;
 
-            CiphertextSpaceGroupElement::<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>::linearly_combine_bounded_vartime(bases_and_multiplicands, coefficient_upper_bound_bits)?
+            CiphertextSpaceGroupElement::<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>::linearly_combine_bounded_vartime(bases_and_multiplicands, coefficient_upper_bound_bits, public_parameters.ciphertext_space_public_parameters())?
         } else {
+            let ciphertext_space_public_parameters =
+                public_parameters.ciphertext_space_public_parameters();
             coefficients
                 .iter()
                 .zip(ciphertexts.iter())
                 .map(|(coefficient, ciphertext)| {
-                    ciphertext.scale_randomized_bounded_accelerated(
+                    ciphertext.scale_randomized_public_base_bounded(
                         coefficient,
-                        public_parameters.ciphertext_space_public_parameters(),
                         coefficient_upper_bound_bits,
+                        ciphertext_space_public_parameters,
                     )
                 })
-                .reduce(|a, b| a.add_randomized(&b))
-                .ok_or(homomorphic_encryption::Error::InvalidParameters)?
+                .reduce(|a, b| a.add_randomized(&b, ciphertext_space_public_parameters))
+                .ok_or_else(|| {
+                    homomorphic_encryption::Error::from(
+                        homomorphic_encryption::ErrorKind::InvalidParameters,
+                    )
+                })?
         };
 
         Ok(linear_combination)
@@ -538,7 +550,9 @@ where
         CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
     > {
         if DIMENSION == 0 {
-            return Err(homomorphic_encryption::Error::ZeroDimension);
+            return Err(homomorphic_encryption::Error::from(
+                homomorphic_encryption::ErrorKind::ZeroDimension,
+            ));
         }
 
         let plaintext_order: Uint<PLAINTEXT_SPACE_SCALAR_LIMBS> =
@@ -547,7 +561,9 @@ where
             );
 
         if &plaintext_order != modulus || MESSAGE_LIMBS < PLAINTEXT_SPACE_SCALAR_LIMBS {
-            return Err(homomorphic_encryption::Error::InvalidParameters);
+            return Err(homomorphic_encryption::Error::from(
+                homomorphic_encryption::ErrorKind::InvalidParameters,
+            ));
         }
 
         let ciphertexts =
@@ -569,10 +585,18 @@ where
         let encryption_with_fresh_randomness =
             self.encrypt_with_randomness(&mask, randomness, public_parameters, is_vartime);
 
+        let ciphertext_space_public_parameters =
+            public_parameters.ciphertext_space_public_parameters();
         let securely_evaluated_linear_combination = if is_vartime {
-            linear_combination.add_vartime(&encryption_with_fresh_randomness)
+            linear_combination.add_vartime(
+                &encryption_with_fresh_randomness,
+                ciphertext_space_public_parameters,
+            )
         } else {
-            linear_combination.add_randomized(&encryption_with_fresh_randomness)
+            linear_combination.add_randomized(
+                &encryption_with_fresh_randomness,
+                ciphertext_space_public_parameters,
+            )
         };
 
         Ok(securely_evaluated_linear_combination)

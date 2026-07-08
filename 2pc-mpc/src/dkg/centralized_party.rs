@@ -29,6 +29,12 @@ pub mod trusted_dealer;
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SecretKeyShare<GroupElementValue>(pub(crate) GroupElementValue);
 
+impl<GroupElementValue> From<GroupElementValue> for SecretKeyShare<GroupElementValue> {
+    fn from(value: GroupElementValue) -> Self {
+        Self(value)
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Output<GroupElementValue> {
     pub public_key_share: GroupElementValue,
@@ -146,7 +152,7 @@ pub struct Party<
 impl<
         const SCALAR_LIMBS: usize,
         const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
         EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
         ProtocolPublicParameters,
     >
@@ -243,7 +249,10 @@ where
         )?;
 
         // === 2(c) Set $X_{A}=x_{A}\cdot G$ ===
-        let public_key = public_key_share + decentralized_party_public_key_share;
+        let public_key = public_key_share.add_vartime(
+            &decentralized_party_public_key_share,
+            &protocol_public_parameters.group_public_parameters,
+        );
 
         let public_key_share = public_key_share.value();
 
@@ -254,7 +263,7 @@ where
             KnowledgeOfDiscreteLogUCProof<SCALAR_LIMBS, GroupElement>,
         > {
             proof: knowledge_of_discrete_log_uc_proof,
-            public_key_share,
+            public_key_share: public_key_share.clone(),
         };
 
         // === 3(b) Output (and record) ===
@@ -318,7 +327,7 @@ impl<ProtocolPublicParameters> From<(ProtocolPublicParameters, CommitmentSizedNu
 impl<
         const SCALAR_LIMBS: usize,
         const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
         EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
         ProtocolPublicParameters: Clone + Serialize + Debug + PartialEq + Eq + Send + Sync,
     > mpc::two_party::Round
@@ -377,11 +386,17 @@ where
         let (outgoing_message, private_output, public_output) =
             Self::sample_and_prove_public_key_share(
                 protocol_public_parameters
-                    .encryption_of_decentralized_party_secret_key_share_first_part,
+                    .encryption_of_decentralized_party_secret_key_share_first_part
+                    .clone(),
                 protocol_public_parameters
-                    .encryption_of_decentralized_party_secret_key_share_second_part,
-                protocol_public_parameters.decentralized_party_public_key_share_first_part,
-                protocol_public_parameters.decentralized_party_public_key_share_second_part,
+                    .encryption_of_decentralized_party_secret_key_share_second_part
+                    .clone(),
+                protocol_public_parameters
+                    .decentralized_party_public_key_share_first_part
+                    .clone(),
+                protocol_public_parameters
+                    .decentralized_party_public_key_share_second_part
+                    .clone(),
                 &public_input.protocol_public_parameters,
                 public_input.session_id,
                 rng,

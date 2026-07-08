@@ -36,6 +36,49 @@ pub type Message<
     >,
 >;
 
+use serde::{Deserialize, Serialize};
+
+/// The data needed from the centralized party's ECDSA sign message after it has been verified.
+/// Contains only the fields required for threshold decryption, omitting all ZK proofs.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct VerifiedSignDataRaw<GroupElementValue, CiphertextValue> {
+    /// $R$
+    pub public_signature_nonce: GroupElementValue,
+    /// $\textsf{ct}_A$
+    pub encryption_of_partial_signature: CiphertextValue,
+    /// $\textsf{ct}_{\alpha,\beta}$
+    pub encryption_of_displaced_decentralized_party_nonce_share: CiphertextValue,
+}
+
+/// Concrete type alias for the ECDSA verified sign data with class groups.
+pub type VerifiedSignData<
+    const SCALAR_LIMBS: usize,
+    const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    GroupElement,
+> = VerifiedSignDataRaw<
+    <GroupElement as group::GroupElement>::Value,
+    group::Value<CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+>;
+
+/// An enum wrapping either a full unverified `Message` (with ZK proofs) or a `VerifiedSignData`
+/// (proofs already verified, only ciphertexts and public nonce retained).
+pub type SignData<
+    const SCALAR_LIMBS: usize,
+    const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    const MESSAGE_LIMBS: usize,
+    GroupElement,
+> = crate::sign::SignData<
+    Message<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        MESSAGE_LIMBS,
+        GroupElement,
+    >,
+    VerifiedSignData<SCALAR_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>,
+>;
+
 pub(super) mod private {
     use super::*;
     use serde::{Deserialize, Serialize};

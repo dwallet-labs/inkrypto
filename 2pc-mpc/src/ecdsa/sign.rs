@@ -3,15 +3,13 @@
 
 #![allow(clippy::too_many_arguments)]
 
-use std::ops::Neg;
-
 use crypto_bigint::{ConcatMixed, Encoding, NonZero, Uint};
 use merlin::Transcript;
 
 use crate::ecdsa::VerifyingKey;
 use crate::languages::{KnowledgeOfDecommitmentProof, KnowledgeOfDecommitmentUCProof};
 use crate::sign::Protocol;
-use crate::{ecdsa::presign::Presign, Error};
+use crate::{ecdsa::presign::Presign, Error, ErrorKind};
 use commitment::{CommitmentSizedNumber, Pedersen};
 use group::{GroupElement as _, Invert, StatisticalSecuritySizedNumber};
 use homomorphic_encryption::{AdditivelyHomomorphicEncryptionKey, GroupsPublicParametersAccessors};
@@ -22,25 +20,31 @@ pub mod centralized_party;
 pub mod class_groups;
 pub mod decentralized_party;
 
-pub fn verify_signature<const SCALAR_LIMBS: usize, GroupElement: VerifyingKey<SCALAR_LIMBS>>(
+pub fn verify_signature<
+    const SCALAR_LIMBS: usize,
+    GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
+>(
     r: GroupElement::Scalar,
     s: GroupElement::Scalar,
     m: GroupElement::Scalar,
     public_key: GroupElement,
+    group_public_parameters: &GroupElement::PublicParameters,
+    scalar_group_public_parameters: &group::PublicParameters<GroupElement::Scalar>,
 ) -> crate::Result<()> {
     // Attend to malleability by not accepting non-normalized signatures.
-    if s.neg().value() < s.value() {
-        return Err(Error::SignatureVerification);
+    if s.neg_constant_time(scalar_group_public_parameters).value() < s.value() {
+        return Err(Error::from(ErrorKind::SignatureVerification));
     };
 
     let generator = public_key.generator();
     let inverted_s: GroupElement::Scalar =
-        Option::from(s.invert()).ok_or(Error::SignatureVerification)?;
-    if (((m * inverted_s) * generator) + ((r * inverted_s) * public_key))
-        .x_projected_to_scalar_field()
+        Option::from(s.invert()).ok_or_else(|| Error::from(ErrorKind::SignatureVerification))?;
+    if (((m * inverted_s) * generator)
+        .add_vartime(&((r * inverted_s) * public_key), group_public_parameters))
+    .x_projected_to_scalar_field()
         != r
     {
-        return Err(Error::SignatureVerification);
+        return Err(Error::from(ErrorKind::SignatureVerification));
     }
 
     Ok(())
@@ -64,7 +68,7 @@ pub fn verify_signature<const SCALAR_LIMBS: usize, GroupElement: VerifyingKey<SC
 fn derive_randomized_decentralized_party_public_nonce_share_and_encryption_of_nonce_share<
     const SCALAR_LIMBS: usize,
     const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
-    GroupElement: VerifyingKey<SCALAR_LIMBS>,
+    GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
     EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
 >(
     session_id: CommitmentSizedNumber,
@@ -107,32 +111,40 @@ where
     // $\textsf{ct}_{\gamma\cdot k_{0}$
     let encryption_of_masked_decentralized_party_nonce_share_first_part =
         EncryptionKey::CiphertextSpaceGroupElement::new(
-            presign.encryption_of_masked_decentralized_party_nonce_share_first_part,
+            presign
+                .encryption_of_masked_decentralized_party_nonce_share_first_part
+                .clone(),
             encryption_scheme_public_parameters.ciphertext_space_public_parameters(),
         )?;
 
     // $R_{B,0}$
     let decentralized_party_nonce_public_share_first_part = GroupElement::new(
-        presign.decentralized_party_nonce_public_share_first_part,
+        presign
+            .decentralized_party_nonce_public_share_first_part
+            .clone(),
         group_public_parameters,
     )?;
 
     // $\textsf{ct}_{\gamma\cdot k_{1}}$
     let encryption_of_masked_decentralized_party_nonce_share_second_part =
         EncryptionKey::CiphertextSpaceGroupElement::new(
-            presign.encryption_of_masked_decentralized_party_nonce_share_second_part,
+            presign
+                .encryption_of_masked_decentralized_party_nonce_share_second_part
+                .clone(),
             encryption_scheme_public_parameters.ciphertext_space_public_parameters(),
         )?;
 
     // $R_{B,1}$
     let decentralized_party_nonce_public_share_second_part = GroupElement::new(
-        presign.decentralized_party_nonce_public_share_second_part,
+        presign
+            .decentralized_party_nonce_public_share_second_part
+            .clone(),
         group_public_parameters,
     )?;
 
     // $ \textsf{ct}_\gamma $
     let encryption_of_mask = EncryptionKey::CiphertextSpaceGroupElement::new(
-        presign.encryption_of_mask,
+        presign.encryption_of_mask.clone(),
         encryption_scheme_public_parameters.ciphertext_space_public_parameters(),
     )?;
 
@@ -196,32 +208,49 @@ where
         )
         .into();
 
+    let ciphertext_space_public_parameters =
+        encryption_scheme_public_parameters.ciphertext_space_public_parameters();
+
     // Compute $\textsf{ct}_{\gamma\cdot k}=(mu_{k}^{0}\odot \textsf{ct}_{\gamma\cdot k_{0}})\oplus(\mu_{k}^{1}\odot\textsf{ct}_{\gamma\cdot k_{1}}\oplus \mu_{k}^{G}\odot \textsf{ct}_{\gamma})$
     let encryption_of_masked_decentralized_party_nonce_share_before_displacing =
-        ((encryption_of_masked_decentralized_party_nonce_share_first_part
-            .scale_vartime(&first_decentralized_party_nonce_share_public_randomizer))
+        ((encryption_of_masked_decentralized_party_nonce_share_first_part.scale_vartime(
+            &first_decentralized_party_nonce_share_public_randomizer,
+            ciphertext_space_public_parameters,
+        ))
         .add_vartime(
-            &(encryption_of_masked_decentralized_party_nonce_share_second_part
-                .scale_vartime(&second_decentralized_party_nonce_share_public_randomizer)),
+            &(encryption_of_masked_decentralized_party_nonce_share_second_part.scale_vartime(
+                &second_decentralized_party_nonce_share_public_randomizer,
+                ciphertext_space_public_parameters,
+            )),
+            ciphertext_space_public_parameters,
         ))
         .add_vartime(
             &(encryption_of_mask.scale_vartime(
                 &free_coefficient_decentralized_party_nonce_share_public_randomizer,
+                ciphertext_space_public_parameters,
             )),
+            ciphertext_space_public_parameters,
         );
 
     // Compute $\mu_{k}^{0}\cdotR_{B,0})+\mu_{k}^{1}\cdot R_{B,1}+\mu_{k}^{G}\cdot G$
     let decentralized_party_nonce_public_share_before_displacing =
-        ((decentralized_party_nonce_public_share_first_part
-            .scale_vartime(&first_decentralized_party_nonce_share_public_randomizer))
+        ((decentralized_party_nonce_public_share_first_part.scale_vartime(
+            &first_decentralized_party_nonce_share_public_randomizer,
+            group_public_parameters,
+        ))
         .add_vartime(
-            &(decentralized_party_nonce_public_share_second_part
-                .scale_vartime(&second_decentralized_party_nonce_share_public_randomizer)),
+            &(decentralized_party_nonce_public_share_second_part.scale_vartime(
+                &second_decentralized_party_nonce_share_public_randomizer,
+                group_public_parameters,
+            )),
+            group_public_parameters,
         ))
         .add_vartime(
             &(generator.scale_vartime(
                 &free_coefficient_decentralized_party_nonce_share_public_randomizer,
+                group_public_parameters,
             )),
+            group_public_parameters,
         );
 
     Ok((

@@ -23,23 +23,22 @@ use crate::dkg::{
     ProveEqualityOfDiscreteLog, ProveEqualityOfDiscreteLogMessage,
 };
 use crate::equivalence_class::EquivalenceClassOps;
+use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::DealtSecretShare;
 use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
     SecretKeyShareCRTPrimeDecryptionKeyShare,
     SecretKeyShareCRTPrimeDecryptionKeySharePublicParameters,
     SecretKeyShareCRTPrimeDecryptionShare, SecretKeyShareCRTPrimeGroupElement,
-    SecretKeyShareCRTPrimePartialDecryptionProof, NUM_ENCRYPTION_OF_DECRYPTION_KEY_PRIMES,
+    SecretKeyShareCRTPrimePartialDecryptionProof, CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    NUM_ENCRYPTION_OF_DECRYPTION_KEY_PRIMES, NUM_SECRET_SHARE_PRIMES,
 };
-use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
-    CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, NUM_SECRET_SHARE_PRIMES,
-};
-use crate::publicly_verifiable_secret_sharing::{BaseProtocolContext, DealtSecretShare};
+use crate::publicly_verifiable_secret_sharing::BaseProtocolContext;
 use crate::reconfiguration::party::RoundResult;
 use crate::reconfiguration::RANDOMIZER_WITNESS_LIMBS;
 use crate::reconfiguration::{Message, Party, PublicInput};
 use crate::setup::{DeriveFromPlaintextPublicParameters, SetupParameters};
 use crate::{
     equivalence_class, publicly_verifiable_secret_sharing, CiphertextSpaceGroupElement,
-    CompactIbqf, EquivalenceClass, Error, Result, SecretKeyShareSizedInteger,
+    CompactIbqf, EquivalenceClass, Error, ErrorKind, Result, SecretKeyShareSizedInteger,
     SECRET_KEY_SHARE_LIMBS, SECRET_KEY_SHARE_WITNESS_LIMBS,
 };
 
@@ -111,7 +110,7 @@ where
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             >,
         >,
-        randomizer_contribution_to_upcoming_pvss_party: &publicly_verifiable_secret_sharing::Party<
+        randomizer_contribution_to_upcoming_pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
@@ -191,7 +190,7 @@ where
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             >,
         >,
-        randomizer_contribution_to_upcoming_pvss_party: &publicly_verifiable_secret_sharing::Party<
+        randomizer_contribution_to_upcoming_pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
@@ -381,11 +380,11 @@ where
                             &decryption_key_share_public_parameters,
                             rng,
                         ))
-                        .ok_or(Error::InternalError)?;
+                        .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
 
                     match &decryption_shares[..] {
                         [decryption_share] => Ok((*decryption_share, proof)),
-                        _ => Err(Error::InternalError),
+                        _ => Err(Error::from(ErrorKind::InternalError)),
                     }
                 })
                 .flat_map_results()
@@ -519,13 +518,13 @@ where
                                         prove_public_verification_keys_messages,
                                     ))
                                 } else {
-                                    Err(Error::InvalidMessage)
+                                    Err(Error::from(ErrorKind::InvalidMessage))
                                 }
                             } else {
-                                Err(Error::InvalidMessage)
+                                Err(Error::from(ErrorKind::InvalidMessage))
                             }
                         }
-                        _ => Err(Error::InvalidMessage),
+                        _ => Err(Error::from(ErrorKind::InvalidMessage)),
                     };
 
                     (dealer_tangible_party_id, res)
@@ -645,7 +644,7 @@ where
                     ct
                 })
                 .reduce(|a, b| a + b)
-                .ok_or(Error::InternalError)
+                .ok_or_else(|| Error::from(ErrorKind::InternalError))
         })
         .flat_map_results()
     }

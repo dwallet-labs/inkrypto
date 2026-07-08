@@ -5,8 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use class_groups::publicly_verifiable_secret_sharing::chinese_remainder_theorem::NUM_SECRET_SHARE_PRIMES;
 use class_groups::{
-    publicly_verifiable_secret_sharing, EquivalenceClass, RistrettoSetupParameters,
-    Secp256r1SetupParameters, SecretKeyShareSizedInteger,
+    publicly_verifiable_secret_sharing, EquivalenceClass, SecretKeyShareSizedInteger,
     SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS as FUNDAMENTAL_DISCRIMINANT_LIMBS,
     SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS as NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
     SECRET_KEY_SHARE_LIMBS, SECRET_KEY_SHARE_WITNESS_LIMBS,
@@ -14,15 +13,17 @@ use class_groups::{
 use commitment::CommitmentSizedNumber;
 use group::direct_product::ThreeWayGroupElement;
 use group::helpers::DeduplicateAndSort;
-use group::secp256k1::{GroupElement, Scalar, SCALAR_LIMBS};
+use group::secp256k1::{GroupElement, SCALAR_LIMBS};
 use group::{CsRng, PartyID};
+use itertools::Itertools;
 use mpc::{
     AsynchronousRoundResult, HandleInvalidMessages, MajorityVote, WeightedThresholdAccessStructure,
 };
 
 use crate::decentralized_party::reconfiguration::{Message, PublicOutput};
+use crate::decentralized_party::threshold_encryption_of_secret_key_share_parts_to_sharing::ThresholdDecryptionRoundMessage;
 use crate::languages::EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters;
-use crate::{decentralized_party::dkg, Error, Result};
+use crate::{decentralized_party::dkg, Error, ErrorKind, Result};
 
 use super::{EqualityOfCoefficientsCommitmentsProof, PublicInput};
 
@@ -35,14 +36,14 @@ impl super::Party {
         equality_of_discrete_log_in_hidden_order_group_base_protocol_context: publicly_verifiable_secret_sharing::BaseProtocolContext,
         public_input: &PublicInput,
         equality_of_coefficients_commitments_language_public_parameters: EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters<
-            SECRET_KEY_SHARE_WITNESS_LIMBS,
+            SECRET_KEY_SHARE_LIMBS,
             ThreeWayGroupElement<
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
             >,
         >,
-        randomizer_contribution_to_upcoming_pvss_party: &publicly_verifiable_secret_sharing::Party<
+        randomizer_contribution_to_upcoming_pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
@@ -65,9 +66,7 @@ impl super::Party {
             randomizer_contribution_to_threshold_encryption_key_base_protocol_context,
             current_access_structure,
             equality_of_discrete_log_in_hidden_order_group_base_protocol_context,
-            &public_input.class_groups_public_input,
-            &public_input.ristretto_setup_parameters,
-            &public_input.secp256r1_setup_parameters,
+            public_input,
             equality_of_coefficients_commitments_language_public_parameters,
             randomizer_contribution_to_upcoming_pvss_party,
             deal_randomizer_and_prove_coefficient_commitments_messages,
@@ -92,23 +91,16 @@ impl super::Party {
         randomizer_contribution_to_threshold_encryption_key_base_protocol_context: publicly_verifiable_secret_sharing::BaseProtocolContext,
         current_access_structure: &WeightedThresholdAccessStructure,
         equality_of_discrete_log_in_hidden_order_group_base_protocol_context: publicly_verifiable_secret_sharing::BaseProtocolContext,
-        class_groups_public_input: &class_groups::reconfiguration::PublicInput<
-            SCALAR_LIMBS,
-            FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            group::PublicParameters<Scalar>,
-        >,
-        ristretto_setup_parameters: &RistrettoSetupParameters,
-        secp256r1_setup_parameters: &Secp256r1SetupParameters,
+        public_input: &PublicInput,
         equality_of_coefficients_commitments_language_public_parameters: EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters<
-            SECRET_KEY_SHARE_WITNESS_LIMBS,
+            SECRET_KEY_SHARE_LIMBS,
             ThreeWayGroupElement<
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
             >,
         >,
-        randomizer_contribution_to_upcoming_pvss_party: &publicly_verifiable_secret_sharing::Party<
+        randomizer_contribution_to_upcoming_pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
             SECRET_KEY_SHARE_WITNESS_LIMBS,
@@ -125,10 +117,15 @@ impl super::Party {
         randomizer_contribution_bits: u32,
         rng: &mut impl CsRng,
     ) -> Result<(Vec<PartyID>, Message)> {
+        let class_groups_public_input = &public_input.class_groups_public_input;
+        let ristretto_setup_parameters = &public_input.ristretto_setup_parameters;
+        let secp256r1_setup_parameters = &public_input.secp256r1_setup_parameters;
+
         let (
             parties_sending_invalid_deal_randomizer_and_prove_coefficient_commitments_messages,
             deal_randomizer_messages,
             equality_of_coefficients_commitments_proofs_and_statements,
+            dealing_round_messages,
         ) = Self::handle_first_round_messages(
             &class_groups_public_input.setup_parameters,
             ristretto_setup_parameters,
@@ -136,8 +133,11 @@ impl super::Party {
             deal_randomizer_and_prove_coefficient_commitments_messages,
         )?;
 
-        let (parties_sending_invalid_verified_dealers_messages, verified_dealers_messages) =
-            Self::handle_second_round_messages(verified_dealers_messages)?;
+        let (
+            parties_sending_invalid_verified_dealers_messages,
+            verified_dealers_messages,
+            accusation_messages,
+        ) = Self::handle_second_round_messages(public_input, verified_dealers_messages)?;
 
         let coefficient_committers: HashSet<PartyID> =
             equality_of_coefficients_commitments_proofs_and_statements
@@ -153,6 +153,17 @@ impl super::Party {
                 equality_of_coefficients_commitments_language_public_parameters,
                 &equality_of_coefficients_commitments_proofs_and_statements,
             );
+
+        // Assert uniform access structure: each tangible party has exactly one decryption
+        // key share. Extract the single value before decryption_key_shares is consumed
+        // by the inner protocol.
+        if decryption_key_shares.len() != 1 {
+            return Err(Error::from(ErrorKind::InvalidParameters));
+        }
+        let decryption_key_share = *decryption_key_shares
+            .values()
+            .next()
+            .ok_or_else(|| Error::from(ErrorKind::InvalidParameters))?;
 
         let (
             inner_protocol_malicious_parties,
@@ -197,6 +208,37 @@ impl super::Party {
 
         current_access_structure.is_authorized_subset(&honest_committers)?;
 
+        // Protocol 0.1: Call decryption::advance sub-protocol to generate threshold
+        // decryption shares for E(x+r) for each curve.
+        let threshold_encryption_of_secret_key_share_parts_to_sharing_public_input = public_input
+            .threshold_encryption_of_secret_key_share_parts_to_sharing_public_input
+            .clone();
+
+        // Look up the upcoming party ID for this tangible party
+        let upcoming_party_id = public_input
+            .class_groups_public_input
+            .current_tangible_party_id_to_upcoming
+            .get(&tangible_party_id)
+            .cloned()
+            .ok_or_else(|| Error::from(ErrorKind::InvalidParameters))?;
+
+        let (decryption_malicious_parties, decryption_round_message) =
+            crate::decentralized_party::threshold_encryption_of_secret_key_share_parts_to_sharing::decryption::advance(
+                session_id,
+                tangible_party_id,
+                upcoming_party_id,
+                decryption_key_share,
+                &threshold_encryption_of_secret_key_share_parts_to_sharing_public_input,
+                &dealing_round_messages,
+                &accusation_messages,
+                rng,
+            )?;
+
+        let malicious_parties = malicious_parties
+            .into_iter()
+            .chain(decryption_malicious_parties)
+            .deduplicate_and_sort();
+
         let message = Message::ThresholdDecryptShares {
             malicious_coefficients_committers,
             threshold_decrypt_message:
@@ -205,11 +247,14 @@ impl super::Party {
                     masked_decryption_key_decryption_shares_and_proofs,
                     prove_public_verification_keys_messages,
                 },
+            threshold_encryption_of_secret_key_share_parts_to_sharing_decryption_round_message:
+                decryption_round_message,
         };
 
         Ok((malicious_parties, message))
     }
 
+    #[allow(clippy::type_complexity)]
     pub(crate) fn handle_third_round_messages(
         current_access_structure: &WeightedThresholdAccessStructure,
         upcoming_access_structure: &WeightedThresholdAccessStructure,
@@ -227,6 +272,9 @@ impl super::Party {
                 >,
             ),
         >,
+        equivalence_class_public_parameters: &class_groups::equivalence_class::PublicParameters<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        >,
     ) -> Result<(
         Vec<PartyID>,
         HashMap<PartyID, EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
@@ -241,6 +289,7 @@ impl super::Party {
                 NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             >,
         >,
+        HashMap<PartyID, ThresholdDecryptionRoundMessage>,
     )> {
         // Make sure everyone sent the third round message.
         let (parties_sending_invalid_threshold_decrypt_messages, threshold_decrypt_messages) =
@@ -251,34 +300,42 @@ impl super::Party {
                         Message::ThresholdDecryptShares {
                             malicious_coefficients_committers,
                             threshold_decrypt_message,
+                            threshold_encryption_of_secret_key_share_parts_to_sharing_decryption_round_message,
                         } => Ok((
                             malicious_coefficients_committers.deduplicate_and_sort(),
                             threshold_decrypt_message,
+                            threshold_encryption_of_secret_key_share_parts_to_sharing_decryption_round_message,
                         )),
-                        _ => Err(Error::InvalidMessage),
+                        _ => Err(Error::from(ErrorKind::InvalidMessage)),
                     };
 
                     (dealer_party_id, res)
                 })
                 .handle_invalid_messages_async();
 
-        let (malicious_coefficients_committers, threshold_decrypt_messages): (
-            HashMap<_, _>,
-            HashMap<_, _>,
-        ) = threshold_decrypt_messages
+        let (
+            malicious_coefficients_committers,
+            threshold_decrypt_messages,
+            decryption_round_messages,
+        ): (HashMap<_, _>, HashMap<_, _>, HashMap<_, _>) = threshold_decrypt_messages
             .into_iter()
             .map(
                 |(
                     dealer_tangible_party_id,
-                    (malicious_coefficients_committers, threshold_decrypt_message),
+                    (
+                        malicious_coefficients_committers,
+                        threshold_decrypt_message,
+                        decryption_round_message,
+                    ),
                 )| {
                     (
                         (dealer_tangible_party_id, malicious_coefficients_committers),
                         (dealer_tangible_party_id, threshold_decrypt_message),
+                        (dealer_tangible_party_id, decryption_round_message),
                     )
                 },
             )
-            .unzip();
+            .multiunzip();
 
         let (malicious_voters, malicious_coefficients_committers) =
             malicious_coefficients_committers.weighted_majority_vote(current_access_structure)?;
@@ -293,6 +350,7 @@ impl super::Party {
             &malicious_coefficients_committers,
             equality_of_coefficients_commitments_proofs_and_statements,
             upcoming_access_structure,
+            equivalence_class_public_parameters,
         );
 
         let third_round_malicious_parties: Vec<_> =
@@ -308,6 +366,7 @@ impl super::Party {
             secp256r1_randomizer_contribution_commitments,
             secp256r1_reconstructed_commitments_to_randomizer_contribution_sharing,
             threshold_decrypt_messages,
+            decryption_round_messages,
         ))
     }
 }

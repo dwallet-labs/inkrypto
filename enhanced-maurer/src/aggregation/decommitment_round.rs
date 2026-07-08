@@ -6,14 +6,13 @@ use std::fmt::Debug;
 
 use serde::Serialize;
 
-use commitment::Commitment;
-use group::{CsRng, PartyID, Samplable};
-use proof::{range, AggregatableRangeProof};
-
 use crate::{
     aggregation::{proof_share_round, Output},
     EnhanceableLanguage, EnhancedLanguage, Error, Result,
 };
+use commitment::Commitment;
+use group::{CsRng, PartyID, Samplable};
+use proof_aggregation::AggregatableRangeProof;
 
 pub struct Party<
     const REPETITIONS: usize,
@@ -30,7 +29,7 @@ pub struct Party<
     ProtocolContext: Clone + Serialize + Debug + PartialEq + Eq + Send + Sync + Send + Sync,
 > {
     pub(super) party_id: PartyID,
-    pub(super) maurer_decommitment_round_party: maurer::aggregation::decommitment_round::Party<
+    pub(super) maurer_decommitment_round_party: maurer_aggregation::decommitment_round::Party<
         REPETITIONS,
         EnhancedLanguage<
             REPETITIONS,
@@ -42,11 +41,12 @@ pub struct Party<
         >,
         ProtocolContext,
     >,
-    pub(super) range_proof_decommitment_round_party: range::DecommitmentRoundParty<
-        NUM_RANGE_CLAIMS,
-        COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
-        RangeProof,
-    >,
+    pub(super) range_proof_decommitment_round_party:
+        proof_aggregation::range::DecommitmentRoundParty<
+            NUM_RANGE_CLAIMS,
+            COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
+            RangeProof,
+        >,
 }
 
 impl<
@@ -63,7 +63,7 @@ impl<
         >,
         ProtocolContext: Clone + Serialize + Debug + PartialEq + Eq + Send + Sync + Send + Sync,
     >
-    proof::aggregation::DecommitmentRoundParty<
+    proof_aggregation::synchronous::DecommitmentRoundParty<
         Output<
             REPETITIONS,
             NUM_RANGE_CLAIMS,
@@ -85,7 +85,7 @@ impl<
     >
 where
     Error: From<
-        range::AggregationError<
+        proof_aggregation::range::AggregationError<
             NUM_RANGE_CLAIMS,
             COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
             RangeProof,
@@ -96,7 +96,7 @@ where
 
     type Commitment = (
         Commitment,
-        range::Commitment<
+        proof_aggregation::range::Commitment<
             NUM_RANGE_CLAIMS,
             COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
             RangeProof,
@@ -104,7 +104,7 @@ where
     );
 
     type Decommitment = (
-        maurer::aggregation::Decommitment<
+        maurer_aggregation::Decommitment<
             REPETITIONS,
             EnhancedLanguage<
                 REPETITIONS,
@@ -115,7 +115,7 @@ where
                 Language,
             >,
         >,
-        range::Decommitment<
+        proof_aggregation::range::Decommitment<
             NUM_RANGE_CLAIMS,
             COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
             RangeProof,
@@ -193,7 +193,7 @@ impl<
         ProtocolContext,
     >
 where
-    range::DecommitmentRoundParty<
+    proof_aggregation::range::DecommitmentRoundParty<
         NUM_RANGE_CLAIMS,
         COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
         RangeProof,

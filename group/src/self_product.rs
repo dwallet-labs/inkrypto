@@ -13,7 +13,7 @@ use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 
 use crate::{
     helpers::FlatMapResults, scalar, scalar::Scalar, BoundedGroupElement, CsRng,
-    KnownOrderGroupElement, KnownOrderScalar, LinearlyCombinable, Samplable, Scale, Transcribeable,
+    KnownOrderGroupElement, KnownOrderScalar, Samplable, Scale, Transcribeable,
 };
 
 /// An element of the Self Product of the Group `G` by Itself.
@@ -31,7 +31,9 @@ where
         let public_parameters = &public_parameters.0;
 
         if N == 0 {
-            return Err(crate::Error::InvalidPublicParameters);
+            return Err(crate::Error::from(
+                crate::ErrorKind::InvalidPublicParameters,
+            ));
         }
 
         Ok(Self(
@@ -46,7 +48,9 @@ where
         let public_parameters = &public_parameters.0;
 
         if N == 0 {
-            return Err(crate::Error::InvalidPublicParameters);
+            return Err(crate::Error::from(
+                crate::ErrorKind::InvalidPublicParameters,
+            ));
         }
 
         Ok(Self(
@@ -105,11 +109,11 @@ impl<
     }
 }
 
-impl<const N: usize, GroupElementValue: Serialize + for<'a> Deserialize<'a> + Default + Copy>
-    Default for Value<N, GroupElementValue>
+impl<const N: usize, GroupElementValue: Serialize + for<'a> Deserialize<'a> + Default> Default
+    for Value<N, GroupElementValue>
 {
     fn default() -> Self {
-        Self([GroupElementValue::default(); N])
+        Self(array::from_fn(|_| GroupElementValue::default()))
     }
 }
 impl<const N: usize, GroupElementValue: Serialize + for<'a> Deserialize<'a> + ConstantTimeEq>
@@ -147,54 +151,6 @@ impl<const N: usize, G: ConstantTimeEq> ConstantTimeEq for GroupElement<N, G> {
             })
     }
 }
-impl<const N: usize, G: crate::GroupElement> LinearlyCombinable for GroupElement<N, G> {
-    fn linearly_combine_bounded<const RHS_LIMBS: usize>(
-        bases_and_multiplicands: Vec<(Self, Uint<RHS_LIMBS>)>,
-        exponent_bits: u32,
-    ) -> crate::Result<Self> {
-        let bases_and_multiplicands: Vec<_> = bases_and_multiplicands
-            .into_iter()
-            .map(|(base, multiplicand)| base.0.map(|base| (base, multiplicand)))
-            .collect();
-
-        array::from_fn(|i| {
-            G::linearly_combine_bounded(
-                bases_and_multiplicands
-                    .clone()
-                    .into_iter()
-                    .map(|bases_and_multiplicands| bases_and_multiplicands[i])
-                    .collect(),
-                exponent_bits,
-            )
-        })
-        .flat_map_results()
-        .map(Self)
-    }
-
-    fn linearly_combine_bounded_vartime<const RHS_LIMBS: usize>(
-        bases_and_multiplicands: Vec<(Self, Uint<RHS_LIMBS>)>,
-        exponent_bits: u32,
-    ) -> crate::Result<Self> {
-        let bases_and_multiplicands: Vec<_> = bases_and_multiplicands
-            .into_iter()
-            .map(|(base, multiplicand)| base.0.map(|base| (base, multiplicand)))
-            .collect();
-
-        array::from_fn(|i| {
-            G::linearly_combine_bounded_vartime(
-                bases_and_multiplicands
-                    .clone()
-                    .into_iter()
-                    .map(|bases_and_multiplicands| bases_and_multiplicands[i])
-                    .collect(),
-                exponent_bits,
-            )
-        })
-        .flat_map_results()
-        .map(Self)
-    }
-}
-
 impl<const N: usize, G: crate::GroupElement> crate::GroupElement for GroupElement<N, G> {
     type Value = Value<N, G::Value>;
 
@@ -204,7 +160,9 @@ impl<const N: usize, G: crate::GroupElement> crate::GroupElement for GroupElemen
         let public_parameters = &public_parameters.0;
 
         if N == 0 {
-            return Err(crate::Error::InvalidPublicParameters);
+            return Err(crate::Error::from(
+                crate::ErrorKind::InvalidPublicParameters,
+            ));
         }
 
         Ok(Self(
@@ -216,24 +174,58 @@ impl<const N: usize, G: crate::GroupElement> crate::GroupElement for GroupElemen
     }
 
     fn neutral(&self) -> Self {
-        Self(self.0.map(|element| element.neutral()))
+        Self(self.0.clone().map(|element| element.neutral()))
     }
 
     fn neutral_from_public_parameters(
         public_parameters: &Self::PublicParameters,
     ) -> crate::Result<Self> {
         G::neutral_from_public_parameters(&public_parameters.0)
-            .map(|neutral| Self(array::from_fn(|_| neutral)))
+            .map(|neutral| Self(array::from_fn(|_| neutral.clone())))
     }
 
-    fn scale<const LIMBS: usize>(&self, scalar: &Uint<LIMBS>) -> Self {
-        Self(self.0.map(|element| element.scale(scalar)))
+    fn add_constant_time(&self, other: &Self, public_parameters: &Self::PublicParameters) -> Self {
+        Self(array::from_fn(|i| {
+            self.0[i].add_constant_time(&other.0[i], &public_parameters.0)
+        }))
     }
 
-    fn scale_bounded<const LIMBS: usize>(&self, scalar: &Uint<LIMBS>, scalar_bits: u32) -> Self {
+    fn sub_constant_time(&self, other: &Self, public_parameters: &Self::PublicParameters) -> Self {
+        Self(array::from_fn(|i| {
+            self.0[i].sub_constant_time(&other.0[i], &public_parameters.0)
+        }))
+    }
+
+    fn neg_constant_time(&self, public_parameters: &Self::PublicParameters) -> Self {
         Self(
             self.0
-                .map(|element| element.scale_bounded(scalar, scalar_bits)),
+                .clone()
+                .map(|element| element.neg_constant_time(&public_parameters.0)),
+        )
+    }
+
+    fn scale<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .clone()
+                .map(|element| element.scale(scalar, &public_parameters.0)),
+        )
+    }
+
+    fn scale_bounded<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .clone()
+                .map(|element| element.scale_bounded(scalar, scalar_bits, &public_parameters.0)),
         )
     }
 
@@ -241,58 +233,359 @@ impl<const N: usize, G: crate::GroupElement> crate::GroupElement for GroupElemen
         &self,
         scalar: &Uint<LIMBS>,
         scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(self.0.clone().map(|element| {
+            element.scale_bounded_vartime(scalar, scalar_bits, &public_parameters.0)
+        }))
+    }
+
+    fn scale_integer_bounded<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(self.0.clone().map(|element| {
+            element.scale_integer_bounded(integer, scalar_bits, &public_parameters.0)
+        }))
+    }
+
+    fn scale_integer<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
     ) -> Self {
         Self(
             self.0
-                .map(|element| element.scale_bounded_vartime(scalar, scalar_bits)),
+                .clone()
+                .map(|element| element.scale_integer(integer, &public_parameters.0)),
         )
     }
 
-    fn add_randomized(self, other: &Self) -> Self {
-        let mut result: [G; N] = self.0;
-
-        for (i, element) in result.iter_mut().enumerate() {
-            *element = element.add_randomized(&other.0[i]);
-        }
-
-        Self(result)
+    fn scale_vartime<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .clone()
+                .map(|element| element.scale_vartime(scalar, &public_parameters.0)),
+        )
     }
 
-    fn add_vartime(self, other: &Self) -> Self {
-        let mut result: [G; N] = self.0;
-
-        for (i, element) in result.iter_mut().enumerate() {
-            *element = element.add_vartime(&other.0[i]);
-        }
-
-        Self(result)
+    fn scale_integer_vartime<const LIMBS: usize>(
+        &self,
+        scalar: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .clone()
+                .map(|element| element.scale_integer_vartime(scalar, &public_parameters.0)),
+        )
     }
 
-    fn sub_randomized(self, other: &Self) -> Self {
-        let mut result: [G; N] = self.0;
-
-        for (i, element) in result.iter_mut().enumerate() {
-            *element = element.sub_vartime(&other.0[i]);
-        }
-
-        Self(result)
+    fn scale_integer_bounded_vartime<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(self.0.clone().map(|element| {
+            element.scale_integer_bounded_vartime(integer, scalar_bits, &public_parameters.0)
+        }))
     }
 
-    fn sub_vartime(self, other: &Self) -> Self {
-        let mut result: [G; N] = self.0;
-
-        for (i, element) in result.iter_mut().enumerate() {
-            *element = element.sub_vartime(&other.0[i]);
-        }
-
-        Self(result)
+    fn scale_vartime_scalar<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .clone()
+                .map(|element| element.scale_vartime_scalar(scalar, &public_parameters.0)),
+        )
     }
 
-    fn double(&self) -> Self {
-        Self(self.0.map(|element| element.double()))
+    fn scale_integer_vartime_scalar<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .clone()
+                .map(|element| element.scale_integer_vartime_scalar(integer, &public_parameters.0)),
+        )
     }
-    fn double_vartime(&self) -> Self {
-        Self(self.0.map(|element| element.double_vartime()))
+
+    fn scale_public_base<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .clone()
+                .map(|element| element.scale_public_base(scalar, &public_parameters.0)),
+        )
+    }
+
+    fn scale_public_base_bounded<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(self.0.clone().map(|element| {
+            element.scale_public_base_bounded(scalar, scalar_bits, &public_parameters.0)
+        }))
+    }
+
+    fn scale_integer_public_base<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .clone()
+                .map(|element| element.scale_integer_public_base(integer, &public_parameters.0)),
+        )
+    }
+
+    fn scale_integer_public_base_bounded<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(self.0.clone().map(|element| {
+            element.scale_integer_public_base_bounded(integer, scalar_bits, &public_parameters.0)
+        }))
+    }
+
+    fn scale_randomized<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .clone()
+                .map(|element| element.scale_randomized(scalar, &public_parameters.0)),
+        )
+    }
+
+    fn scale_randomized_bounded<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(self.0.clone().map(|element| {
+            element.scale_randomized_bounded(scalar, scalar_bits, &public_parameters.0)
+        }))
+    }
+
+    fn scale_randomized_public_base<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .clone()
+                .map(|element| element.scale_randomized_public_base(scalar, &public_parameters.0)),
+        )
+    }
+
+    fn scale_randomized_public_base_bounded<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(self.0.clone().map(|element| {
+            element.scale_randomized_public_base_bounded(scalar, scalar_bits, &public_parameters.0)
+        }))
+    }
+
+    fn scale_integer_randomized<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .clone()
+                .map(|element| element.scale_integer_randomized(integer, &public_parameters.0)),
+        )
+    }
+
+    fn scale_integer_randomized_bounded<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(self.0.clone().map(|element| {
+            element.scale_integer_randomized_bounded(integer, scalar_bits, &public_parameters.0)
+        }))
+    }
+
+    fn scale_integer_randomized_public_base<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(self.0.clone().map(|element| {
+            element.scale_integer_randomized_public_base(integer, &public_parameters.0)
+        }))
+    }
+
+    fn scale_integer_randomized_public_base_bounded<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(self.0.clone().map(|element| {
+            element.scale_integer_randomized_public_base_bounded(
+                integer,
+                scalar_bits,
+                &public_parameters.0,
+            )
+        }))
+    }
+
+    fn scale_randomized_vartime_scalar<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0.clone().map(|element| {
+                element.scale_randomized_vartime_scalar(scalar, &public_parameters.0)
+            }),
+        )
+    }
+
+    fn scale_integer_randomized_vartime_scalar<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(self.0.clone().map(|element| {
+            element.scale_integer_randomized_vartime_scalar(integer, &public_parameters.0)
+        }))
+    }
+
+    fn add_randomized(&self, other: &Self, public_parameters: &Self::PublicParameters) -> Self {
+        Self(array::from_fn(|i| {
+            self.0[i]
+                .clone()
+                .add_randomized(&other.0[i], &public_parameters.0)
+        }))
+    }
+
+    fn add_vartime(&self, other: &Self, public_parameters: &Self::PublicParameters) -> Self {
+        Self(array::from_fn(|i| {
+            self.0[i]
+                .clone()
+                .add_vartime(&other.0[i], &public_parameters.0)
+        }))
+    }
+
+    fn sub_randomized(&self, other: &Self, public_parameters: &Self::PublicParameters) -> Self {
+        Self(array::from_fn(|i| {
+            self.0[i]
+                .clone()
+                .sub_randomized(&other.0[i], &public_parameters.0)
+        }))
+    }
+
+    fn sub_vartime(&self, other: &Self, public_parameters: &Self::PublicParameters) -> Self {
+        Self(array::from_fn(|i| {
+            self.0[i]
+                .clone()
+                .sub_vartime(&other.0[i], &public_parameters.0)
+        }))
+    }
+
+    fn double(&self, public_parameters: &Self::PublicParameters) -> Self {
+        Self(
+            self.0
+                .clone()
+                .map(|element| element.double(&public_parameters.0)),
+        )
+    }
+
+    fn double_vartime(&self, public_parameters: &Self::PublicParameters) -> Self {
+        Self(
+            self.0
+                .clone()
+                .map(|element| element.double_vartime(&public_parameters.0)),
+        )
+    }
+
+    fn linearly_combine_bounded<const RHS_LIMBS: usize>(
+        bases_and_multiplicands: Vec<(Self, Uint<RHS_LIMBS>)>,
+        exponent_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> crate::Result<Self> {
+        let bases_and_multiplicands: Vec<_> = bases_and_multiplicands
+            .into_iter()
+            .map(|(base, multiplicand)| base.0.map(|base| (base, multiplicand)))
+            .collect();
+
+        array::from_fn(|i| {
+            G::linearly_combine_bounded(
+                bases_and_multiplicands
+                    .clone()
+                    .into_iter()
+                    .map(|bm| {
+                        let (ref base, multiplicand) = bm[i];
+                        (base.clone(), multiplicand)
+                    })
+                    .collect(),
+                exponent_bits,
+                &public_parameters.0,
+            )
+        })
+        .flat_map_results()
+        .map(Self)
+    }
+
+    fn linearly_combine_bounded_vartime<const RHS_LIMBS: usize>(
+        bases_and_multiplicands: Vec<(Self, Uint<RHS_LIMBS>)>,
+        exponent_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> crate::Result<Self> {
+        let bases_and_multiplicands: Vec<_> = bases_and_multiplicands
+            .into_iter()
+            .map(|(base, multiplicand)| base.0.map(|base| (base, multiplicand)))
+            .collect();
+
+        array::from_fn(|i| {
+            G::linearly_combine_bounded_vartime(
+                bases_and_multiplicands
+                    .clone()
+                    .into_iter()
+                    .map(|bm| {
+                        let (ref base, multiplicand) = bm[i];
+                        (base.clone(), multiplicand)
+                    })
+                    .collect(),
+                exponent_bits,
+                &public_parameters.0,
+            )
+        })
+        .flat_map_results()
+        .map(Self)
     }
 }
 
@@ -321,15 +614,17 @@ impl<
     }
 }
 
-impl<const N: usize, G: crate::GroupElement> Neg for GroupElement<N, G> {
+impl<const N: usize, G: crate::GroupElement + Neg<Output = G>> Neg for GroupElement<N, G> {
     type Output = Self;
 
     fn neg(self) -> Self::Output {
-        Self(self.0.map(|element| element.neg()))
+        Self(self.0.clone().map(|element| element.neg()))
     }
 }
 
-impl<const N: usize, G: crate::GroupElement> Add<Self> for GroupElement<N, G> {
+impl<const N: usize, G: crate::GroupElement + for<'a> AddAssign<&'a G>> Add<Self>
+    for GroupElement<N, G>
+{
     type Output = Self;
 
     fn add(self, rhs: Self) -> Self::Output {
@@ -343,15 +638,19 @@ impl<const N: usize, G: crate::GroupElement> Add<Self> for GroupElement<N, G> {
     }
 }
 
-impl<'r, const N: usize, G: crate::GroupElement> Add<&'r Self> for GroupElement<N, G> {
+impl<'r, const N: usize, G: crate::GroupElement + for<'a> AddAssign<&'a G>> Add<&'r Self>
+    for GroupElement<N, G>
+{
     type Output = Self;
 
     fn add(self, rhs: &'r Self) -> Self::Output {
-        self + *rhs
+        self + rhs.clone()
     }
 }
 
-impl<const N: usize, G: crate::GroupElement> Sub<Self> for GroupElement<N, G> {
+impl<const N: usize, G: crate::GroupElement + for<'a> SubAssign<&'a G>> Sub<Self>
+    for GroupElement<N, G>
+{
     type Output = Self;
 
     fn sub(self, rhs: Self) -> Self::Output {
@@ -365,21 +664,27 @@ impl<const N: usize, G: crate::GroupElement> Sub<Self> for GroupElement<N, G> {
     }
 }
 
-impl<'r, const N: usize, G: crate::GroupElement> Sub<&'r Self> for GroupElement<N, G> {
+impl<'r, const N: usize, G: crate::GroupElement + for<'a> SubAssign<&'a G>> Sub<&'r Self>
+    for GroupElement<N, G>
+{
     type Output = Self;
 
     fn sub(self, rhs: &'r Self) -> Self::Output {
-        self - *rhs
+        self - rhs.clone()
     }
 }
 
-impl<const N: usize, G: crate::GroupElement> AddAssign<Self> for GroupElement<N, G> {
+impl<const N: usize, G: crate::GroupElement + for<'a> AddAssign<&'a G>> AddAssign<Self>
+    for GroupElement<N, G>
+{
     fn add_assign(&mut self, rhs: Self) {
         *self += &rhs
     }
 }
 
-impl<'r, const N: usize, G: crate::GroupElement> AddAssign<&'r Self> for GroupElement<N, G> {
+impl<'r, const N: usize, G: crate::GroupElement + for<'a> AddAssign<&'a G>> AddAssign<&'r Self>
+    for GroupElement<N, G>
+{
     fn add_assign(&mut self, rhs: &'r Self) {
         for i in 0..N {
             self.0[i] += &rhs.0[i];
@@ -387,13 +692,17 @@ impl<'r, const N: usize, G: crate::GroupElement> AddAssign<&'r Self> for GroupEl
     }
 }
 
-impl<const N: usize, G: crate::GroupElement> SubAssign<Self> for GroupElement<N, G> {
+impl<const N: usize, G: crate::GroupElement + for<'a> SubAssign<&'a G>> SubAssign<Self>
+    for GroupElement<N, G>
+{
     fn sub_assign(&mut self, rhs: Self) {
         *self -= &rhs
     }
 }
 
-impl<'r, const N: usize, G: crate::GroupElement> SubAssign<&'r Self> for GroupElement<N, G> {
+impl<'r, const N: usize, G: crate::GroupElement + for<'a> SubAssign<&'a G>> SubAssign<&'r Self>
+    for GroupElement<N, G>
+{
     fn sub_assign(&mut self, rhs: &'r Self) {
         for i in 0..N {
             self.0[i] -= &rhs.0[i];
@@ -430,32 +739,8 @@ impl<const N: usize, const SCALAR_LIMBS: usize, G: BoundedGroupElement<SCALAR_LI
 impl<
         const N: usize,
         const SCALAR_LIMBS: usize,
-        S: KnownOrderScalar<SCALAR_LIMBS> + Mul<G, Output = G>,
-        G: KnownOrderGroupElement<SCALAR_LIMBS, Scalar = S>,
-    > Mul<GroupElement<N, G>> for Scalar<SCALAR_LIMBS, crate::Scalar<SCALAR_LIMBS, G>>
-{
-    type Output = GroupElement<N, G>;
-
-    fn mul(self, rhs: GroupElement<N, G>) -> Self::Output {
-        GroupElement::<N, G>(rhs.0.map(|element| self.0 * element))
-    }
-}
-
-impl<'r, const N: usize, const SCALAR_LIMBS: usize, G: KnownOrderGroupElement<SCALAR_LIMBS>>
-    Mul<&'r GroupElement<N, G>> for Scalar<SCALAR_LIMBS, G::Scalar>
-{
-    type Output = GroupElement<N, G>;
-
-    fn mul(self, rhs: &'r GroupElement<N, G>) -> Self::Output {
-        self * *rhs
-    }
-}
-
-impl<
-        const N: usize,
-        const SCALAR_LIMBS: usize,
-        S: KnownOrderScalar<SCALAR_LIMBS> + Mul<G, Output = G>,
-        G: KnownOrderGroupElement<SCALAR_LIMBS, Scalar = S>,
+        S: KnownOrderScalar<SCALAR_LIMBS>,
+        G: KnownOrderGroupElement<SCALAR_LIMBS, Scalar = S> + Scale<S>,
     > Scale<Scalar<SCALAR_LIMBS, S>> for GroupElement<N, G>
 where
     S::Value: From<Uint<SCALAR_LIMBS>>
@@ -471,52 +756,144 @@ where
         + Copy,
     S: Default + ConditionallySelectable,
 {
-    fn scale_randomized_accelerated(
-        &self,
-        scalar: &Scalar<SCALAR_LIMBS, S>,
-        public_parameters: &Self::PublicParameters,
-    ) -> Self {
-        Self(
-            self.0.map(|element| {
-                element.scale_randomized_accelerated(&scalar.0, &public_parameters.0)
-            }),
-        )
-    }
-
-    fn scale_vartime_accelerated(
+    fn scale_by(
         &self,
         scalar: &Scalar<SCALAR_LIMBS, S>,
         public_parameters: &Self::PublicParameters,
     ) -> Self {
         Self(
             self.0
-                .map(|element| element.scale_vartime_accelerated(&scalar.0, &public_parameters.0)),
+                .clone()
+                .map(|element| element.scale_by(&scalar.0, &public_parameters.0)),
         )
     }
 
-    fn scale_randomized_bounded_accelerated(
+    fn scale_vartime_by(
         &self,
         scalar: &Scalar<SCALAR_LIMBS, S>,
         public_parameters: &Self::PublicParameters,
-        scalar_bits: u32,
     ) -> Self {
-        Self(self.0.map(|element| {
-            element.scale_randomized_bounded_accelerated(
-                &scalar.0,
-                &public_parameters.0,
-                scalar_bits,
-            )
+        Self(
+            self.0
+                .clone()
+                .map(|element| element.scale_vartime_by(&scalar.0, &public_parameters.0)),
+        )
+    }
+
+    fn scale_bounded_by(
+        &self,
+        scalar: &Scalar<SCALAR_LIMBS, S>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0.clone().map(|element| {
+                element.scale_bounded_by(&scalar.0, scalar_bits, &public_parameters.0)
+            }),
+        )
+    }
+
+    fn scale_bounded_vartime_by(
+        &self,
+        scalar: &Scalar<SCALAR_LIMBS, S>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(self.0.clone().map(|element| {
+            element.scale_bounded_vartime_by(&scalar.0, scalar_bits, &public_parameters.0)
         }))
     }
 
-    fn scale_bounded_vartime_accelerated(
+    fn scale_vartime_scalar_by(
         &self,
         scalar: &Scalar<SCALAR_LIMBS, S>,
         public_parameters: &Self::PublicParameters,
-        scalar_bits: u32,
     ) -> Self {
-        Self(self.0.map(|element| {
-            element.scale_bounded_vartime_accelerated(&scalar.0, &public_parameters.0, scalar_bits)
+        Self(
+            self.0
+                .clone()
+                .map(|element| element.scale_vartime_scalar_by(&scalar.0, &public_parameters.0)),
+        )
+    }
+
+    fn scale_public_base_by(
+        &self,
+        scalar: &Scalar<SCALAR_LIMBS, S>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .clone()
+                .map(|element| element.scale_public_base_by(&scalar.0, &public_parameters.0)),
+        )
+    }
+
+    fn scale_public_base_bounded_by(
+        &self,
+        scalar: &Scalar<SCALAR_LIMBS, S>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(self.0.clone().map(|element| {
+            element.scale_public_base_bounded_by(&scalar.0, scalar_bits, &public_parameters.0)
+        }))
+    }
+
+    fn scale_randomized_by(
+        &self,
+        scalar: &Scalar<SCALAR_LIMBS, S>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .clone()
+                .map(|element| element.scale_randomized_by(&scalar.0, &public_parameters.0)),
+        )
+    }
+
+    fn scale_randomized_bounded_by(
+        &self,
+        scalar: &Scalar<SCALAR_LIMBS, S>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(self.0.clone().map(|element| {
+            element.scale_randomized_bounded_by(&scalar.0, scalar_bits, &public_parameters.0)
+        }))
+    }
+
+    fn scale_randomized_vartime_scalar_by(
+        &self,
+        scalar: &Scalar<SCALAR_LIMBS, S>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(self.0.clone().map(|element| {
+            element.scale_randomized_vartime_scalar_by(&scalar.0, &public_parameters.0)
+        }))
+    }
+
+    fn scale_randomized_public_base_by(
+        &self,
+        scalar: &Scalar<SCALAR_LIMBS, S>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(self.0.clone().map(|element| {
+            element.scale_randomized_public_base_by(&scalar.0, &public_parameters.0)
+        }))
+    }
+
+    fn scale_randomized_public_base_bounded_by(
+        &self,
+        scalar: &Scalar<SCALAR_LIMBS, S>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(self.0.clone().map(|element| {
+            element.scale_randomized_public_base_bounded_by(
+                &scalar.0,
+                scalar_bits,
+                &public_parameters.0,
+            )
         }))
     }
 }
@@ -534,148 +911,144 @@ where
         + Copy,
     G: Scale<V>,
 {
-    fn scale_randomized_accelerated(
+    fn scale_by(
         &self,
         scalar: &scalar::Value<V>,
         public_parameters: &Self::PublicParameters,
     ) -> Self {
         Self(
-            self.0.map(|element| {
-                element.scale_randomized_accelerated(&scalar.0, &public_parameters.0)
+            self.0
+                .clone()
+                .map(|element| element.scale_by(&scalar.0, &public_parameters.0)),
+        )
+    }
+
+    fn scale_vartime_by(
+        &self,
+        scalar: &scalar::Value<V>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .clone()
+                .map(|element| element.scale_vartime_by(&scalar.0, &public_parameters.0)),
+        )
+    }
+
+    fn scale_bounded_by(
+        &self,
+        scalar: &scalar::Value<V>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0.clone().map(|element| {
+                element.scale_bounded_by(&scalar.0, scalar_bits, &public_parameters.0)
             }),
         )
     }
 
-    fn scale_vartime_accelerated(
+    fn scale_bounded_vartime_by(
+        &self,
+        scalar: &scalar::Value<V>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(self.0.clone().map(|element| {
+            element.scale_bounded_vartime_by(&scalar.0, scalar_bits, &public_parameters.0)
+        }))
+    }
+
+    fn scale_vartime_scalar_by(
         &self,
         scalar: &scalar::Value<V>,
         public_parameters: &Self::PublicParameters,
     ) -> Self {
         Self(
             self.0
-                .map(|element| element.scale_vartime_accelerated(&scalar.0, &public_parameters.0)),
+                .clone()
+                .map(|element| element.scale_vartime_scalar_by(&scalar.0, &public_parameters.0)),
         )
     }
 
-    fn scale_randomized_bounded_accelerated(
+    fn scale_public_base_by(
         &self,
         scalar: &scalar::Value<V>,
         public_parameters: &Self::PublicParameters,
-        scalar_bits: u32,
     ) -> Self {
-        Self(self.0.map(|element| {
-            element.scale_randomized_bounded_accelerated(
+        Self(
+            self.0
+                .clone()
+                .map(|element| element.scale_public_base_by(&scalar.0, &public_parameters.0)),
+        )
+    }
+
+    fn scale_public_base_bounded_by(
+        &self,
+        scalar: &scalar::Value<V>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(self.0.clone().map(|element| {
+            element.scale_public_base_bounded_by(&scalar.0, scalar_bits, &public_parameters.0)
+        }))
+    }
+
+    fn scale_randomized_by(
+        &self,
+        scalar: &scalar::Value<V>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .clone()
+                .map(|element| element.scale_randomized_by(&scalar.0, &public_parameters.0)),
+        )
+    }
+
+    fn scale_randomized_bounded_by(
+        &self,
+        scalar: &scalar::Value<V>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(self.0.clone().map(|element| {
+            element.scale_randomized_bounded_by(&scalar.0, scalar_bits, &public_parameters.0)
+        }))
+    }
+
+    fn scale_randomized_vartime_scalar_by(
+        &self,
+        scalar: &scalar::Value<V>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(self.0.clone().map(|element| {
+            element.scale_randomized_vartime_scalar_by(&scalar.0, &public_parameters.0)
+        }))
+    }
+
+    fn scale_randomized_public_base_by(
+        &self,
+        scalar: &scalar::Value<V>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(self.0.clone().map(|element| {
+            element.scale_randomized_public_base_by(&scalar.0, &public_parameters.0)
+        }))
+    }
+
+    fn scale_randomized_public_base_bounded_by(
+        &self,
+        scalar: &scalar::Value<V>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(self.0.clone().map(|element| {
+            element.scale_randomized_public_base_bounded_by(
                 &scalar.0,
-                &public_parameters.0,
                 scalar_bits,
+                &public_parameters.0,
             )
-        }))
-    }
-
-    fn scale_bounded_vartime_accelerated(
-        &self,
-        scalar: &scalar::Value<V>,
-        public_parameters: &Self::PublicParameters,
-        scalar_bits: u32,
-    ) -> Self {
-        Self(self.0.map(|element| {
-            element.scale_bounded_vartime_accelerated(&scalar.0, &public_parameters.0, scalar_bits)
-        }))
-    }
-}
-
-impl<const N: usize, const LIMBS: usize, G: crate::GroupElement + Scale<Uint<LIMBS>>>
-    Scale<Uint<LIMBS>> for GroupElement<N, G>
-{
-    fn scale_randomized_accelerated(
-        &self,
-        scalar: &Uint<LIMBS>,
-        public_parameters: &Self::PublicParameters,
-    ) -> Self {
-        Self(
-            self.0
-                .map(|element| element.scale_randomized_accelerated(scalar, &public_parameters.0)),
-        )
-    }
-
-    fn scale_vartime_accelerated(
-        &self,
-        scalar: &Uint<LIMBS>,
-        public_parameters: &Self::PublicParameters,
-    ) -> Self {
-        Self(
-            self.0
-                .map(|element| element.scale_vartime_accelerated(scalar, &public_parameters.0)),
-        )
-    }
-
-    fn scale_randomized_bounded_accelerated(
-        &self,
-        scalar: &Uint<LIMBS>,
-        public_parameters: &Self::PublicParameters,
-        scalar_bits: u32,
-    ) -> Self {
-        Self(self.0.map(|element| {
-            element.scale_randomized_bounded_accelerated(scalar, &public_parameters.0, scalar_bits)
-        }))
-    }
-
-    fn scale_bounded_vartime_accelerated(
-        &self,
-        scalar: &Uint<LIMBS>,
-        public_parameters: &Self::PublicParameters,
-        scalar_bits: u32,
-    ) -> Self {
-        Self(self.0.map(|element| {
-            element.scale_bounded_vartime_accelerated(scalar, &public_parameters.0, scalar_bits)
-        }))
-    }
-}
-
-impl<const N: usize, const LIMBS: usize, G: crate::GroupElement + Scale<Int<LIMBS>>>
-    Scale<Int<LIMBS>> for GroupElement<N, G>
-{
-    fn scale_randomized_accelerated(
-        &self,
-        scalar: &Int<LIMBS>,
-        public_parameters: &Self::PublicParameters,
-    ) -> Self {
-        Self(
-            self.0
-                .map(|element| element.scale_randomized_accelerated(scalar, &public_parameters.0)),
-        )
-    }
-
-    fn scale_vartime_accelerated(
-        &self,
-        scalar: &Int<LIMBS>,
-        public_parameters: &Self::PublicParameters,
-    ) -> Self {
-        Self(
-            self.0
-                .map(|element| element.scale_vartime_accelerated(scalar, &public_parameters.0)),
-        )
-    }
-
-    fn scale_randomized_bounded_accelerated(
-        &self,
-        scalar: &Int<LIMBS>,
-        public_parameters: &Self::PublicParameters,
-        scalar_bits: u32,
-    ) -> Self {
-        Self(self.0.map(|element| {
-            element.scale_randomized_bounded_accelerated(scalar, &public_parameters.0, scalar_bits)
-        }))
-    }
-
-    fn scale_bounded_vartime_accelerated(
-        &self,
-        scalar: &Int<LIMBS>,
-        public_parameters: &Self::PublicParameters,
-        scalar_bits: u32,
-    ) -> Self {
-        Self(self.0.map(|element| {
-            element.scale_bounded_vartime_accelerated(scalar, &public_parameters.0, scalar_bits)
         }))
     }
 }
@@ -684,6 +1057,35 @@ impl<
         const N: usize,
         const SCALAR_LIMBS: usize,
         S: KnownOrderScalar<SCALAR_LIMBS> + Mul<G, Output = G>,
+        G: KnownOrderGroupElement<SCALAR_LIMBS, Scalar = S>,
+    > Mul<GroupElement<N, G>> for Scalar<SCALAR_LIMBS, crate::Scalar<SCALAR_LIMBS, G>>
+{
+    type Output = GroupElement<N, G>;
+
+    fn mul(self, rhs: GroupElement<N, G>) -> Self::Output {
+        GroupElement::<N, G>(rhs.0.map(|element| self.0 * element))
+    }
+}
+
+impl<
+        'r,
+        const N: usize,
+        const SCALAR_LIMBS: usize,
+        S: KnownOrderScalar<SCALAR_LIMBS> + Mul<G, Output = G>,
+        G: KnownOrderGroupElement<SCALAR_LIMBS, Scalar = S>,
+    > Mul<&'r GroupElement<N, G>> for Scalar<SCALAR_LIMBS, crate::Scalar<SCALAR_LIMBS, G>>
+{
+    type Output = GroupElement<N, G>;
+
+    fn mul(self, rhs: &'r GroupElement<N, G>) -> Self::Output {
+        self * rhs.clone()
+    }
+}
+
+impl<
+        const N: usize,
+        const SCALAR_LIMBS: usize,
+        S: KnownOrderScalar<SCALAR_LIMBS>,
         G: KnownOrderGroupElement<SCALAR_LIMBS, Scalar = S>,
     > KnownOrderGroupElement<SCALAR_LIMBS> for GroupElement<N, G>
 where
@@ -698,7 +1100,7 @@ where
         + ConstantTimeEq
         + ConditionallySelectable
         + Copy,
-    S: Default + ConditionallySelectable,
+    S: Default + ConditionallySelectable + Mul<G, Output = G> + for<'r> Mul<&'r G, Output = G>,
 {
     type Scalar = Scalar<SCALAR_LIMBS, S>;
 

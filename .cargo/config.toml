@@ -5,3 +5,11 @@ clippy-all = "clippy --all-targets --all-features -- -D warnings"
 doc-all = "doc --workspace --no-deps --all-features --document-private-items --examples"
 [env]
 RUST_MIN_STACK = "67108864"
+
+# Default to release mode for all cargo commands (build, run, test, bench)
+[profile]
+default = "release"
+
+# WASM configuration for getrandom backend
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']

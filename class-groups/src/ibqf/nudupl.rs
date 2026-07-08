@@ -10,7 +10,7 @@ use crate::helpers::partial_xgcd::PartialXGCD;
 use crate::helpers::vartime_mul::{CheckedMulVartime, ConcatenatingMulVartime};
 use crate::ibqf::unreduced::UnreducedIbqf;
 use crate::ibqf::{math, Ibqf, PARTIAL_XGCD_VARTIME_OUTPUT_BITSIZE_SPREAD};
-use crate::Error;
+use crate::{Error, ErrorKind};
 
 impl<const HALF: usize, const LIMBS: usize, const DOUBLE: usize> Ibqf<LIMBS>
 where
@@ -28,7 +28,7 @@ where
     pub fn nudupl(&self) -> Self {
         self.nudupl_unreduced::<false>()
             .into_option()
-            .ok_or(Error::InvalidParameters)
+            .ok_or_else(|| Error::from(ErrorKind::InvalidParameters))
             .unwrap()
             .reduce()
     }
@@ -47,11 +47,11 @@ where
     pub fn nudupl_randomized(&self) -> Self {
         self.nudupl_unreduced::<true>()
             .into_option()
-            .ok_or(Error::InvalidParameters)
+            .ok_or_else(|| Error::from(ErrorKind::InvalidParameters))
             .unwrap()
             .reduce_randomized()
             .into_option()
-            .ok_or(Error::FormNotRandomized)
+            .ok_or_else(|| Error::from(ErrorKind::FormNotRandomized))
             .unwrap()
     }
 
@@ -210,7 +210,7 @@ where
         let Bx = c
             .checked_mul_vartime(&V)
             .into_option()
-            .ok_or(Error::InternalError)?;
+            .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
         let By = a_div_gcd;
 
         // [ Dx; Dy ] = [ -Uc, b/gcd(a,b) ]
@@ -218,7 +218,7 @@ where
             .checked_mul_vartime(&U)
             .and_then(|Uc| Uc.checked_neg().into())
             .into_option()
-            .ok_or(Error::InternalError)?;
+            .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
         let Dy = b_div_gcd;
 
         // Compute q = Bx/By and apply matrix [[1, -q] [0, 1]] to [ Bx; By ] and [ Dx; Dy ]
@@ -227,7 +227,7 @@ where
             .checked_mul_vartime(&Dy)
             .and_then(|qDy| Dx.checked_sub(&qDy))
             .into_option()
-            .ok_or(Error::InternalError)?;
+            .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
 
         // Partially reduce [ Bx; By ], until both elements can be represented using ||∆||/4 bits.
         // Note: we have to account for the spread of the partial xgcd vartime output bit size.
@@ -241,17 +241,17 @@ where
             m11.concatenating_mul_vartime(&Ax),
             CtOption::from(m10.concatenating_mul_vartime(&Ax).as_int().checked_neg())
                 .into_option()
-                .ok_or(Error::InternalError)?,
+                .ok_or_else(|| Error::from(ErrorKind::InternalError))?,
         );
         let (Dx, Dy) = (
             Dx.checked_mul_vartime(&m11)
                 .and_then(|m11Dx| m11Dx.checked_sub(&Dy.concatenating_mul_vartime(&m01)))
                 .into_option()
-                .ok_or(Error::InternalError)?,
+                .ok_or_else(|| Error::from(ErrorKind::InternalError))?,
             Dx.checked_mul_vartime(&m10)
                 .and_then(|m10Dx| Dy.concatenating_mul_vartime(&m00).checked_sub(&m10Dx))
                 .into_option()
-                .ok_or(Error::InternalError)?,
+                .ok_or_else(|| Error::from(ErrorKind::InternalError))?,
         );
 
         // Compute AxDx, AyDy and AxDy + AyDx using only three multiplications.
@@ -262,7 +262,7 @@ where
             .and_then(|By_squared| By_squared.checked_sub(&AyDy))
             .and_then(|a| a.to_nz().into())
             .into_option()
-            .ok_or(Error::InternalError)?;
+            .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
 
         // B = AxDy + AyDx - 2*BxBy
         let b = CtOption::from(
@@ -272,14 +272,14 @@ where
         )
         .and_then(|BxBy| AxDy_AyDx.checked_sub(&BxBy))
         .into_option()
-        .ok_or(Error::InternalError)?;
+        .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
 
         // C = Bx² - AxDx
         let c = CtOption::from(Bx.widening_square().try_into_int())
             .and_then(|Bx_squared| Bx_squared.checked_sub(&AxDx))
             .and_then(|c| c.to_nz().into())
             .into_option()
-            .ok_or(Error::InternalError)?;
+            .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
 
         Ok(UnreducedIbqf {
             a,

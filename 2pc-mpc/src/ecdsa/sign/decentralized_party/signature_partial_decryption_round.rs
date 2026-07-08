@@ -69,7 +69,7 @@ impl Party {
             .party_to_virtual_parties()
             .get(&tangible_party_id)
         {
-            return Err(Error::InvalidParameters);
+            return Err(crate::Error::from_kind(crate::ErrorKind::InvalidParameters));
         }
 
         // The `DecryptionKeyShare` trait works with virtual parties, whilst the input is in tangible parties.
@@ -101,7 +101,7 @@ impl Party {
                         expected_decrypters.clone(),
                         decryption_key_share_public_parameters,
                     ))
-                    .ok_or(Error::InternalError)?;
+                    .ok_or_else(|| crate::Error::from_kind(crate::ErrorKind::InternalError))?;
 
                 // === Compute \textsf{pt}_4 ===
                 // Protocol C.3, step 2(e)
@@ -111,7 +111,7 @@ impl Party {
                         expected_decrypters.clone(),
                         decryption_key_share_public_parameters,
                     ))
-                    .ok_or(Error::InternalError)?;
+                    .ok_or_else(|| crate::Error::from_kind(crate::ErrorKind::InternalError))?;
 
                 Ok((
                     virtual_party_id,
@@ -166,7 +166,7 @@ impl Party {
             .party_to_virtual_parties()
             .get(&tangible_party_id)
         {
-            return Err(Error::InvalidParameters);
+            return Err(crate::Error::from_kind(crate::ErrorKind::InvalidParameters));
         }
 
         // = \textsf{ct}_A
@@ -191,7 +191,7 @@ impl Party {
                 decryption_key_share_public_parameters,
                 rng,
             ))
-                .ok_or(Error::InternalError)?;
+                .ok_or_else(|| crate::Error::from_kind(crate::ErrorKind::InternalError))?;
 
             match &decryption_shares[..] {
                 [partial_signature_decryption_share,
@@ -200,7 +200,7 @@ impl Party {
                     displaced_decentralized_party_nonce_decryption_share.clone(),
                     proof
                 ))),
-                _ => Err(Error::InternalError)
+                _ => Err(crate::Error::from_kind(crate::ErrorKind::InternalError))
             }
         }).collect()
     }
@@ -218,7 +218,7 @@ impl Party {
     fn verify_encryption_of_signature_parts_prehash<
         const SCALAR_LIMBS: usize,
         const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
-        GroupElement: VerifyingKey<SCALAR_LIMBS>,
+        GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
         EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
     >(
     // $ m $
@@ -355,7 +355,10 @@ impl Party {
         // (c)iii. $C_1=(r\odot C_{kx})\oplus(m\odot C_{k})$
         let first_coefficient_commitment = (nonce_x_coordinate
             * signature_nonce_share_by_secret_share_commitment)
-            + (hashed_message * signature_nonce_share_commitment);
+            .add_constant_time(
+                &(hashed_message * signature_nonce_share_commitment),
+                group_public_parameters,
+            );
 
         // (c)iv.  $C_2=r\odot C_{k}$
         let second_coefficient_commitment = nonce_x_coordinate * signature_nonce_share_commitment;

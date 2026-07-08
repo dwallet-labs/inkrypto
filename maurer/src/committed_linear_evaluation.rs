@@ -7,7 +7,10 @@ use std::marker::PhantomData;
 use crypto_bigint::{Encoding, NonZero, Uint};
 use serde::{Deserialize, Serialize};
 
-use commitment::{HomomorphicCommitmentScheme, MultiPedersen};
+use commitment::{
+    GroupsPublicParametersAccessors as CommitmentGroupsPublicParametersAccessors,
+    HomomorphicCommitmentScheme, MultiPedersen,
+};
 use group::bounded_natural_numbers_group::MAURER_RANDOMIZER_DIFF_BITS;
 use group::helpers::FlatMapResults;
 use group::{
@@ -18,8 +21,8 @@ use group::{Reduce, Transcribeable};
 use homomorphic_encryption::{AdditivelyHomomorphicEncryptionKey, GroupsPublicParametersAccessors};
 use proof::GroupsPublicParameters;
 
-use crate::Error;
 use crate::SOUND_PROOFS_REPETITIONS;
+use crate::{Error, ErrorKind};
 
 /// Committed Linear Evaluation Maurer Language
 ///
@@ -157,6 +160,8 @@ impl<
 where
     Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>: Encoding,
     Uint<MESSAGE_LIMBS>: Encoding,
+    GroupElement::Scalar: std::ops::Mul<GroupElement, Output = GroupElement>
+        + for<'r> std::ops::Mul<&'r GroupElement, Output = GroupElement>,
 {
     type WitnessSpaceGroupElement = WitnessSpaceGroupElement<
         PLAINTEXT_SPACE_SCALAR_LIMBS,
@@ -193,7 +198,7 @@ where
         is_verify: bool,
     ) -> crate::Result<Self::StatementSpaceGroupElement> {
         if SCALAR_LIMBS > PLAINTEXT_SPACE_SCALAR_LIMBS {
-            return Err(Error::InvalidPublicParameters);
+            return Err(Error::from(ErrorKind::InvalidPublicParameters));
         }
 
         let group_order = GroupElement::Scalar::order_from_public_parameters(
@@ -202,14 +207,15 @@ where
 
         let encryption_key =
             EncryptionKey::new(&language_public_parameters.encryption_scheme_public_parameters)
-                .map_err(|_| crate::Error::InvalidPublicParameters)?;
+                .map_err(|_| crate::Error::from(crate::ErrorKind::InvalidPublicParameters))?;
 
         let commitment_scheme =
             MultiPedersen::new(&language_public_parameters.commitment_scheme_public_parameters)
-                .map_err(|_| crate::Error::InvalidPublicParameters)?;
+                .map_err(|_| crate::Error::from(crate::ErrorKind::InvalidPublicParameters))?;
 
         let ciphertexts_and_encoded_messages_upper_bounds = language_public_parameters
             .ciphertexts_and_encoded_messages_upper_bounds
+            .clone()
             .map(|(value, upper_bound)| {
                 homomorphic_encryption::CiphertextSpaceGroupElement::<
                     PLAINTEXT_SPACE_SCALAR_LIMBS,
@@ -221,7 +227,7 @@ where
                         .ciphertext_space_public_parameters(),
                 )
                 .map(|ciphertext| (ciphertext, upper_bound))
-                .map_err(|_| crate::Error::InvalidPublicParameters)
+                .map_err(|_| crate::Error::from(crate::ErrorKind::InvalidPublicParameters))
             })
             .flat_map_results()?;
 
@@ -234,7 +240,7 @@ where
                 .map(|coefficient| coefficient.bits_vartime())
                 .iter()
                 .max()
-                .ok_or(Error::InvalidParameters)?
+                .ok_or_else(|| Error::from(ErrorKind::InvalidParameters))?
         } else if is_randomizer {
             language_public_parameters
                 .message_group_public_parameters()
@@ -257,13 +263,13 @@ where
                 &language_public_parameters.encryption_scheme_public_parameters,
                 is_verify,
             )
-            .map_err(|_| crate::Error::InvalidPublicParameters)?;
+            .map_err(|_| crate::Error::from(crate::ErrorKind::InvalidPublicParameters))?;
 
         let coefficients: [_; DIMENSION] = (*witness.coefficients()).into();
 
         let group_order = Option::<_>::from(NonZero::new(group_order))
-            .ok_or(crate::Error::InternalError)
-            .map_err(|_| crate::Error::InvalidPublicParameters)?;
+            .ok_or_else(|| crate::Error::from(crate::ErrorKind::InternalError))
+            .map_err(|_| crate::Error::from(crate::ErrorKind::InvalidPublicParameters))?;
 
         let coefficients = coefficients
             .map(|coefficient| {
@@ -273,12 +279,19 @@ where
                     coefficient,
                     language_public_parameters.scalar_group_public_parameters(),
                 )
-                .map_err(|_| crate::Error::InvalidPublicParameters)
+                .map_err(|_| crate::Error::from(crate::ErrorKind::InvalidPublicParameters))
             })
             .flat_map_results()?;
 
-        let commitment =
-            commitment_scheme.commit(&coefficients.into(), witness.commitment_randomness());
+        let commitment_space_public_parameters = language_public_parameters
+            .commitment_scheme_public_parameters
+            .commitment_space_public_parameters();
+
+        let commitment = commitment_scheme.commit(
+            &coefficients.into(),
+            witness.commitment_randomness(),
+            commitment_space_public_parameters,
+        );
 
         Ok((evaluated_ciphertext, commitment).into())
     }
@@ -408,7 +421,9 @@ where
     where
         GroupElement: group::GroupElement<Value = GroupElementValue, PublicParameters = GroupPublicParameters>
             + KnownOrderGroupElement<SCALAR_LIMBS>,
-        GroupElement::Scalar: group::GroupElement<PublicParameters = ScalarPublicParameters>,
+        GroupElement::Scalar: group::GroupElement<PublicParameters = ScalarPublicParameters>
+            + std::ops::Mul<GroupElement, Output = GroupElement>
+            + for<'r> std::ops::Mul<&'r GroupElement, Output = GroupElement>,
         EncryptionKey: AdditivelyHomomorphicEncryptionKey<
             PLAINTEXT_SPACE_SCALAR_LIMBS,
             PublicParameters = EncryptionKeyPublicParameters,

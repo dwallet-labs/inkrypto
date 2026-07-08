@@ -35,25 +35,6 @@ pub enum Message<
 }
 
 impl<GroupElementValue, CiphertextSpaceValue, ProtocolPublicParameters>
-    From<(
-        Arc<ProtocolPublicParameters>,
-        Option<dkg::decentralized_party::Output<GroupElementValue, CiphertextSpaceValue>>,
-    )> for PublicInput<GroupElementValue, CiphertextSpaceValue, ProtocolPublicParameters>
-{
-    fn from(
-        (protocol_public_parameters, dkg_output): (
-            Arc<ProtocolPublicParameters>,
-            Option<dkg::decentralized_party::Output<GroupElementValue, CiphertextSpaceValue>>,
-        ),
-    ) -> Self {
-        Self {
-            dkg_output,
-            protocol_public_parameters,
-        }
-    }
-}
-
-impl<GroupElementValue, CiphertextSpaceValue, ProtocolPublicParameters>
     AsRef<ProtocolPublicParameters>
     for PublicInput<GroupElementValue, CiphertextSpaceValue, ProtocolPublicParameters>
 {

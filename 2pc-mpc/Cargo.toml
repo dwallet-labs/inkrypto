@@ -13,6 +13,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, default-features = false, features = ["alloc"] }
 group = { path = "../group" }
 proof = { path = "../proof" }
+proof_aggregation = { path = "../proof-aggregation" }
 mpc = { path = "../mpc" }
 homomorphic_encryption = { path = "../homomorphic-encryption" }
 commitment = { path = "../commitment" }
@@ -33,6 +34,7 @@ ed25519 = { workspace = true, default-features = false }
 ed25519-dalek = { workspace = true, default-features = false }
 curve25519-dalek = { workspace = true, features = ["serde", "digest", "group"], default-features = false }
 schnorrkel = { workspace = true, default-features = false }
+hpke.workspace = true
 
 [dev-dependencies]
 group = { path = "../group", features = ["os_rng"] }
@@ -40,6 +42,8 @@ rstest = { workspace = true }
 criterion = { workspace = true, features = ["html_reports"] }
 proof = { path = "../proof", features = ["test_helpers"] }
 maurer = { path = "../maurer", features = ["test_helpers"] }
+rand_chacha = { workspace = true }
+bcs = { workspace = true }
 class_groups = { path = "../class-groups", features = ["threshold", "test_helpers", "randomized_decryption"] }
 ecdsa = { workspace = true, features = ["verifying"] }
 k256 = { workspace = true, features = ["arithmetic", "critical-section", "precomputed-tables", "schnorr", "serde", "ecdsa", "hash2curve", "alloc"], default-features = false }
@@ -52,3 +56,13 @@ rand = { workspace = true, default-features = false }
 parallel = ["group/parallel", "mpc/parallel", "proof/parallel", "maurer/parallel", "class_groups/parallel"]
 test_helpers = ["dep:rand","group/os_rng","dep:criterion", "dep:rstest", "mpc/parallel", "proof/test_helpers", "class_groups/test_helpers", "class_groups/randomized_decryption", "dep:rand"]
 benchmarking = ["test_helpers"]
+
+# INSECURE test-only mocking: replaces the real MPC/class-group protocol logic with
+# deterministic, functional-but-insecure stand-ins that massively speed up downstream
+# (e.g. ika) integration tests. Signatures still verify on the real curves, outputs keep
+# identical types/serialization, but ALL security guarantees are abandoned. NEVER enable
+# in production.
+unsafe_mock = ["mpc/unsafe_mock", "class_groups/unsafe_mock"]
+
+[lints]
+workspace = true

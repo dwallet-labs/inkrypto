@@ -2,97 +2,86 @@
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 use crate::{dkg, presign};
-use group::{CsRng, HashScheme, PartyID};
+use group::{CsRng, HashContext, HashScheme};
 use mpc::{two_party, AsynchronouslyAdvanceable};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
-use std::sync::Arc;
+
+/// Represents the state of the centralized party's sign message as received by the decentralized
+/// party.
+///
+/// - `Unverified`: The raw message from the centralized party that needs verification.
+/// - `Verified`: The message has already been verified (e.g., by a trusted coordinator);
+///   verification is skipped but computation proceeds normally.
+/// - `ToBeEmulated`: No centralized party participated; a default (identity/zero) partial
+///   signature is constructed and processed through the unverified path.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum SignData<SignMessage, VerifiedSignData> {
+    Unverified(SignMessage),
+    Verified(VerifiedSignData),
+    ToBeEmulated,
+}
 
 /// An instantiation of the 2PC-MPC Sign protocol.
-pub trait Protocol: dkg::Protocol + presign::Protocol {
+pub trait Protocol: presign::Protocol {
     /// The output of the Sign protocol.
     type Signature: EncodableSignature;
 
-    /// A decryption key share.
-    type DecryptionKeyShare: Sync + Send;
-
-    /// The decryption key share public parameters.
-    type DecryptionKeySharePublicParameters: Serialize + Clone + Debug + PartialEq + Eq;
+    /// The private input of the decentralized party for the sign protocol.
+    type SignDecentralizedPartyPrivateInput: Sync + Send;
 
     /// The public input of the decentralized party's Sign protocol.
-    type SignDecentralizedPartyPublicInput: From<(
-            HashSet<PartyID>,
-            Arc<Self::ProtocolPublicParameters>,
-            Vec<u8>,
-            HashScheme,
-            Self::DecentralizedPartyDKGOutput,
-            Self::Presign,
-            Self::SignMessage,
-            Arc<Self::DecryptionKeySharePublicParameters>,
-        )> + Clone
-        + Debug
-        + PartialEq
-        + Eq
-        + Sync
-        + Send;
+    type SignDecentralizedPartyPublicInput: Clone + Debug + PartialEq + Eq + Sync + Send;
 
     /// A party participating in the decentralized party's Sign protocol.
     type SignDecentralizedParty: mpc::Party<
             PublicInput = Self::SignDecentralizedPartyPublicInput,
             PublicOutputValue = Self::Signature,
             PublicOutput = Self::Signature,
-        > + AsynchronouslyAdvanceable<PrivateInput = HashMap<PartyID, Self::DecryptionKeyShare>>
+        > + AsynchronouslyAdvanceable<PrivateInput = Self::SignDecentralizedPartyPrivateInput>
         + Sync
         + Send;
 
     /// The public input of the decentralized party's Sign protocol.
-    type DKGSignDecentralizedPartyPublicInput: From<(
-            HashSet<PartyID>,
-            Arc<Self::ProtocolPublicParameters>,
-            Vec<u8>,
-            HashScheme,
-            Self::DKGDecentralizedPartyPublicInput,
-            Self::Presign,
-            Self::SignMessage,
-            Arc<Self::DecryptionKeySharePublicParameters>,
-        )> + Clone
+    type DKGSignDecentralizedPartyPublicInput: Clone + Debug + PartialEq + Eq + Sync + Send;
+
+    /// A party participating in the decentralized party's DKG followed by a Sign protocol.
+    type DKGSignDecentralizedParty: mpc::Party<
+            PublicInput = Self::DKGSignDecentralizedPartyPublicInput,
+            PublicOutputValue = (
+                <Self::DKGProtocol as dkg::Protocol>::DecentralizedPartyDKGOutput,
+                Self::Signature,
+            ),
+            PublicOutput = (
+                <Self::DKGProtocol as dkg::Protocol>::DecentralizedPartyDKGOutput,
+                Self::Signature,
+            ),
+        > + AsynchronouslyAdvanceable
+        + Sync
+        + Send;
+
+    /// The public input of the centralized party in the Sign protocol.
+    type SignCentralizedPartyPublicInput: Serialize + Clone + Debug + PartialEq + Eq;
+
+    /// The outgoing message of the centralized party in the Sign protocol.
+    type SignMessage: Serialize + for<'a> Deserialize<'a> + Clone + Debug + PartialEq + Eq;
+
+    /// The verified sign data extracted from the sign message after successful verification.
+    /// Contains only the fields needed for threshold decryption (no proofs).
+    type VerifiedSignData: Serialize
+        + for<'a> Deserialize<'a>
+        + Clone
         + Debug
         + PartialEq
         + Eq
         + Sync
         + Send;
 
-    /// A party participating in the decentralized party's DKG followed by a Sign protocol.
-    type DKGSignDecentralizedParty: mpc::Party<
-            PublicInput = Self::DKGSignDecentralizedPartyPublicInput,
-            PublicOutputValue = (Self::DecentralizedPartyDKGOutput, Self::Signature),
-            PublicOutput = (Self::DecentralizedPartyDKGOutput, Self::Signature),
-        > + AsynchronouslyAdvanceable<PrivateInput = HashMap<PartyID, Self::DecryptionKeyShare>>
-        + Sync
-        + Send;
-
-    /// The public input of the centralized party in the Sign protocol.
-    type SignCentralizedPartyPublicInput: From<(
-            Vec<u8>,
-            HashScheme,
-            Self::CentralizedPartyDKGOutput,
-            Self::Presign,
-            Self::ProtocolPublicParameters,
-        )> + Serialize
-        + Clone
-        + Debug
-        + PartialEq
-        + Eq;
-
-    /// The outgoing message of the centralized party in the Sign protocol.
-    type SignMessage: Serialize + for<'a> Deserialize<'a> + Clone + Debug + PartialEq + Eq;
-
     /// The party of the centralized party in the Sign protocol.
     type SignCentralizedParty: two_party::Round<
         IncomingMessage = (),
         OutgoingMessage = Self::SignMessage,
-        PrivateInput = Self::CentralizedPartySecretKeyShare,
+        PrivateInput = <Self::DKGProtocol as dkg::Protocol>::CentralizedPartySecretKeyShare,
         PrivateOutput = (),
         PublicOutput = (),
         PublicOutputValue = (),
@@ -109,12 +98,13 @@ pub trait Protocol: dkg::Protocol + presign::Protocol {
     fn verify_centralized_party_partial_signature(
         message: &[u8],
         hash_type: HashScheme,
-        dkg_output: Self::DecentralizedPartyDKGOutput,
+        hash_context: &HashContext,
+        dkg_output: <Self::DKGProtocol as dkg::Protocol>::DecentralizedPartyDKGOutput,
         presign: Self::Presign,
         sign_message: Self::SignMessage,
-        protocol_public_parameters: &Self::ProtocolPublicParameters,
+        protocol_public_parameters: &<Self::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
         rng: &mut impl CsRng,
-    ) -> crate::Result<()>;
+    ) -> crate::Result<Self::VerifiedSignData>;
 }
 
 /// An encodable signature is one that can be encoded into a fixed-size array of bytes.
@@ -142,11 +132,20 @@ pub trait EncodableSignature:
 #[allow(unused_imports)]
 #[allow(dead_code)]
 pub(crate) mod tests {
-    use std::{collections::HashMap, ops::Neg, time::Duration};
+    use crate::presign::tests::setup_vss_presign;
+    use crate::schnorr::vss::presign::PrivatePresignOutput;
+    use std::{
+        collections::{HashMap, HashSet},
+        ops::Neg,
+        sync::Arc,
+        time::Duration,
+    };
 
     use criterion::measurement::{Measurement, WallTime};
     use crypto_bigint::subtle::Choice;
-    use crypto_bigint::{ConstChoice, Encoding, Int, Random, Uint, U256, U4096};
+    use crypto_bigint::{
+        ConcatMixed, ConstChoice, Encoding, Int, Random, Split, Uint, U256, U4096,
+    };
     use curve25519_dalek::RistrettoPoint;
     use ecdsa::elliptic_curve::group::GroupEncoding;
     use ecdsa::signature::hazmat::PrehashVerifier;
@@ -164,22 +163,31 @@ pub(crate) mod tests {
     use ::class_groups::{
         Secp256k1DecryptionKey, Secp256k1DecryptionKeyShare, Secp256k1EncryptionKey,
     };
+    use class_groups::encryption_key::public_parameters::Instantiate;
+    use class_groups::equivalence_class::EquivalenceClassOps;
+    use class_groups::setup::{DeriveFromPlaintextPublicParameters, SetupParameters};
     use class_groups::{
-        Curve25519DecryptionKey, Curve25519DecryptionKeyShare, Curve25519EncryptionKey,
-        RistrettoDecryptionKey, RistrettoDecryptionKeyShare, RistrettoEncryptionKey,
-        Secp256r1DecryptionKey, Secp256r1DecryptionKeyShare, Secp256r1EncryptionKey,
-        SecretKeyShareSizedInteger,
+        encryption_key, equivalence_class, CiphertextSpaceGroupElement,
+        CiphertextSpacePublicParameters, CompactIbqf, Curve25519DecryptionKey,
+        Curve25519DecryptionKeyShare, Curve25519EncryptionKey, DecryptionKey, EncryptionKey,
+        EquivalenceClass, MultiFoldNupowAccelerator, RandomnessSpaceGroupElement,
+        RandomnessSpacePublicParameters, RistrettoDecryptionKey, RistrettoDecryptionKeyShare,
+        RistrettoEncryptionKey, Secp256r1DecryptionKey, Secp256r1DecryptionKeyShare,
+        Secp256r1EncryptionKey, SecretKeyShareSizedInteger,
     };
     use commitment::{CommitmentSizedNumber, HomomorphicCommitmentScheme};
     use group::{
-        curve25519, hash_to_scalar, ristretto, secp256k1, secp256r1, GroupElement as _,
-        HashToGroup, KnownOrderGroupElement, OsCsRng, PartyID, PrimeGroupElement,
+        curve25519, hash_to_scalar, ristretto, secp256k1, secp256r1, CyclicGroupElement,
+        GroupElement as _, HashContext, HashToGroup, KnownOrderGroupElement, OsCsRng, PartyID,
+        PrimeGroupElement, Samplable, StatisticalSecuritySizedNumber,
     };
+
     use homomorphic_encryption::{
         AdditivelyHomomorphicDecryptionKey, AdditivelyHomomorphicDecryptionKeyShare,
         AdditivelyHomomorphicEncryptionKey, GroupsPublicParametersAccessors,
     };
     use mpc::secret_sharing::shamir::over_the_integers::secret_key_share_size_upper_bound;
+    use mpc::secret_sharing::shamir::Polynomial;
     use mpc::test_helpers::{
         asynchronous_session_terminates_successfully_internal,
         asynchronous_session_with_malicious_parties_terminates_successfully_internal,
@@ -199,56 +207,601 @@ pub(crate) mod tests {
     use crate::presign::tests::{
         generates_presignatures_internal, mock_ecdsa_presign, mock_schnorr_presign,
     };
-    use crate::schnorr::{EdDSASignature, SchnorrkelSubstrateSignature, TaprootSignature};
+    use crate::schnorr::vss::sign::decentralized_party::PrivateInput as VSSPrivateInput;
+    use crate::schnorr::{EdDSASignature, SchnorrkelSignature, TaprootSignature};
     use crate::secp256k1::class_groups::{ECDSAProtocol, TaprootProtocol};
     use crate::test_helpers::{
-        setup_class_groups_curve25519, setup_class_groups_ristretto, setup_class_groups_secp256k1,
+        setup_class_groups_curve25519, setup_class_groups_curve25519_with_secrets,
+        setup_class_groups_ristretto, setup_class_groups_ristretto_with_secrets,
+        setup_class_groups_secp256k1, setup_class_groups_secp256k1_with_secrets,
         setup_class_groups_secp256r1,
     };
-    use crate::{schnorr, Error, ProtocolPublicParameters};
+    use crate::{schnorr, Error, ErrorKind, ProtocolPublicParameters};
+
+    /// A test-only trait for constructing presign public inputs.
+    /// This allows `dkg_presign_signs_internal` to construct protocol-specific
+    /// public inputs without requiring `From` impls on the actual structs.
+    pub(crate) trait PresignPublicInputConstructor<
+        const SCALAR_LIMBS: usize,
+        const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
+        EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
+    >: presign::Protocol
+    {
+        fn construct_presign_public_input(
+            protocol_public_parameters: Arc<
+                <Self::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
+            >,
+            dkg_output: Option<
+                crate::dkg::decentralized_party::Output<
+                    GroupElement::Value,
+                    homomorphic_encryption::CiphertextSpaceValue<
+                        PLAINTEXT_SPACE_SCALAR_LIMBS,
+                        EncryptionKey,
+                    >,
+                >,
+            >,
+        ) -> Self::PresignPublicInput;
+    }
+
+    impl
+        PresignPublicInputConstructor<
+            { secp256k1::SCALAR_LIMBS },
+            { secp256k1::SCALAR_LIMBS },
+            secp256k1::GroupElement,
+            Secp256k1EncryptionKey,
+        > for crate::secp256k1::class_groups::ECDSAProtocol
+    {
+        fn construct_presign_public_input(
+            protocol_public_parameters: Arc<
+                <Self::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
+            >,
+            dkg_output: Option<
+                crate::dkg::decentralized_party::Output<
+                    group::Value<secp256k1::GroupElement>,
+                    homomorphic_encryption::CiphertextSpaceValue<
+                        { secp256k1::SCALAR_LIMBS },
+                        Secp256k1EncryptionKey,
+                    >,
+                >,
+            >,
+        ) -> Self::PresignPublicInput {
+            crate::ecdsa::presign::decentralized_party::PublicInput {
+                protocol_public_parameters,
+                dkg_output,
+            }
+        }
+    }
+
+    impl
+        PresignPublicInputConstructor<
+            { secp256k1::SCALAR_LIMBS },
+            { secp256k1::SCALAR_LIMBS },
+            secp256k1::GroupElement,
+            Secp256k1EncryptionKey,
+        > for crate::secp256k1::class_groups::TaprootProtocol
+    {
+        fn construct_presign_public_input(
+            protocol_public_parameters: Arc<
+                <Self::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
+            >,
+            _dkg_output: Option<
+                crate::dkg::decentralized_party::Output<
+                    group::Value<secp256k1::GroupElement>,
+                    homomorphic_encryption::CiphertextSpaceValue<
+                        { secp256k1::SCALAR_LIMBS },
+                        Secp256k1EncryptionKey,
+                    >,
+                >,
+            >,
+        ) -> Self::PresignPublicInput {
+            crate::schnorr::ahe::presign::decentralized_party::PublicInput {
+                protocol_public_parameters,
+            }
+        }
+    }
+
+    impl
+        PresignPublicInputConstructor<
+            { secp256r1::SCALAR_LIMBS },
+            { secp256r1::SCALAR_LIMBS },
+            secp256r1::GroupElement,
+            Secp256r1EncryptionKey,
+        > for crate::secp256r1::class_groups::ECDSAProtocol
+    {
+        fn construct_presign_public_input(
+            protocol_public_parameters: Arc<
+                <Self::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
+            >,
+            dkg_output: Option<
+                crate::dkg::decentralized_party::Output<
+                    group::Value<secp256r1::GroupElement>,
+                    homomorphic_encryption::CiphertextSpaceValue<
+                        { secp256r1::SCALAR_LIMBS },
+                        Secp256r1EncryptionKey,
+                    >,
+                >,
+            >,
+        ) -> Self::PresignPublicInput {
+            crate::ecdsa::presign::decentralized_party::PublicInput {
+                protocol_public_parameters,
+                dkg_output,
+            }
+        }
+    }
+
+    impl
+        PresignPublicInputConstructor<
+            { curve25519::SCALAR_LIMBS },
+            { curve25519::SCALAR_LIMBS },
+            curve25519::GroupElement,
+            Curve25519EncryptionKey,
+        > for crate::curve25519::class_groups::EdDSAProtocol
+    {
+        fn construct_presign_public_input(
+            protocol_public_parameters: Arc<
+                <Self::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
+            >,
+            _dkg_output: Option<
+                crate::dkg::decentralized_party::Output<
+                    group::Value<curve25519::GroupElement>,
+                    homomorphic_encryption::CiphertextSpaceValue<
+                        { curve25519::SCALAR_LIMBS },
+                        Curve25519EncryptionKey,
+                    >,
+                >,
+            >,
+        ) -> Self::PresignPublicInput {
+            crate::schnorr::ahe::presign::decentralized_party::PublicInput {
+                protocol_public_parameters,
+            }
+        }
+    }
+
+    impl
+        PresignPublicInputConstructor<
+            { ristretto::SCALAR_LIMBS },
+            { ristretto::SCALAR_LIMBS },
+            ristretto::GroupElement,
+            RistrettoEncryptionKey,
+        > for crate::ristretto::class_groups::SchnorrkelProtocol
+    {
+        fn construct_presign_public_input(
+            protocol_public_parameters: Arc<
+                <Self::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
+            >,
+            _dkg_output: Option<
+                crate::dkg::decentralized_party::Output<
+                    group::Value<ristretto::GroupElement>,
+                    homomorphic_encryption::CiphertextSpaceValue<
+                        { ristretto::SCALAR_LIMBS },
+                        RistrettoEncryptionKey,
+                    >,
+                >,
+            >,
+        ) -> Self::PresignPublicInput {
+            crate::schnorr::ahe::presign::decentralized_party::PublicInput {
+                protocol_public_parameters,
+            }
+        }
+    }
 
     pub(crate) const MESSAGE: &str = "singing!";
+
+    /// Determines how the centralized party's sign message is handled in tests.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum SignDataMode {
+        /// Current behavior: run centralized party, no verification of sign message.
+        Unverified,
+        /// Run centralized party and verify the partial signature before passing to
+        /// decentralized parties.
+        Verified,
+        /// Emulated mode: the centralized party runs with a zero secret key share
+        /// (x_A = 0). DKG output should come from `mock_targeted_dkg_output`.
+        Emulated,
+    }
+
+    pub fn construct_decentralized_ecdsa_sign_party_public_inputs_class_groups<
+        const SCALAR_LIMBS: usize,
+        const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+        const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+        const MESSAGE_LIMBS: usize,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
+    >(
+        protocol_public_parameters: Arc<crate::class_groups::ProtocolPublicParameters<SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>>,
+        dkg_output: crate::class_groups::DKGDecentralizedPartyVersionedOutput<SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>,
+        presign: crate::class_groups::ecdsa::VersionedPresign<SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>,
+        decryption_key_share_public_parameters: Arc<crate::class_groups::DecryptionKeySharePublicParameters<SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>>,
+        message: Vec<u8>,
+        hash_type: HashScheme,
+        hash_context: HashContext,
+        sign_data: SignData<
+            crate::ecdsa::sign::centralized_party::message::class_groups::Message<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                MESSAGE_LIMBS,
+                GroupElement,
+            >,
+            crate::ecdsa::sign::centralized_party::message::class_groups::VerifiedSignData<
+                SCALAR_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+        >,
+        expected_decrypters: HashSet<PartyID>
+    ) -> crate::class_groups::ecdsa::SignPartyPublicInput<SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, MESSAGE_LIMBS, GroupElement>
+    where
+        Uint<MESSAGE_LIMBS>: Encoding,
+        Int<SCALAR_LIMBS>: Encoding,
+        Uint<SCALAR_LIMBS>: Encoding,
+        Uint<SCALAR_LIMBS>: Encoding
+        + ConcatMixed<StatisticalSecuritySizedNumber>
+        + for<'a> From<
+            &'a <Uint<SCALAR_LIMBS> as ConcatMixed<StatisticalSecuritySizedNumber>>::MixedOutput,
+        > + for<'a> From<
+            &'a <Uint<SCALAR_LIMBS> as ConcatMixed<StatisticalSecuritySizedNumber>>::MixedOutput,
+        >,
+        Int<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+        Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+        Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+        Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+        EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
+        SetupParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >: DeriveFromPlaintextPublicParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >,
+        EncryptionKey<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >: AdditivelyHomomorphicEncryptionKey<
+            SCALAR_LIMBS,
+            PublicParameters = encryption_key::PublicParameters<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                group::PublicParameters<GroupElement::Scalar>,
+            >,
+            PlaintextSpaceGroupElement = GroupElement::Scalar,
+            RandomnessSpaceGroupElement = RandomnessSpaceGroupElement<FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            CiphertextSpaceGroupElement = CiphertextSpaceGroupElement<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
+        GroupElement::Scalar: From<Uint<SCALAR_LIMBS>>
+        + Neg<Output = GroupElement::Scalar>
+        + group::Samplable
+        + group::Invert
+        + std::ops::Mul<Output = GroupElement::Scalar>
+        + std::ops::Mul<GroupElement, Output = GroupElement>,
+        group::Value<GroupElement::Scalar>:
+        Into<Uint<SCALAR_LIMBS>> + From<Uint<SCALAR_LIMBS>> + Serialize + for<'a> Deserialize<'a>,
+        group::PublicParameters<GroupElement::Scalar>: Default,
+        GroupElement::Value: Serialize + for<'a> Deserialize<'a>,
+        GroupElement::PublicParameters: Clone + Serialize + for<'a> Deserialize<'a> + PartialEq + Eq,
+        <GroupElement::Scalar as group::GroupElement>::PublicParameters:
+        Clone + Serialize + for<'a> Deserialize<'a> + PartialEq + Eq,
+        group::Value<GroupElement::Scalar>: Into<Uint<SCALAR_LIMBS>>,
+    {
+        crate::class_groups::ecdsa::SignPartyPublicInput {
+            dkg_output,
+            message,
+            hash_type,
+            hash_context,
+            presign,
+            sign_message: sign_data,
+            protocol_public_parameters,
+            decryption_key_share_public_parameters,
+            expected_decrypters,
+        }
+    }
+
+    /// Constructs the public input for Schnorr AHE sign decentralized party.
+    ///
+    /// This returns the actual `crate::schnorr::ahe::sign::decentralized_party::PublicInput` type
+    /// which has field names `hash_scheme` and `centralized_party_partial_signature`.
+    pub fn construct_decentralized_schnorr_sign_party_public_inputs_class_groups<
+        const SCALAR_LIMBS: usize,
+        const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+        const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
+    >(
+        protocol_public_parameters: Arc<crate::class_groups::ProtocolPublicParameters<SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>>,
+        dkg_output: crate::class_groups::DKGDecentralizedPartyVersionedOutput<SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>,
+        presign: crate::class_groups::schnorr::Presign<SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>,
+        decryption_key_share_public_parameters: Arc<crate::class_groups::DecryptionKeySharePublicParameters<SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>>,
+        message: Vec<u8>,
+        hash_scheme: HashScheme,
+        hash_context: HashContext,
+        sign_data: SignData<
+            schnorr::PartialSignature<
+                GroupElement::Value,
+                group::Value<GroupElement::Scalar>,
+            >,
+            schnorr::PartialSignature<
+                GroupElement::Value,
+                group::Value<GroupElement::Scalar>,
+            >,
+        >,
+        expected_decrypters: HashSet<PartyID>
+    ) -> crate::schnorr::ahe::sign::decentralized_party::PublicInput<
+        crate::class_groups::DKGDecentralizedPartyVersionedOutput<SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>,
+        crate::class_groups::schnorr::Presign<SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>,
+        schnorr::PartialSignature<GroupElement::Value, group::Value<GroupElement::Scalar>>,
+        crate::class_groups::DecryptionKeySharePublicParameters<SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>,
+        crate::class_groups::ProtocolPublicParameters<SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>,
+    >
+    where
+        Int<SCALAR_LIMBS>: Encoding,
+        Uint<SCALAR_LIMBS>: Encoding
+        + ConcatMixed<StatisticalSecuritySizedNumber>
+        + for<'a> From<
+            &'a <Uint<SCALAR_LIMBS> as ConcatMixed<StatisticalSecuritySizedNumber>>::MixedOutput,
+        >,
+        Int<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+        Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+        Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+        Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+        EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
+        SetupParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >: DeriveFromPlaintextPublicParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >,
+        EncryptionKey<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >: AdditivelyHomomorphicEncryptionKey<
+            SCALAR_LIMBS,
+            PublicParameters = encryption_key::PublicParameters<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                group::PublicParameters<GroupElement::Scalar>,
+            >,
+            PlaintextSpaceGroupElement = GroupElement::Scalar,
+            RandomnessSpaceGroupElement = RandomnessSpaceGroupElement<FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            CiphertextSpaceGroupElement = CiphertextSpaceGroupElement<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
+        GroupElement::Scalar: From<Uint<SCALAR_LIMBS>>
+        + Neg<Output = GroupElement::Scalar>
+        + group::Samplable
+        + group::Invert
+        + std::ops::Mul<Output = GroupElement::Scalar>
+        + std::ops::Mul<GroupElement, Output = GroupElement>,
+        group::Value<GroupElement::Scalar>:
+        Into<Uint<SCALAR_LIMBS>> + From<Uint<SCALAR_LIMBS>> + Serialize + for<'a> Deserialize<'a>,
+        group::PublicParameters<GroupElement::Scalar>: Default,
+        GroupElement::Value: Serialize + for<'a> Deserialize<'a>,
+        GroupElement::PublicParameters: Clone + Serialize + for<'a> Deserialize<'a> + PartialEq + Eq,
+        <GroupElement::Scalar as group::GroupElement>::PublicParameters:
+        Clone + Serialize + for<'a> Deserialize<'a> + PartialEq + Eq,
+        group::Value<GroupElement::Scalar>: Into<Uint<SCALAR_LIMBS>>,
+    {
+        crate::schnorr::ahe::sign::decentralized_party::PublicInput {
+            expected_decrypters,
+            message,
+            hash_scheme,
+            hash_context,
+            dkg_output,
+            presign,
+            centralized_party_partial_signature: sign_data,
+            decryption_key_share_public_parameters,
+            protocol_public_parameters,
+        }
+    }
+
+    /// Constructs the public input for VSS Schnorr sign decentralized party.
+    ///
+    /// Takes only the secret key polynomial commitments as extra data.
+    /// Nonce polynomial commitments come from the private presign output and are
+    /// set to empty here (DOS protection verification uses the private input).
+    pub fn construct_decentralized_schnorr_vss_sign_party_public_inputs<
+        const SCALAR_LIMBS: usize,
+        const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+        const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
+    >(
+        protocol_public_parameters: Arc<crate::class_groups::ProtocolPublicParameters<SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>>,
+        dkg_output: crate::class_groups::DKGDecentralizedPartyVersionedOutput<SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>,
+        presign: crate::schnorr::vss::Presign<GroupElement::Value>,
+        secret_key_polynomial_commitments: Arc<(Vec<GroupElement::Value>, Vec<GroupElement::Value>)>,
+        message: Vec<u8>,
+        hash_scheme: HashScheme,
+        hash_context: HashContext,
+        sign_data: SignData<
+            schnorr::PartialSignature<
+                GroupElement::Value,
+                group::Value<GroupElement::Scalar>,
+            >,
+            schnorr::PartialSignature<
+                GroupElement::Value,
+                group::Value<GroupElement::Scalar>,
+            >,
+        >,
+        _expected_decrypters: HashSet<PartyID>
+    ) -> crate::vss::schnorr::SignPartyPublicInput<SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>
+    where
+        Int<SCALAR_LIMBS>: Encoding,
+        Uint<SCALAR_LIMBS>: Encoding,
+        Uint<SCALAR_LIMBS>: Encoding
+        + ConcatMixed<StatisticalSecuritySizedNumber>
+        + for<'a> From<
+            &'a <Uint<SCALAR_LIMBS> as ConcatMixed<StatisticalSecuritySizedNumber>>::MixedOutput,
+        > + for<'a> From<
+            &'a <Uint<SCALAR_LIMBS> as ConcatMixed<StatisticalSecuritySizedNumber>>::MixedOutput,
+        >,
+        Int<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+        Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+        Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+        Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+        EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
+        SetupParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >: DeriveFromPlaintextPublicParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >,
+        EncryptionKey<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >: AdditivelyHomomorphicEncryptionKey<
+            SCALAR_LIMBS,
+            PublicParameters = encryption_key::PublicParameters<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                group::PublicParameters<GroupElement::Scalar>,
+            >,
+            PlaintextSpaceGroupElement = GroupElement::Scalar,
+            RandomnessSpaceGroupElement = RandomnessSpaceGroupElement<FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            CiphertextSpaceGroupElement = CiphertextSpaceGroupElement<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
+        GroupElement::Scalar: From<Uint<SCALAR_LIMBS>>
+        + Neg<Output = GroupElement::Scalar>
+        + group::Samplable
+        + group::Invert
+        + std::ops::Mul<Output = GroupElement::Scalar>
+        + std::ops::Mul<GroupElement, Output = GroupElement>,
+        group::Value<GroupElement::Scalar>:
+        Into<Uint<SCALAR_LIMBS>> + From<Uint<SCALAR_LIMBS>> + Serialize + for<'a> Deserialize<'a>,
+        group::PublicParameters<GroupElement::Scalar>: Default,
+        GroupElement::Value: Serialize + for<'a> Deserialize<'a>,
+        GroupElement::PublicParameters: Clone + Serialize + for<'a> Deserialize<'a> + PartialEq + Eq,
+        <GroupElement::Scalar as group::GroupElement>::PublicParameters:
+        Clone + Serialize + for<'a> Deserialize<'a> + PartialEq + Eq,
+        group::Value<GroupElement::Scalar>: Into<Uint<SCALAR_LIMBS>>,
+    {
+        let (first_secret_key_polynomial_commitments, second_secret_key_polynomial_commitments) =
+            (*secret_key_polynomial_commitments).clone();
+        crate::vss::schnorr::SignPartyPublicInput {
+            dkg_output,
+            message,
+            hash_scheme,
+            hash_context,
+            presign,
+            centralized_party_partial_signature: sign_data,
+            protocol_public_parameters,
+            first_secret_key_polynomial_commitments,
+            second_secret_key_polynomial_commitments,
+        }
+    }
 
     pub fn signs_internal_generic<
         const SCALAR_LIMBS: usize,
         const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
         EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
         P,
+        PublicInputExtraData: Clone,
     >(
         presign_session_id: CommitmentSizedNumber,
         access_structure: WeightedThresholdAccessStructure,
         hash_type: HashScheme,
+        hash_context: HashContext,
         centralized_party_secret_key_share: SecretKeyShare<group::Value<GroupElement::Scalar>>,
-        centralized_party_dkg_output: P::CentralizedPartyDKGOutput,
-        decentralized_party_dkg_output: P::DecentralizedPartyDKGOutput,
+        centralized_party_dkg_output: <P::DKGProtocol as dkg::Protocol>::CentralizedPartyDKGOutput,
+        decentralized_party_dkg_output: <P::DKGProtocol as dkg::Protocol>::DecentralizedPartyDKGOutput,
         presign: P::Presign,
-        decryption_key_share_public_parameters: P::DecryptionKeySharePublicParameters,
-        tangible_party_id_to_virtual_party_id_to_decryption_key_share: HashMap<
-            PartyID,
-            HashMap<PartyID, P::DecryptionKeyShare>,
-        >,
+        public_input_extra_data: PublicInputExtraData,
+        private_inputs: HashMap<PartyID, P::SignDecentralizedPartyPrivateInput>,
         message: &[u8],
         verify_signature: fn(
             public_key: GroupElement,
             signature: P::Signature,
             message: &[u8],
             hash_type: HashScheme,
+            hash_context: &HashContext,
         ) -> crate::Result<()>,
-        protocol_public_parameters: P::ProtocolPublicParameters,
+        construct_presign_public_input: fn(
+            protocol_public_parameters: Arc<
+                <P::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
+            >,
+            dkg_output: <P::DKGProtocol as dkg::Protocol>::DecentralizedPartyDKGOutput,
+            presign: P::Presign,
+            decryption_key_share_public_parameters: Arc<PublicInputExtraData>,
+            message: Vec<u8>,
+            hash_type: HashScheme,
+            hash_context: HashContext,
+            sign_data: SignData<P::SignMessage, P::VerifiedSignData>,
+            expected_decrypters: HashSet<PartyID>,
+        ) -> P::SignDecentralizedPartyPublicInput,
+        protocol_public_parameters: <P::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
+        centralized_party_public_input: P::SignCentralizedPartyPublicInput,
         description: String,
         malicious_parties: HashSet<PartyID>,
         bench: bool,
         expected_case: bool,
+        is_microseconds: bool,
+        sign_data_mode: SignDataMode,
     ) where
-        P: Protocol<
+        P: Protocol,
+        P::DKGProtocol: dkg::Protocol<
             CentralizedPartySecretKeyShare = SecretKeyShare<group::Value<GroupElement::Scalar>>,
             CentralizedPartyDKGOutput = dkg::centralized_party::VersionedOutput<
                 SCALAR_LIMBS,
                 group::Value<GroupElement>,
             >,
         >,
-        P::ProtocolPublicParameters: AsRef<
+        <P::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters: AsRef<
             ProtocolPublicParameters<
                 group::PublicParameters<GroupElement::Scalar>,
                 GroupElement::PublicParameters,
@@ -267,25 +820,52 @@ pub(crate) mod tests {
         let measurement = WallTime;
         let mut centralized_party_total_time = Duration::ZERO;
 
-        let centralized_party_public_input = P::SignCentralizedPartyPublicInput::from((
-            message.to_vec(),
-            hash_type,
-            centralized_party_dkg_output.clone(),
-            presign.clone(),
-            protocol_public_parameters.clone(),
-        ));
-        let now = measurement.start();
-        let sign_message = P::SignCentralizedParty::advance(
-            (),
-            &centralized_party_secret_key_share,
-            &centralized_party_public_input,
-            &mut OsCsRng,
-        )
-        .unwrap()
-        .outgoing_message;
+        // INSECURE `unsafe_mock`: the mocked flow only supports the emulated (`ToBeEmulated`)
+        // user side — the real centralized round (deliberately left unmocked) rejects the mock
+        // DKG/presign outputs, and the mocked decentralized sign ignores its message anyway.
+        // This matches ika's usage of the mock.
+        #[cfg(feature = "unsafe_mock")]
+        let sign_data_mode = SignDataMode::Emulated;
 
-        centralized_party_total_time =
-            measurement.add(&centralized_party_total_time, &measurement.end(now));
+        let sign_data = if sign_data_mode == SignDataMode::Emulated {
+            // In Emulated mode, no centralized party participates.
+            // Skip the centralized party advance entirely.
+            SignData::ToBeEmulated
+        } else {
+            let now = measurement.start();
+            let sign_message = P::SignCentralizedParty::advance(
+                (),
+                &centralized_party_secret_key_share,
+                &centralized_party_public_input,
+                &mut OsCsRng,
+            )
+            .unwrap()
+            .outgoing_message;
+
+            centralized_party_total_time =
+                measurement.add(&centralized_party_total_time, &measurement.end(now));
+
+            match sign_data_mode {
+                SignDataMode::Unverified => SignData::Unverified(sign_message),
+                SignDataMode::Verified => {
+                    let verified_data = P::verify_centralized_party_partial_signature(
+                        message,
+                        hash_type,
+                        &hash_context,
+                        decentralized_party_dkg_output.clone(),
+                        presign.clone(),
+                        sign_message,
+                        &protocol_public_parameters,
+                        &mut OsCsRng,
+                    )
+                    .expect(
+                        "centralized party partial signature verification failed in Verified mode",
+                    );
+                    SignData::Verified(verified_data)
+                }
+                SignDataMode::Emulated => unreachable!(),
+            }
+        };
 
         let parties: Vec<PartyID> = access_structure
             .party_to_virtual_parties()
@@ -342,8 +922,6 @@ pub(crate) mod tests {
         };
 
         let protocol_public_parameters = Arc::new(protocol_public_parameters);
-        let decryption_key_share_public_parameters =
-            Arc::new(decryption_key_share_public_parameters);
         let decentralized_party_public_inputs: HashMap<
             PartyID,
             P::SignDecentralizedPartyPublicInput,
@@ -352,17 +930,17 @@ pub(crate) mod tests {
             .map(|party_id| {
                 (
                     party_id,
-                    (
-                        expected_decrypters.clone(),
+                    construct_presign_public_input(
                         protocol_public_parameters.clone(),
-                        message.to_vec(),
-                        hash_type,
                         decentralized_party_dkg_output.clone(),
                         presign.clone(),
-                        sign_message.clone(),
-                        decryption_key_share_public_parameters.clone(),
-                    )
-                        .into(),
+                        Arc::new(public_input_extra_data.clone()),
+                        message.to_vec(),
+                        hash_type,
+                        hash_context.clone(),
+                        sign_data.clone(),
+                        expected_decrypters.clone(),
+                    ),
                 )
             })
             .collect();
@@ -374,7 +952,7 @@ pub(crate) mod tests {
             >(
                 presign_session_id,
                 &access_structure,
-                tangible_party_id_to_virtual_party_id_to_decryption_key_share,
+                private_inputs,
                 decentralized_party_public_inputs.clone(),
                 HashMap::from([(2, malicious_parties.clone())]),
                 if malicious_parties.is_empty() { 2 } else { 3 },
@@ -386,6 +964,7 @@ pub(crate) mod tests {
         let centralized_party_dkg_output_inner =
             centralized_party::Output::from(centralized_party_dkg_output);
 
+        #[cfg(not(feature = "unsafe_mock"))]
         let public_key = GroupElement::new(
             centralized_party_dkg_output_inner.public_key,
             &(*protocol_public_parameters)
@@ -393,8 +972,27 @@ pub(crate) mod tests {
                 .group_public_parameters,
         )
         .unwrap();
+        // INSECURE `unsafe_mock`: the mocked decentralized sign ignores the (test-fabricated) DKG
+        // output and deterministically signs under the constant mock key, so the outputted
+        // signature verifies under `42·G` instead of the harness's key.
+        #[cfg(feature = "unsafe_mock")]
+        let public_key = {
+            let secret_key = crate::mock::mock_secret_key::<SCALAR_LIMBS, GroupElement>(
+                &(*protocol_public_parameters)
+                    .as_ref()
+                    .scalar_group_public_parameters,
+            )
+            .unwrap();
+            let generator = GroupElement::generator_from_public_parameters(
+                &(*protocol_public_parameters)
+                    .as_ref()
+                    .group_public_parameters,
+            )
+            .unwrap();
+            secret_key * generator
+        };
 
-        let res = verify_signature(public_key, signature, message, hash_type);
+        let res = verify_signature(public_key, signature, message, hash_type, &hash_context);
         assert!(
             res.is_ok(),
             "outputted signature must verify, got {:?}",
@@ -406,26 +1004,51 @@ pub(crate) mod tests {
         let threshold = access_structure.threshold;
 
         if bench {
-            println!(
-                "{description} Sign {} (delta {delta}), {number_of_tangible_parties}, {number_of_virtual_parties}, {threshold}, {:?}, {:?}, {:?}, {:?}",
-                if expected_case {"expected"} else {"unexpected"},
-                centralized_party_total_time.as_millis(),
-                decentralized_party_time.as_millis(),
-                decentralized_party_times[0].as_millis(),
-                decentralized_party_times[1].as_millis()
-            );
+            // Print one column per round that actually ran — under `unsafe_mock` the party
+            // simulates the real protocol's round structure, finalizing on the same final round.
+            let per_round_times = decentralized_party_times
+                .iter()
+                .map(|time| {
+                    if is_microseconds {
+                        time.as_micros().to_string()
+                    } else {
+                        time.as_millis().to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            if is_microseconds {
+                println!(
+                    "{description} Sign {} (delta {delta}), {number_of_tangible_parties}, {number_of_virtual_parties}, {threshold}, {:?}, {:?}, {per_round_times}",
+                    if expected_case { "expected" } else { "unexpected" },
+                    centralized_party_total_time.as_micros(),
+                    decentralized_party_time.as_micros(),
+                );
+            } else {
+                println!(
+                    "{description} Sign {} (delta {delta}), {number_of_tangible_parties}, {number_of_virtual_parties}, {threshold}, {:?}, {:?}, {per_round_times}",
+                    if expected_case { "expected" } else { "unexpected" },
+                    centralized_party_total_time.as_millis(),
+                    decentralized_party_time.as_millis(),
+                );
+            }
         }
     }
 
     #[rstest]
-    #[case(2, HashMap::from([(1, 1), (2, 1)]), false)]
-    #[case(2, HashMap::from([(1, 1), (2, 1)]), true)]
-    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false)]
-    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), true)]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), false, SignDataMode::Unverified)]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), true, SignDataMode::Unverified)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, SignDataMode::Unverified)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), true, SignDataMode::Unverified)]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), false, SignDataMode::Verified)]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), false, SignDataMode::Emulated)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, SignDataMode::Verified)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, SignDataMode::Emulated)]
     fn dkg_presign_signs_ecdsa_async_class_groups_secp256r1(
         #[case] threshold: PartyID,
         #[case] party_to_weight: HashMap<PartyID, Weight>,
         #[case] is_trusted_dealer: bool,
+        #[case] sign_data_mode: SignDataMode,
     ) {
         dkg_presign_signs_async_class_groups_secp256r1_internal::<
             crate::secp256r1::class_groups::ECDSAProtocol,
@@ -433,10 +1056,12 @@ pub(crate) mod tests {
             threshold,
             party_to_weight,
             HashScheme::SHA256,
+            HashContext::None,
             is_trusted_dealer,
             MESSAGE.as_bytes(),
             verify_secp256r1_ecdsa_signature,
             "Class Groups Asynchronous ECDSA secp256r1",
+            sign_data_mode,
         )
     }
 
@@ -445,6 +1070,7 @@ pub(crate) mod tests {
         threshold: PartyID,
         party_to_weight: HashMap<PartyID, Weight>,
         hash_type: HashScheme,
+        hash_context: HashContext,
         is_trusted_dealer: bool,
         message: &[u8],
         verify_signature: fn(
@@ -452,10 +1078,61 @@ pub(crate) mod tests {
             signature: P::Signature,
             message: &[u8],
             hash_type: HashScheme,
+            hash_context: &HashContext,
         ) -> crate::Result<()>,
         description: &str,
+        sign_data_mode: SignDataMode,
     ) where
         P: Protocol<
+            PresignPrivateInput = (),
+            SignDecentralizedPartyPrivateInput = HashMap<PartyID, SecretKeyShareSizedInteger>,
+            Presign = crate::class_groups::ecdsa::VersionedPresign<
+                { secp256r1::SCALAR_LIMBS },
+                { crate::secp256r1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::secp256r1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                secp256r1::GroupElement,
+            >,
+            SignMessage = crate::ecdsa::sign::centralized_party::message::class_groups::Message<
+                { secp256r1::SCALAR_LIMBS },
+                { crate::secp256r1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::secp256r1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::secp256r1::MESSAGE_LIMBS },
+                secp256r1::GroupElement,
+            >,
+            VerifiedSignData = crate::ecdsa::sign::centralized_party::message::class_groups::VerifiedSignData<
+                { secp256r1::SCALAR_LIMBS },
+                { crate::secp256r1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                secp256r1::GroupElement,
+            >,
+            SignDecentralizedPartyPublicInput = crate::ecdsa::sign::decentralized_party::PublicInput<
+                crate::dkg::decentralized_party::VersionedOutput<
+                    { secp256r1::SCALAR_LIMBS },
+                    group::Value<secp256r1::GroupElement>,
+                    class_groups::CiphertextSpaceValue<{ crate::secp256r1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS }>,
+                >,
+                crate::class_groups::ecdsa::VersionedPresign<
+                    { secp256r1::SCALAR_LIMBS },
+                    { crate::secp256r1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::secp256r1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    secp256r1::GroupElement,
+                >,
+                crate::ecdsa::sign::centralized_party::message::class_groups::SignData<
+                    { secp256r1::SCALAR_LIMBS },
+                    { crate::secp256r1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::secp256r1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::secp256r1::MESSAGE_LIMBS },
+                    secp256r1::GroupElement,
+                >,
+                class_groups::Secp256r1DecryptionKeySharePublicParameters,
+                crate::class_groups::ProtocolPublicParameters<
+                    { secp256r1::SCALAR_LIMBS },
+                    { crate::secp256r1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::secp256r1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    secp256r1::GroupElement,
+                >,
+            >,
+        >,
+        P::DKGProtocol: dkg::Protocol<
             CentralizedPartySecretKeyShare = SecretKeyShare<group::Value<secp256r1::Scalar>>,
             CentralizedPartyDKGOutput = dkg::centralized_party::VersionedOutput<
                 { secp256r1::SCALAR_LIMBS },
@@ -476,8 +1153,6 @@ pub(crate) mod tests {
                 { crate::secp256r1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
                 secp256r1::GroupElement,
             >,
-            DecryptionKeySharePublicParameters = class_groups::Secp256r1DecryptionKeySharePublicParameters,
-            DecryptionKeyShare = SecretKeyShareSizedInteger,
             PublicKeyShareAndProof = PublicKeyShareAndProof<
                 group::Value<secp256r1::GroupElement>,
                 KnowledgeOfDiscreteLogUCProof<{ secp256r1::SCALAR_LIMBS }, secp256r1::GroupElement>,
@@ -485,6 +1160,28 @@ pub(crate) mod tests {
             SecretKey = group::Value<secp256r1::Scalar>,
         >,
         <<P as Protocol>::SignDecentralizedParty as mpc::Party>::Message: Send + Sync,
+        P::SignCentralizedPartyPublicInput: From<(
+            Vec<u8>,
+            HashScheme,
+            HashContext,
+            dkg::centralized_party::VersionedOutput<
+                { secp256r1::SCALAR_LIMBS },
+                group::Value<secp256r1::GroupElement>,
+            >,
+            P::Presign,
+            crate::class_groups::ProtocolPublicParameters<
+                { secp256r1::SCALAR_LIMBS },
+                { crate::secp256r1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::secp256r1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                secp256r1::GroupElement,
+            >,
+        )>,
+        P: PresignPublicInputConstructor<
+            { secp256r1::SCALAR_LIMBS },
+            { secp256r1::SCALAR_LIMBS },
+            secp256r1::GroupElement,
+            Secp256r1EncryptionKey,
+        >,
     {
         let access_structure =
             WeightedThresholdAccessStructure::new(threshold, party_to_weight.clone()).unwrap();
@@ -545,35 +1242,56 @@ pub(crate) mod tests {
             })
             .collect();
 
+        // AHE presign uses () as private input
+        let presign_private_inputs: HashMap<PartyID, ()> = access_structure
+            .party_to_virtual_parties()
+            .keys()
+            .map(|&party_id| (party_id, ()))
+            .collect();
+
         dkg_presign_signs_internal::<
             { secp256r1::SCALAR_LIMBS },
             { secp256r1::SCALAR_LIMBS },
             secp256r1::GroupElement,
             Secp256r1EncryptionKey,
             P,
+            class_groups::Secp256r1DecryptionKeySharePublicParameters,
+            _,
         >(
             dkg_session_id,
             access_structure,
             hash_type,
+            hash_context.clone(),
             decryption_key_share_public_parameters,
-            tangible_party_id_to_virtual_party_id_to_decryption_key_share,
+            |_presign_outputs, _presign| {
+                tangible_party_id_to_virtual_party_id_to_decryption_key_share.clone()
+            },
             message,
             verify_signature,
+            construct_decentralized_ecdsa_sign_party_public_inputs_class_groups,
             protocol_public_parameters,
+            presign_private_inputs,
             is_trusted_dealer,
+            4, // ECDSA presign has 4 rounds
             description.to_string(),
+            sign_data_mode,
         );
     }
 
     #[rstest]
-    #[case(2, HashMap::from([(1, 1), (2, 1)]), false)]
-    #[case(2, HashMap::from([(1, 1), (2, 1)]), true)]
-    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false)]
-    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), true)]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), false, SignDataMode::Unverified)]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), true, SignDataMode::Unverified)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, SignDataMode::Unverified)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), true, SignDataMode::Unverified)]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), false, SignDataMode::Verified)]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), false, SignDataMode::Emulated)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, SignDataMode::Verified)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, SignDataMode::Emulated)]
     fn dkg_presign_signs_schnorr_async_class_groups_curve25519(
         #[case] threshold: PartyID,
         #[case] party_to_weight: HashMap<PartyID, Weight>,
         #[case] is_trusted_dealer: bool,
+        #[case] sign_data_mode: SignDataMode,
     ) {
         dkg_presign_signs_async_class_groups_curve25519_internal::<
             crate::curve25519::class_groups::EdDSAProtocol,
@@ -581,10 +1299,12 @@ pub(crate) mod tests {
             threshold,
             party_to_weight,
             HashScheme::SHA512,
+            HashContext::None,
             is_trusted_dealer,
             MESSAGE.as_bytes(),
             verify_eddsa_signature,
             "Class Groups Asynchronous Schnorr Curve25519 (EdDSA)",
+            sign_data_mode,
         )
     }
 
@@ -593,6 +1313,7 @@ pub(crate) mod tests {
         threshold: PartyID,
         party_to_weight: HashMap<PartyID, Weight>,
         hash_type: HashScheme,
+        hash_context: HashContext,
         is_trusted_dealer: bool,
         message: &[u8],
         verify_signature: fn(
@@ -600,10 +1321,54 @@ pub(crate) mod tests {
             signature: P::Signature,
             message: &[u8],
             hash_type: HashScheme,
+            hash_context: &HashContext,
         ) -> crate::Result<()>,
         description: &str,
+        sign_data_mode: SignDataMode,
     ) where
         P: Protocol<
+            PresignPrivateInput = (),
+            SignDecentralizedPartyPrivateInput = HashMap<PartyID, SecretKeyShareSizedInteger>,
+            Presign = crate::class_groups::schnorr::Presign<
+                { curve25519::SCALAR_LIMBS },
+                { crate::curve25519::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::curve25519::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                curve25519::GroupElement,
+            >,
+            SignMessage = schnorr::PartialSignature<
+                group::Value<curve25519::GroupElement>,
+                group::Value<curve25519::Scalar>,
+            >,
+            VerifiedSignData = schnorr::PartialSignature<
+                group::Value<curve25519::GroupElement>,
+                group::Value<curve25519::Scalar>,
+            >,
+            SignDecentralizedPartyPublicInput = crate::schnorr::ahe::sign::decentralized_party::PublicInput<
+                crate::dkg::decentralized_party::VersionedOutput<
+                    { curve25519::SCALAR_LIMBS },
+                    group::Value<curve25519::GroupElement>,
+                    class_groups::CiphertextSpaceValue<{ crate::curve25519::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS }>,
+                >,
+                crate::class_groups::schnorr::Presign<
+                    { curve25519::SCALAR_LIMBS },
+                    { crate::curve25519::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::curve25519::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    curve25519::GroupElement,
+                >,
+                schnorr::PartialSignature<
+                    group::Value<curve25519::GroupElement>,
+                    group::Value<curve25519::Scalar>,
+                >,
+                class_groups::Curve25519DecryptionKeySharePublicParameters,
+                crate::class_groups::ProtocolPublicParameters<
+                    { curve25519::SCALAR_LIMBS },
+                    { crate::curve25519::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::curve25519::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    curve25519::GroupElement,
+                >,
+            >,
+        >,
+        P::DKGProtocol: dkg::Protocol<
             CentralizedPartySecretKeyShare = SecretKeyShare<group::Value<curve25519::Scalar>>,
             CentralizedPartyDKGOutput = dkg::centralized_party::VersionedOutput<
                 { curve25519::SCALAR_LIMBS },
@@ -624,8 +1389,6 @@ pub(crate) mod tests {
                 { crate::curve25519::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
                 curve25519::GroupElement,
             >,
-            DecryptionKeySharePublicParameters = class_groups::Curve25519DecryptionKeySharePublicParameters,
-            DecryptionKeyShare = SecretKeyShareSizedInteger,
             PublicKeyShareAndProof = PublicKeyShareAndProof<
                 group::Value<curve25519::GroupElement>,
                 KnowledgeOfDiscreteLogUCProof<{ curve25519::SCALAR_LIMBS }, curve25519::GroupElement>,
@@ -633,6 +1396,28 @@ pub(crate) mod tests {
             SecretKey = group::Value<curve25519::Scalar>,
         >,
         <<P as Protocol>::SignDecentralizedParty as mpc::Party>::Message: Send + Sync,
+        P::SignCentralizedPartyPublicInput: From<(
+            Vec<u8>,
+            HashScheme,
+            HashContext,
+            dkg::centralized_party::VersionedOutput<
+                { curve25519::SCALAR_LIMBS },
+                group::Value<curve25519::GroupElement>,
+            >,
+            P::Presign,
+            crate::class_groups::ProtocolPublicParameters<
+                { curve25519::SCALAR_LIMBS },
+                { crate::curve25519::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::curve25519::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                curve25519::GroupElement,
+            >,
+        )>,
+        P: PresignPublicInputConstructor<
+            { curve25519::SCALAR_LIMBS },
+            { curve25519::SCALAR_LIMBS },
+            curve25519::GroupElement,
+            Curve25519EncryptionKey,
+        >,
     {
         let access_structure =
             WeightedThresholdAccessStructure::new(threshold, party_to_weight.clone()).unwrap();
@@ -693,46 +1478,76 @@ pub(crate) mod tests {
             })
             .collect();
 
+        // AHE presign uses () as private input
+        let presign_private_inputs: HashMap<PartyID, ()> = access_structure
+            .party_to_virtual_parties()
+            .keys()
+            .map(|&party_id| (party_id, ()))
+            .collect();
+
         dkg_presign_signs_internal::<
             { curve25519::SCALAR_LIMBS },
             { curve25519::SCALAR_LIMBS },
             curve25519::GroupElement,
             Curve25519EncryptionKey,
             P,
+            class_groups::Curve25519DecryptionKeySharePublicParameters,
+            _,
         >(
             dkg_session_id,
             access_structure,
             hash_type,
+            hash_context.clone(),
             decryption_key_share_public_parameters,
-            tangible_party_id_to_virtual_party_id_to_decryption_key_share,
+            |_presign_outputs, _presign| {
+                tangible_party_id_to_virtual_party_id_to_decryption_key_share.clone()
+            },
             message,
             verify_signature,
+            construct_decentralized_schnorr_sign_party_public_inputs_class_groups::<
+                { curve25519::SCALAR_LIMBS },
+                { crate::curve25519::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::curve25519::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                curve25519::GroupElement,
+            >,
             protocol_public_parameters,
+            presign_private_inputs,
             is_trusted_dealer,
+            2, // Schnorr presign has 2 rounds
             description.to_string(),
+            sign_data_mode,
         );
     }
 
     #[rstest]
-    #[case(2, HashMap::from([(1, 1), (2, 1)]), false)]
-    #[case(2, HashMap::from([(1, 1), (2, 1)]), true)]
-    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false)]
-    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), true)]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), false, SignDataMode::Unverified)]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), true, SignDataMode::Unverified)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, SignDataMode::Unverified)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), true, SignDataMode::Unverified)]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), false, SignDataMode::Verified)]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), false, SignDataMode::Emulated)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, SignDataMode::Verified)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, SignDataMode::Emulated)]
     fn dkg_presign_signs_schnorr_async_class_groups_ristretto(
         #[case] threshold: PartyID,
         #[case] party_to_weight: HashMap<PartyID, Weight>,
         #[case] is_trusted_dealer: bool,
+        #[case] sign_data_mode: SignDataMode,
     ) {
         dkg_presign_signs_async_class_groups_ristretto_internal::<
-            crate::ristretto::class_groups::SchnorrkelSubstrateProtocol,
+            crate::ristretto::class_groups::SchnorrkelProtocol,
         >(
             threshold,
             party_to_weight,
             HashScheme::Merlin,
+            HashContext::Schnorrkel {
+                signing_context: b"substrate".to_vec(),
+            },
             is_trusted_dealer,
             MESSAGE.as_bytes(),
             verify_schnorrkel_signature,
             "Class Groups Asynchronous Schnorr Ristretto (Schnorrkel/sr25519)",
+            sign_data_mode,
         )
     }
 
@@ -741,6 +1556,7 @@ pub(crate) mod tests {
         threshold: PartyID,
         party_to_weight: HashMap<PartyID, Weight>,
         hash_type: HashScheme,
+        hash_context: HashContext,
         is_trusted_dealer: bool,
         message: &[u8],
         verify_signature: fn(
@@ -748,10 +1564,54 @@ pub(crate) mod tests {
             signature: P::Signature,
             message: &[u8],
             hash_type: HashScheme,
+            hash_context: &HashContext,
         ) -> crate::Result<()>,
         description: &str,
+        sign_data_mode: SignDataMode,
     ) where
         P: Protocol<
+            PresignPrivateInput = (),
+            SignDecentralizedPartyPrivateInput = HashMap<PartyID, SecretKeyShareSizedInteger>,
+            Presign = crate::class_groups::schnorr::Presign<
+                { ristretto::SCALAR_LIMBS },
+                { crate::ristretto::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::ristretto::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                ristretto::GroupElement,
+            >,
+            SignMessage = schnorr::PartialSignature<
+                group::Value<ristretto::GroupElement>,
+                group::Value<ristretto::Scalar>,
+            >,
+            VerifiedSignData = schnorr::PartialSignature<
+                group::Value<ristretto::GroupElement>,
+                group::Value<ristretto::Scalar>,
+            >,
+            SignDecentralizedPartyPublicInput = crate::schnorr::ahe::sign::decentralized_party::PublicInput<
+                crate::dkg::decentralized_party::VersionedOutput<
+                    { ristretto::SCALAR_LIMBS },
+                    group::Value<ristretto::GroupElement>,
+                    class_groups::CiphertextSpaceValue<{ crate::ristretto::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS }>,
+                >,
+                crate::class_groups::schnorr::Presign<
+                    { ristretto::SCALAR_LIMBS },
+                    { crate::ristretto::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::ristretto::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    ristretto::GroupElement,
+                >,
+                schnorr::PartialSignature<
+                    group::Value<ristretto::GroupElement>,
+                    group::Value<ristretto::Scalar>,
+                >,
+                class_groups::RistrettoDecryptionKeySharePublicParameters,
+                crate::class_groups::ProtocolPublicParameters<
+                    { ristretto::SCALAR_LIMBS },
+                    { crate::ristretto::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::ristretto::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    ristretto::GroupElement,
+                >,
+            >,
+        >,
+        P::DKGProtocol: dkg::Protocol<
             CentralizedPartySecretKeyShare = SecretKeyShare<group::Value<ristretto::Scalar>>,
             CentralizedPartyDKGOutput = dkg::centralized_party::VersionedOutput<
                 { ristretto::SCALAR_LIMBS },
@@ -772,8 +1632,6 @@ pub(crate) mod tests {
                 { crate::ristretto::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
                 ristretto::GroupElement,
             >,
-            DecryptionKeySharePublicParameters = class_groups::RistrettoDecryptionKeySharePublicParameters,
-            DecryptionKeyShare = SecretKeyShareSizedInteger,
             PublicKeyShareAndProof = PublicKeyShareAndProof<
                 group::Value<ristretto::GroupElement>,
                 KnowledgeOfDiscreteLogUCProof<{ ristretto::SCALAR_LIMBS }, ristretto::GroupElement>,
@@ -781,6 +1639,28 @@ pub(crate) mod tests {
             SecretKey = group::Value<ristretto::Scalar>,
         >,
         <<P as Protocol>::SignDecentralizedParty as mpc::Party>::Message: Send + Sync,
+        P::SignCentralizedPartyPublicInput: From<(
+            Vec<u8>,
+            HashScheme,
+            HashContext,
+            dkg::centralized_party::VersionedOutput<
+                { ristretto::SCALAR_LIMBS },
+                group::Value<ristretto::GroupElement>,
+            >,
+            P::Presign,
+            crate::class_groups::ProtocolPublicParameters<
+                { ristretto::SCALAR_LIMBS },
+                { crate::ristretto::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::ristretto::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                ristretto::GroupElement,
+            >,
+        )>,
+        P: PresignPublicInputConstructor<
+            { ristretto::SCALAR_LIMBS },
+            { ristretto::SCALAR_LIMBS },
+            ristretto::GroupElement,
+            RistrettoEncryptionKey,
+        >,
     {
         let access_structure =
             WeightedThresholdAccessStructure::new(threshold, party_to_weight.clone()).unwrap();
@@ -841,36 +1721,67 @@ pub(crate) mod tests {
             })
             .collect();
 
+        // AHE presign uses () as private input
+        let presign_private_inputs: HashMap<PartyID, ()> = access_structure
+            .party_to_virtual_parties()
+            .keys()
+            .map(|&party_id| (party_id, ()))
+            .collect();
+
         dkg_presign_signs_internal::<
             { ristretto::SCALAR_LIMBS },
             { ristretto::SCALAR_LIMBS },
             ristretto::GroupElement,
             RistrettoEncryptionKey,
             P,
+            class_groups::RistrettoDecryptionKeySharePublicParameters,
+            _,
         >(
             dkg_session_id,
             access_structure,
             hash_type,
+            hash_context.clone(),
             decryption_key_share_public_parameters,
-            tangible_party_id_to_virtual_party_id_to_decryption_key_share,
+            |_presign_outputs, _presign| {
+                tangible_party_id_to_virtual_party_id_to_decryption_key_share.clone()
+            },
             message,
             verify_signature,
+            construct_decentralized_schnorr_sign_party_public_inputs_class_groups::<
+                { ristretto::SCALAR_LIMBS },
+                { crate::ristretto::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::ristretto::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                ristretto::GroupElement,
+            >,
             protocol_public_parameters,
+            presign_private_inputs,
             is_trusted_dealer,
+            2, // Schnorr presign has 2 rounds
             description.to_string(),
+            sign_data_mode,
         );
     }
 
     #[rstest]
-    #[case(2, HashMap::from([(1, 1), (2, 1)]), false, HashScheme::SHA256)]
-    #[case(2, HashMap::from([(1, 1), (2, 1)]), true, HashScheme::SHA256)]
-    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, HashScheme::SHA256)]
-    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), true, HashScheme::SHA256)]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), false, HashScheme::SHA256, HashContext::None, SignDataMode::Unverified)]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), true, HashScheme::SHA256, HashContext::None, SignDataMode::Unverified)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, HashScheme::SHA256, HashContext::None, SignDataMode::Unverified)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), true, HashScheme::SHA256, HashContext::None, SignDataMode::Unverified)]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), false, HashScheme::SHA256, HashContext::None, SignDataMode::Verified)]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), false, HashScheme::SHA256, HashContext::None, SignDataMode::Emulated)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, HashScheme::SHA256, HashContext::None, SignDataMode::Verified)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, HashScheme::SHA256, HashContext::None, SignDataMode::Emulated)]
+    // Zcash-style sighash: BLAKE2b-256 personalized digest, ECDSA over secp256k1.
+    // `personal` is a real Zcash sighash personalization (`b"ZcashSigHash" || consensus_branch_id`,
+    // here with a zero branch id) — 16 bytes total, no salt (Zcash sets none).
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), false, HashScheme::Blake2b256, HashContext::Blake2b { personal: b"ZcashSigHash\x00\x00\x00\x00".to_vec(), salt: vec![] }, SignDataMode::Unverified)]
     fn dkg_presign_signs_ecdsa_async_class_groups_secp256k1(
         #[case] threshold: PartyID,
         #[case] party_to_weight: HashMap<PartyID, Weight>,
         #[case] is_trusted_dealer: bool,
         #[case] hash_type: HashScheme,
+        #[case] hash_context: HashContext,
+        #[case] sign_data_mode: SignDataMode,
     ) {
         dkg_presign_signs_async_class_groups_secp256k1_internal::<
             crate::secp256k1::class_groups::ECDSAProtocol,
@@ -878,22 +1789,37 @@ pub(crate) mod tests {
             threshold,
             party_to_weight,
             hash_type,
+            hash_context,
             is_trusted_dealer,
             MESSAGE.as_bytes(),
             verify_secp256k1_ecdsa_signature,
+            construct_decentralized_ecdsa_sign_party_public_inputs_class_groups::<
+                { secp256k1::SCALAR_LIMBS },
+                { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::secp256k1::MESSAGE_LIMBS },
+                secp256k1::GroupElement,
+            >,
+            4, // ECDSA presign has 4 rounds
             "Class Groups Asynchronous ECDSA secp256k1",
+            sign_data_mode,
         )
     }
 
     #[rstest]
-    #[case(2, HashMap::from([(1, 1), (2, 1)]), false)]
-    #[case(2, HashMap::from([(1, 1), (2, 1)]), true)]
-    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false)]
-    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), true)]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), false, SignDataMode::Unverified)]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), true, SignDataMode::Unverified)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, SignDataMode::Unverified)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), true, SignDataMode::Unverified)]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), false, SignDataMode::Verified)]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), false, SignDataMode::Emulated)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, SignDataMode::Verified)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, SignDataMode::Emulated)]
     fn dkg_presign_signs_schnorr_async_class_groups_secp256k1(
         #[case] threshold: PartyID,
         #[case] party_to_weight: HashMap<PartyID, Weight>,
         #[case] is_trusted_dealer: bool,
+        #[case] sign_data_mode: SignDataMode,
     ) {
         dkg_presign_signs_async_class_groups_secp256k1_internal::<
             crate::secp256k1::class_groups::TaprootProtocol,
@@ -901,18 +1827,1210 @@ pub(crate) mod tests {
             threshold,
             party_to_weight,
             HashScheme::SHA256,
+            HashContext::None,
             is_trusted_dealer,
             MESSAGE.as_bytes(),
             verify_taproot_signature,
+            construct_decentralized_schnorr_sign_party_public_inputs_class_groups::<
+                { secp256k1::SCALAR_LIMBS },
+                { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                secp256k1::GroupElement,
+            >,
+            2, // Schnorr presign has 2 rounds
             "Class Groups Asynchronous Schnorr secp256k1 (Taproot)",
+            sign_data_mode,
         )
     }
 
+    #[rstest]
+    #[case(2, 2)]
+    #[case(3, 4)]
+    fn signs_vss_async_schnorr_class_groups_secp256k1(
+        #[case] threshold: PartyID,
+        #[case] number_of_parties: PartyID,
+    ) {
+        signs_vss_async_schnorr_class_groups_secp256k1_internal::<
+            crate::secp256k1::vss::TaprootVSSProtocol,
+        >(
+            threshold,
+            number_of_parties,
+            HashScheme::SHA256,
+            HashContext::None,
+            HashSet::new(),
+            false,
+            true,
+            MESSAGE.as_bytes(),
+            verify_taproot_signature,
+            "VSS Schnorr secp256k1 (Taproot)",
+        )
+    }
+
+    #[rstest]
+    #[case(2, 2, SignDataMode::Unverified)]
+    #[case(3, 4, SignDataMode::Unverified)]
+    #[case(2, 2, SignDataMode::Verified)]
+    #[case(2, 2, SignDataMode::Emulated)]
+    #[case(3, 4, SignDataMode::Verified)]
+    #[case(3, 4, SignDataMode::Emulated)]
+    fn dkg_presign_signs_vss_async_schnorr_class_groups_secp256k1(
+        #[case] threshold: PartyID,
+        #[case] number_of_parties: PartyID,
+        #[case] sign_data_mode: SignDataMode,
+    ) {
+        let (protocol_public_parameters, secret_key_share_first_part, secret_key_share_second_part) =
+            setup_class_groups_secp256k1_with_secrets();
+        dkg_presign_signs_vss_internal::<
+            { secp256k1::SCALAR_LIMBS },
+            { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            secp256k1::GroupElement,
+            crate::secp256k1::vss::TaprootVSSProtocol,
+        >(
+            threshold,
+            number_of_parties,
+            HashScheme::SHA256,
+            HashContext::None,
+            MESSAGE.as_bytes(),
+            verify_taproot_signature,
+            "VSS Schnorr secp256k1 (Taproot)",
+            protocol_public_parameters,
+            secret_key_share_first_part,
+            secret_key_share_second_part,
+            sign_data_mode,
+        )
+    }
+
+    #[rstest]
+    #[case(2, 2)]
+    #[case(3, 4)]
+    fn signs_vss_async_schnorr_class_groups_curve25519(
+        #[case] threshold: PartyID,
+        #[case] number_of_parties: PartyID,
+    ) {
+        signs_vss_async_schnorr_class_groups_curve25519_internal::<
+            crate::curve25519::vss::EdDSAVSSProtocol,
+        >(
+            threshold,
+            number_of_parties,
+            HashScheme::SHA512,
+            HashContext::None,
+            HashSet::new(),
+            false,
+            true,
+            MESSAGE.as_bytes(),
+            verify_eddsa_signature,
+            "VSS Schnorr curve25519 (EdDSA)",
+        )
+    }
+
+    #[rstest]
+    #[case(2, 2, SignDataMode::Unverified)]
+    #[case(3, 4, SignDataMode::Unverified)]
+    #[case(2, 2, SignDataMode::Verified)]
+    #[case(2, 2, SignDataMode::Emulated)]
+    #[case(3, 4, SignDataMode::Verified)]
+    #[case(3, 4, SignDataMode::Emulated)]
+    fn dkg_presign_signs_vss_async_schnorr_class_groups_curve25519(
+        #[case] threshold: PartyID,
+        #[case] number_of_parties: PartyID,
+        #[case] sign_data_mode: SignDataMode,
+    ) {
+        let (protocol_public_parameters, secret_key_share_first_part, secret_key_share_second_part) =
+            setup_class_groups_curve25519_with_secrets();
+        dkg_presign_signs_vss_internal::<
+            { curve25519::SCALAR_LIMBS },
+            { crate::curve25519::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            { crate::curve25519::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            curve25519::GroupElement,
+            crate::curve25519::vss::EdDSAVSSProtocol,
+        >(
+            threshold,
+            number_of_parties,
+            HashScheme::SHA512,
+            HashContext::None,
+            MESSAGE.as_bytes(),
+            verify_eddsa_signature,
+            "VSS Schnorr curve25519 (EdDSA)",
+            protocol_public_parameters,
+            secret_key_share_first_part,
+            secret_key_share_second_part,
+            sign_data_mode,
+        )
+    }
+
+    #[rstest]
+    #[case(2, 2)]
+    #[case(3, 4)]
+    fn signs_vss_async_schnorr_class_groups_ristretto(
+        #[case] threshold: PartyID,
+        #[case] number_of_parties: PartyID,
+    ) {
+        signs_vss_async_schnorr_class_groups_ristretto_internal::<
+            crate::ristretto::vss::SchnorrkelVSSProtocol,
+        >(
+            threshold,
+            number_of_parties,
+            HashScheme::Merlin,
+            HashContext::Schnorrkel {
+                signing_context: b"substrate".to_vec(),
+            },
+            HashSet::new(),
+            false,
+            true,
+            MESSAGE.as_bytes(),
+            verify_schnorrkel_signature,
+            "VSS Schnorr ristretto (Schnorrkel)",
+        )
+    }
+
+    #[rstest]
+    #[case(2, 2, SignDataMode::Unverified)]
+    #[case(3, 4, SignDataMode::Unverified)]
+    #[case(2, 2, SignDataMode::Verified)]
+    #[case(2, 2, SignDataMode::Emulated)]
+    #[case(3, 4, SignDataMode::Verified)]
+    #[case(3, 4, SignDataMode::Emulated)]
+    fn dkg_presign_signs_vss_async_schnorr_class_groups_ristretto(
+        #[case] threshold: PartyID,
+        #[case] number_of_parties: PartyID,
+        #[case] sign_data_mode: SignDataMode,
+    ) {
+        let (protocol_public_parameters, secret_key_share_first_part, secret_key_share_second_part) =
+            setup_class_groups_ristretto_with_secrets();
+        dkg_presign_signs_vss_internal::<
+            { ristretto::SCALAR_LIMBS },
+            { crate::ristretto::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            { crate::ristretto::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            ristretto::GroupElement,
+            crate::ristretto::vss::SchnorrkelVSSProtocol,
+        >(
+            threshold,
+            number_of_parties,
+            HashScheme::Merlin,
+            HashContext::Schnorrkel {
+                signing_context: b"substrate".to_vec(),
+            },
+            MESSAGE.as_bytes(),
+            verify_schnorrkel_signature,
+            "VSS Schnorr ristretto (Schnorrkel)",
+            protocol_public_parameters,
+            secret_key_share_first_part,
+            secret_key_share_second_part,
+            sign_data_mode,
+        )
+    }
+
+    /// VSS DKG + Presign + Sign function (internal implementation).
+    ///
+    /// This function accepts pre-computed Shamir shares and polynomial commitments,
+    /// allowing integration with real enc-to-sharing outputs from reconfiguration.
+    ///
+    /// # Arguments
+    /// * `access_structure` - The weighted threshold access structure (must be weight-1 for VSS)
+    /// * `secret_key_shares` - Per-party Shamir shares: (first_part, second_part) as scalar values
+    /// * `first_secret_key_polynomial_commitments` - Commitments to first polynomial coefficients
+    /// * `second_secret_key_polynomial_commitments` - Commitments to second polynomial coefficients
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn dkg_presign_signs_vss_internal_internal<
+        const SCALAR_LIMBS: usize,
+        const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+        const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
+        P,
+    >(
+        access_structure: WeightedThresholdAccessStructure,
+        hash_type: HashScheme,
+        hash_context: HashContext,
+        message: &[u8],
+        verify_signature: fn(
+            public_key: GroupElement,
+            signature: P::Signature,
+            message: &[u8],
+            hash_type: HashScheme,
+            hash_context: &HashContext,
+        ) -> crate::Result<()>,
+        description: &str,
+        protocol_public_parameters: crate::class_groups::ProtocolPublicParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >,
+        secret_key_shares: HashMap<
+            PartyID,
+            (group::Value<GroupElement::Scalar>, group::Value<GroupElement::Scalar>),
+        >,
+        first_secret_key_polynomial_commitments: Vec<GroupElement::Value>,
+        second_secret_key_polynomial_commitments: Vec<GroupElement::Value>,
+        sign_data_mode: SignDataMode,
+    ) where
+        Int<SCALAR_LIMBS>: Encoding,
+        Uint<SCALAR_LIMBS>: Encoding
+            + ConcatMixed<StatisticalSecuritySizedNumber>
+            + for<'a> From<
+                &'a <Uint<SCALAR_LIMBS> as ConcatMixed<StatisticalSecuritySizedNumber>>::MixedOutput,
+            >,
+        Int<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+        Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+        Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+        Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+        EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+        >,
+        SetupParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >: DeriveFromPlaintextPublicParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >,
+        EncryptionKey<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >: AdditivelyHomomorphicEncryptionKey<
+            SCALAR_LIMBS,
+            PublicParameters = encryption_key::PublicParameters<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                group::PublicParameters<GroupElement::Scalar>,
+            >,
+            PlaintextSpaceGroupElement = GroupElement::Scalar,
+            RandomnessSpaceGroupElement = RandomnessSpaceGroupElement<FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            CiphertextSpaceGroupElement = CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+        >,
+        GroupElement::Scalar: From<Uint<SCALAR_LIMBS>>
+            + Neg<Output = GroupElement::Scalar>
+            + group::Samplable
+            + group::Invert
+            + std::ops::Mul<Output = GroupElement::Scalar>
+            + std::ops::Mul<GroupElement, Output = GroupElement>,
+        group::Value<GroupElement::Scalar>:
+            Into<Uint<SCALAR_LIMBS>> + From<Uint<SCALAR_LIMBS>> + Serialize + for<'a> Deserialize<'a>,
+        group::PublicParameters<GroupElement::Scalar>: Default,
+        GroupElement::Value: Serialize + for<'a> Deserialize<'a> + Default,
+        GroupElement::PublicParameters: Clone + Serialize + for<'a> Deserialize<'a> + PartialEq + Eq + Default,
+        <GroupElement::Scalar as group::GroupElement>::PublicParameters:
+            Clone + Serialize + for<'a> Deserialize<'a> + PartialEq + Eq,
+        P: Protocol<
+            SignDecentralizedPartyPrivateInput = crate::schnorr::vss::sign::decentralized_party::PrivateInput<
+                group::Value<GroupElement::Scalar>,
+                GroupElement::Value,
+            >,
+            Presign = crate::schnorr::vss::presign::Presign<GroupElement::Value>,
+            SignMessage = schnorr::PartialSignature<
+                GroupElement::Value,
+                group::Value<GroupElement::Scalar>,
+            >,
+            VerifiedSignData = schnorr::PartialSignature<
+                GroupElement::Value,
+                group::Value<GroupElement::Scalar>,
+            >,
+            SignDecentralizedPartyPublicInput = crate::schnorr::vss::sign::decentralized_party::PublicInput<
+                crate::dkg::decentralized_party::VersionedOutput<
+                    SCALAR_LIMBS,
+                    GroupElement::Value,
+                    class_groups::CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+                >,
+                crate::schnorr::vss::presign::Presign<GroupElement::Value>,
+                schnorr::PartialSignature<
+                    GroupElement::Value,
+                    group::Value<GroupElement::Scalar>,
+                >,
+                crate::class_groups::ProtocolPublicParameters<
+                    SCALAR_LIMBS,
+                    FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    GroupElement,
+                >,
+                GroupElement::Value,
+            >,
+            SignCentralizedPartyPublicInput = crate::schnorr::vss::sign::centralized_party::PublicInput<
+                dkg::centralized_party::VersionedOutput<
+                    SCALAR_LIMBS,
+                    GroupElement::Value,
+                >,
+                crate::schnorr::vss::presign::Presign<GroupElement::Value>,
+                crate::class_groups::ProtocolPublicParameters<
+                    SCALAR_LIMBS,
+                    FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    GroupElement,
+                >,
+            >,
+            PresignPublicInput = crate::schnorr::vss::presign::decentralized_party::party::PublicInput<
+                crate::class_groups::ProtocolPublicParameters<
+                    SCALAR_LIMBS,
+                    FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    GroupElement,
+                >,
+            >,
+            PresignPrivateInput = crate::schnorr::vss::presign::decentralized_party::PrivateInput,
+        >,
+        P::DKGProtocol: dkg::Protocol<
+            CentralizedPartySecretKeyShare = SecretKeyShare<group::Value<GroupElement::Scalar>>,
+            CentralizedPartyDKGOutput = dkg::centralized_party::VersionedOutput<
+                SCALAR_LIMBS,
+                GroupElement::Value,
+            >,
+            DecentralizedPartyDKGOutput = crate::dkg::decentralized_party::VersionedOutput<
+                SCALAR_LIMBS,
+                GroupElement::Value,
+                class_groups::CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            >,
+            DecentralizedPartyTargetedDKGOutput = crate::dkg::decentralized_party::Output<
+                GroupElement::Value,
+                class_groups::CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            >,
+            ProtocolPublicParameters = crate::class_groups::ProtocolPublicParameters<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+            PublicKeyShareAndProof = PublicKeyShareAndProof<
+                GroupElement::Value,
+                KnowledgeOfDiscreteLogUCProof<SCALAR_LIMBS, GroupElement>,
+            >,
+            SecretKey = group::Value<GroupElement::Scalar>,
+        >,
+        crate::class_groups::ProtocolPublicParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >: AsRef<
+            ProtocolPublicParameters<
+                group::PublicParameters<GroupElement::Scalar>,
+                GroupElement::PublicParameters,
+                GroupElement::Value,
+                homomorphic_encryption::CiphertextSpaceValue<
+                    SCALAR_LIMBS,
+                    EncryptionKey<
+                        SCALAR_LIMBS,
+                        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                        GroupElement,
+                    >,
+                >,
+                <EncryptionKey<
+                    SCALAR_LIMBS,
+                    FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    GroupElement,
+                > as AdditivelyHomomorphicEncryptionKey<SCALAR_LIMBS>>::PublicParameters,
+            >,
+        >,
+        <<P as Protocol>::SignDecentralizedParty as mpc::Party>::Message: Send + Sync,
+        P::PresignParty: mpc::Party<
+            PrivateOutput = Vec<
+                crate::schnorr::vss::presign::PrivatePresignOutput<
+                    group::Value<GroupElement::Scalar>,
+                    GroupElement::Value,
+                >,
+            >,
+        >,
+    {
+        let dkg_session_id = CommitmentSizedNumber::random(&mut OsCsRng);
+        let (
+            centralized_party_dkg_output,
+            centralized_party_secret_key_share,
+            decentralized_party_dkg_output,
+        ) = generates_distributed_key_internal::<
+            SCALAR_LIMBS,
+            SCALAR_LIMBS,
+            GroupElement,
+            EncryptionKey<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+            P::DKGProtocol,
+        >(
+            dkg_session_id,
+            access_structure.clone(),
+            protocol_public_parameters.clone(),
+            description.to_string(),
+            sign_data_mode == SignDataMode::Emulated,
+        );
+
+        let party_to_weight = access_structure.party_to_weight.clone();
+
+        // Setup VSS-specific presign inputs
+        let (
+            _presign_session_id,
+            _presign_access_structure,
+            presign_public_inputs,
+            presign_private_inputs,
+        ) = setup_vss_presign(
+            access_structure.threshold,
+            party_to_weight.clone(),
+            protocol_public_parameters.clone(),
+        );
+
+        let presign_public_input = presign_public_inputs.values().next().unwrap().clone();
+
+        let protocol_public_parameters = Arc::new(protocol_public_parameters);
+
+        // Build sign private inputs callback that combines DKG secret key shares with presign outputs
+        let construct_sign_private_inputs = {
+            let secret_key_shares = secret_key_shares.clone();
+            move |presign_private_outputs: &HashMap<
+                PartyID,
+                Vec<
+                    PrivatePresignOutput<
+                        group::Value<GroupElement::Scalar>,
+                        GroupElement::Value,
+                    >,
+                >,
+            >,
+                  _presign: &crate::schnorr::vss::presign::Presign<
+                GroupElement::Value,
+            >| {
+                presign_private_outputs
+                    .iter()
+                    .map(|(&party_id, party_presign_outputs)| {
+                        let (secret_key_share_first, secret_key_share_second) =
+                            secret_key_shares.get(&party_id).unwrap();
+                        let presign_output = party_presign_outputs.last().unwrap();
+
+                        let private_input = VSSPrivateInput {
+                            secret_key_share_first_part: *secret_key_share_first,
+                            secret_key_share_second_part: *secret_key_share_second,
+                            session_id: presign_output.session_id,
+                            presign_blending_index: presign_output.presign_blending_index,
+                            nonce_share_first_part: presign_output.nonce_share_first_part,
+                            nonce_share_second_part: presign_output.nonce_share_second_part,
+                            first_nonce_polynomial_commitments: presign_output
+                                .nonce_share_first_part_coefficient_commitments
+                                .clone(),
+                            second_nonce_polynomial_commitments: presign_output
+                                .nonce_share_second_part_coefficient_commitments
+                                .clone(),
+                        };
+
+                        (party_id, private_input)
+                    })
+                    .collect()
+            }
+        };
+
+        presign_signs_internal::<
+            SCALAR_LIMBS,
+            SCALAR_LIMBS,
+            GroupElement,
+            EncryptionKey<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+            P,
+            (Vec<GroupElement::Value>, Vec<GroupElement::Value>),
+            _,
+        >(
+            access_structure,
+            hash_type,
+            hash_context.clone(),
+            centralized_party_dkg_output,
+            centralized_party_secret_key_share,
+            decentralized_party_dkg_output,
+            (
+                first_secret_key_polynomial_commitments,
+                second_secret_key_polynomial_commitments,
+            ),
+            construct_sign_private_inputs,
+            message,
+            verify_signature,
+            construct_decentralized_schnorr_vss_sign_party_public_inputs::<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+            protocol_public_parameters,
+            presign_public_input,
+            presign_private_inputs,
+            3, // VSS presign has 3 rounds
+            description.to_string(),
+            sign_data_mode,
+        );
+    }
+
+    /// VSS DKG + Presign + Sign internal function with malicious party support.
+    ///
+    /// This variant of `dkg_presign_signs_vss_internal_internal` corrupts the secret key shares
+    /// for specified malicious parties, causing them to produce incorrect signature shares.
+    /// The malicious detection path should detect these parties and reconstruct the signature
+    /// from honest parties.
+    ///
+    /// # Arguments
+    /// * `access_structure` - The weighted threshold access structure (must be weight-1 for VSS)
+    /// * `secret_key_shares` - Per-party Shamir shares: (first_part, second_part) as scalar values
+    /// * `first_secret_key_polynomial_commitments` - Commitments to first polynomial coefficients
+    /// * `second_secret_key_polynomial_commitments` - Commitments to second polynomial coefficients
+    /// * `malicious_parties` - Set of party IDs that should submit incorrect signature shares
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn dkg_presign_signs_vss_with_malicious_internal<
+        const SCALAR_LIMBS: usize,
+        const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+        const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
+        P,
+    >(
+        access_structure: WeightedThresholdAccessStructure,
+        hash_type: HashScheme,
+        hash_context: HashContext,
+        message: &[u8],
+        verify_signature: fn(
+            public_key: GroupElement,
+            signature: P::Signature,
+            message: &[u8],
+            hash_type: HashScheme,
+            hash_context: &HashContext,
+        ) -> crate::Result<()>,
+        description: &str,
+        protocol_public_parameters: crate::class_groups::ProtocolPublicParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >,
+    // Required: Shamir shares (two scalar values per party)
+        secret_key_shares: HashMap<
+            PartyID,
+            (group::Value<GroupElement::Scalar>, group::Value<GroupElement::Scalar>),
+        >,
+        first_secret_key_polynomial_commitments: Vec<GroupElement::Value>,
+        second_secret_key_polynomial_commitments: Vec<GroupElement::Value>,
+        malicious_parties: HashSet<PartyID>,
+    ) where
+        Int<SCALAR_LIMBS>: Encoding,
+        Uint<SCALAR_LIMBS>: Encoding
+            + ConcatMixed<StatisticalSecuritySizedNumber>
+            + for<'a> From<
+                &'a <Uint<SCALAR_LIMBS> as ConcatMixed<StatisticalSecuritySizedNumber>>::MixedOutput,
+            >,
+        Int<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+        Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+        Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+        Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+        EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+        >,
+        SetupParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >: DeriveFromPlaintextPublicParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >,
+        EncryptionKey<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >: AdditivelyHomomorphicEncryptionKey<
+            SCALAR_LIMBS,
+            PublicParameters = encryption_key::PublicParameters<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                group::PublicParameters<GroupElement::Scalar>,
+            >,
+            PlaintextSpaceGroupElement = GroupElement::Scalar,
+            RandomnessSpaceGroupElement = RandomnessSpaceGroupElement<FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            CiphertextSpaceGroupElement = CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+        >,
+        GroupElement::Scalar: From<Uint<SCALAR_LIMBS>>
+            + Neg<Output = GroupElement::Scalar>
+            + group::Samplable
+            + group::Invert
+            + std::ops::Mul<Output = GroupElement::Scalar>
+            + std::ops::Mul<GroupElement, Output = GroupElement>,
+        group::Value<GroupElement::Scalar>:
+            Into<Uint<SCALAR_LIMBS>> + From<Uint<SCALAR_LIMBS>> + Serialize + for<'a> Deserialize<'a>,
+        group::PublicParameters<GroupElement::Scalar>: Default,
+        GroupElement::Value: Serialize + for<'a> Deserialize<'a> + Default,
+        GroupElement::PublicParameters: Clone + Serialize + for<'a> Deserialize<'a> + PartialEq + Eq + Default,
+        <GroupElement::Scalar as group::GroupElement>::PublicParameters:
+            Clone + Serialize + for<'a> Deserialize<'a> + PartialEq + Eq,
+        P: Protocol<
+            SignDecentralizedPartyPrivateInput = crate::schnorr::vss::sign::decentralized_party::PrivateInput<
+                group::Value<GroupElement::Scalar>,
+                GroupElement::Value,
+            >,
+            Presign = crate::schnorr::vss::presign::Presign<GroupElement::Value>,
+            SignMessage = schnorr::PartialSignature<
+                GroupElement::Value,
+                group::Value<GroupElement::Scalar>,
+            >,
+            VerifiedSignData = schnorr::PartialSignature<
+                GroupElement::Value,
+                group::Value<GroupElement::Scalar>,
+            >,
+            SignDecentralizedPartyPublicInput = crate::schnorr::vss::sign::decentralized_party::PublicInput<
+                crate::dkg::decentralized_party::VersionedOutput<
+                    SCALAR_LIMBS,
+                    GroupElement::Value,
+                    class_groups::CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+                >,
+                crate::schnorr::vss::presign::Presign<GroupElement::Value>,
+                schnorr::PartialSignature<
+                    GroupElement::Value,
+                    group::Value<GroupElement::Scalar>,
+                >,
+                crate::class_groups::ProtocolPublicParameters<
+                    SCALAR_LIMBS,
+                    FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    GroupElement,
+                >,
+                GroupElement::Value,
+            >,
+            SignCentralizedPartyPublicInput = crate::schnorr::vss::sign::centralized_party::PublicInput<
+                dkg::centralized_party::VersionedOutput<
+                    SCALAR_LIMBS,
+                    GroupElement::Value,
+                >,
+                crate::schnorr::vss::presign::Presign<GroupElement::Value>,
+                crate::class_groups::ProtocolPublicParameters<
+                    SCALAR_LIMBS,
+                    FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    GroupElement,
+                >,
+            >,
+            PresignPublicInput = crate::schnorr::vss::presign::decentralized_party::party::PublicInput<
+                crate::class_groups::ProtocolPublicParameters<
+                    SCALAR_LIMBS,
+                    FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    GroupElement,
+                >,
+            >,
+            PresignPrivateInput = crate::schnorr::vss::presign::decentralized_party::PrivateInput,
+        >,
+        P::DKGProtocol: dkg::Protocol<
+            CentralizedPartySecretKeyShare = SecretKeyShare<group::Value<GroupElement::Scalar>>,
+            CentralizedPartyDKGOutput = dkg::centralized_party::VersionedOutput<
+                SCALAR_LIMBS,
+                GroupElement::Value,
+            >,
+            DecentralizedPartyDKGOutput = crate::dkg::decentralized_party::VersionedOutput<
+                SCALAR_LIMBS,
+                GroupElement::Value,
+                class_groups::CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            >,
+            DecentralizedPartyTargetedDKGOutput = crate::dkg::decentralized_party::Output<
+                GroupElement::Value,
+                class_groups::CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            >,
+            ProtocolPublicParameters = crate::class_groups::ProtocolPublicParameters<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+            PublicKeyShareAndProof = PublicKeyShareAndProof<
+                GroupElement::Value,
+                KnowledgeOfDiscreteLogUCProof<SCALAR_LIMBS, GroupElement>,
+            >,
+            SecretKey = group::Value<GroupElement::Scalar>,
+        >,
+        crate::class_groups::ProtocolPublicParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >: AsRef<
+            ProtocolPublicParameters<
+                group::PublicParameters<GroupElement::Scalar>,
+                GroupElement::PublicParameters,
+                GroupElement::Value,
+                homomorphic_encryption::CiphertextSpaceValue<
+                    SCALAR_LIMBS,
+                    EncryptionKey<
+                        SCALAR_LIMBS,
+                        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                        GroupElement,
+                    >,
+                >,
+                <EncryptionKey<
+                    SCALAR_LIMBS,
+                    FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    GroupElement,
+                > as AdditivelyHomomorphicEncryptionKey<SCALAR_LIMBS>>::PublicParameters,
+            >,
+        >,
+        <<P as Protocol>::SignDecentralizedParty as mpc::Party>::Message: Send + Sync,
+        P::PresignParty: mpc::Party<
+            PrivateOutput = Vec<
+                crate::schnorr::vss::presign::PrivatePresignOutput<
+                    group::Value<GroupElement::Scalar>,
+                    GroupElement::Value,
+                >,
+            >,
+        >,
+    {
+        let dkg_session_id = CommitmentSizedNumber::random(&mut OsCsRng);
+        let (
+            centralized_party_dkg_output,
+            centralized_party_secret_key_share,
+            decentralized_party_dkg_output,
+        ) = generates_distributed_key_internal::<
+            SCALAR_LIMBS,
+            SCALAR_LIMBS,
+            GroupElement,
+            EncryptionKey<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+            P::DKGProtocol,
+        >(
+            dkg_session_id,
+            access_structure.clone(),
+            protocol_public_parameters.clone(),
+            description.to_string(),
+            false,
+        );
+
+        let party_to_weight = access_structure.party_to_weight.clone();
+
+        let scalar_group_public_parameters =
+            group::PublicParameters::<GroupElement::Scalar>::default();
+
+        // Setup VSS-specific presign inputs
+        let (
+            _presign_session_id,
+            _presign_access_structure,
+            presign_public_inputs,
+            presign_private_inputs,
+        ) = setup_vss_presign(
+            access_structure.threshold,
+            party_to_weight.clone(),
+            protocol_public_parameters.clone(),
+        );
+
+        let presign_public_input = presign_public_inputs.values().next().unwrap().clone();
+
+        let protocol_public_parameters = Arc::new(protocol_public_parameters);
+
+        // Build sign private inputs callback that combines DKG secret key shares with presign outputs.
+        // For malicious parties, we corrupt their secret key shares to cause incorrect signature shares.
+        let construct_sign_private_inputs = {
+            let secret_key_shares = secret_key_shares.clone();
+            let malicious_parties = malicious_parties.clone();
+            let scalar_group_public_parameters = scalar_group_public_parameters.clone();
+            move |presign_private_outputs: &HashMap<
+                PartyID,
+                Vec<
+                    PrivatePresignOutput<
+                        group::Value<GroupElement::Scalar>,
+                        GroupElement::Value,
+                    >,
+                >,
+            >,
+                  _presign: &crate::schnorr::vss::presign::Presign<
+                GroupElement::Value,
+            >| {
+                presign_private_outputs
+                    .iter()
+                    .map(|(&party_id, party_presign_outputs)| {
+                        let (original_secret_key_share_first, original_secret_key_share_second) =
+                            secret_key_shares.get(&party_id).unwrap();
+
+                        // Corrupt shares for malicious parties by sampling random wrong values
+                        let (secret_key_share_first, secret_key_share_second) =
+                            if malicious_parties.contains(&party_id) {
+                                let wrong_first = GroupElement::Scalar::sample(&scalar_group_public_parameters, &mut OsCsRng)
+                                    .unwrap()
+                                    .value();
+                                let wrong_second = GroupElement::Scalar::sample(&scalar_group_public_parameters, &mut OsCsRng)
+                                    .unwrap()
+                                    .value();
+                                (wrong_first, wrong_second)
+                            } else {
+                                (*original_secret_key_share_first, *original_secret_key_share_second)
+                            };
+
+                        let presign_output = party_presign_outputs.last().unwrap();
+
+                        let private_input = VSSPrivateInput {
+                            secret_key_share_first_part: secret_key_share_first,
+                            secret_key_share_second_part: secret_key_share_second,
+                            session_id: presign_output.session_id,
+                            presign_blending_index: presign_output.presign_blending_index,
+                            nonce_share_first_part: presign_output.nonce_share_first_part,
+                            nonce_share_second_part: presign_output.nonce_share_second_part,
+                            first_nonce_polynomial_commitments: presign_output
+                                .nonce_share_first_part_coefficient_commitments
+                                .clone(),
+                            second_nonce_polynomial_commitments: presign_output
+                                .nonce_share_second_part_coefficient_commitments
+                                .clone(),
+                        };
+
+                        (party_id, private_input)
+                    })
+                    .collect()
+            }
+        };
+
+        presign_signs_internal_with_malicious::<
+            SCALAR_LIMBS,
+            SCALAR_LIMBS,
+            GroupElement,
+            EncryptionKey<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+            P,
+            (Vec<GroupElement::Value>, Vec<GroupElement::Value>),
+            _,
+        >(
+            access_structure,
+            hash_type,
+            hash_context.clone(),
+            centralized_party_dkg_output,
+            centralized_party_secret_key_share,
+            decentralized_party_dkg_output,
+            (
+                first_secret_key_polynomial_commitments,
+                second_secret_key_polynomial_commitments,
+            ),
+            construct_sign_private_inputs,
+            message,
+            verify_signature,
+            construct_decentralized_schnorr_vss_sign_party_public_inputs::<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+            protocol_public_parameters,
+            presign_public_input,
+            presign_private_inputs,
+            3, // VSS presign has 3 rounds
+            description.to_string(),
+            malicious_parties,
+        );
+    }
+
+    /// VSS DKG + Presign + Sign function.
+    ///
+    /// This function follows the same pattern as `dkg_presign_signs_internal` but with VSS-specific setup:
+    /// - Weight-1 access structure (required by VSS)
+    /// - Shamir polynomial generation for secret key and nonce shares
+    /// - VSS-specific private inputs
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn dkg_presign_signs_vss_internal<
+        const SCALAR_LIMBS: usize,
+        const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+        const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
+        P,
+    >(
+        threshold: PartyID,
+        number_of_parties: PartyID,
+        hash_type: HashScheme,
+        hash_context: HashContext,
+        message: &[u8],
+        verify_signature: fn(
+            public_key: GroupElement,
+            signature: P::Signature,
+            message: &[u8],
+            hash_type: HashScheme,
+            hash_context: &HashContext,
+        ) -> crate::Result<()>,
+        description: &str,
+        protocol_public_parameters: crate::class_groups::ProtocolPublicParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >,
+        decentralized_party_secret_key_share_first_part: group::Value<GroupElement::Scalar>,
+        decentralized_party_secret_key_share_second_part: group::Value<GroupElement::Scalar>,
+        sign_data_mode: SignDataMode,
+    ) where
+        Int<SCALAR_LIMBS>: Encoding,
+        Uint<SCALAR_LIMBS>: Encoding
+            + ConcatMixed<StatisticalSecuritySizedNumber>
+            + for<'a> From<
+                &'a <Uint<SCALAR_LIMBS> as ConcatMixed<StatisticalSecuritySizedNumber>>::MixedOutput,
+            >,
+        Int<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+        Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+        Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+        Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+        EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+        >,
+        SetupParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >: DeriveFromPlaintextPublicParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >,
+        EncryptionKey<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >: AdditivelyHomomorphicEncryptionKey<
+            SCALAR_LIMBS,
+            PublicParameters = encryption_key::PublicParameters<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                group::PublicParameters<GroupElement::Scalar>,
+            >,
+            PlaintextSpaceGroupElement = GroupElement::Scalar,
+            RandomnessSpaceGroupElement = RandomnessSpaceGroupElement<FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            CiphertextSpaceGroupElement = CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+        >,
+        GroupElement::Scalar: From<Uint<SCALAR_LIMBS>>
+            + Neg<Output = GroupElement::Scalar>
+            + group::Samplable
+            + group::Invert
+            + std::ops::Mul<Output = GroupElement::Scalar>
+            + std::ops::Mul<GroupElement, Output = GroupElement>,
+        group::Value<GroupElement::Scalar>:
+            Into<Uint<SCALAR_LIMBS>> + From<Uint<SCALAR_LIMBS>> + Serialize + for<'a> Deserialize<'a>,
+        group::PublicParameters<GroupElement::Scalar>: Default,
+        GroupElement::Value: Serialize + for<'a> Deserialize<'a> + Default,
+        GroupElement::PublicParameters: Clone + Serialize + for<'a> Deserialize<'a> + PartialEq + Eq + Default,
+        <GroupElement::Scalar as group::GroupElement>::PublicParameters:
+            Clone + Serialize + for<'a> Deserialize<'a> + PartialEq + Eq,
+        P: Protocol<
+            SignDecentralizedPartyPrivateInput = crate::schnorr::vss::sign::decentralized_party::PrivateInput<
+                group::Value<GroupElement::Scalar>,
+                GroupElement::Value,
+            >,
+            Presign = crate::schnorr::vss::presign::Presign<GroupElement::Value>,
+            SignMessage = schnorr::PartialSignature<
+                GroupElement::Value,
+                group::Value<GroupElement::Scalar>,
+            >,
+            VerifiedSignData = schnorr::PartialSignature<
+                GroupElement::Value,
+                group::Value<GroupElement::Scalar>,
+            >,
+            SignDecentralizedPartyPublicInput = crate::schnorr::vss::sign::decentralized_party::PublicInput<
+                crate::dkg::decentralized_party::VersionedOutput<
+                    SCALAR_LIMBS,
+                    GroupElement::Value,
+                    class_groups::CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+                >,
+                crate::schnorr::vss::presign::Presign<GroupElement::Value>,
+                schnorr::PartialSignature<
+                    GroupElement::Value,
+                    group::Value<GroupElement::Scalar>,
+                >,
+                crate::class_groups::ProtocolPublicParameters<
+                    SCALAR_LIMBS,
+                    FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    GroupElement,
+                >,
+                GroupElement::Value,
+            >,
+            SignCentralizedPartyPublicInput = crate::schnorr::vss::sign::centralized_party::PublicInput<
+                dkg::centralized_party::VersionedOutput<
+                    SCALAR_LIMBS,
+                    GroupElement::Value,
+                >,
+                crate::schnorr::vss::presign::Presign<GroupElement::Value>,
+                crate::class_groups::ProtocolPublicParameters<
+                    SCALAR_LIMBS,
+                    FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    GroupElement,
+                >,
+            >,
+            PresignPublicInput = crate::schnorr::vss::presign::decentralized_party::party::PublicInput<
+                crate::class_groups::ProtocolPublicParameters<
+                    SCALAR_LIMBS,
+                    FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    GroupElement,
+                >,
+            >,
+            PresignPrivateInput = crate::schnorr::vss::presign::decentralized_party::PrivateInput,
+        >,
+        P::DKGProtocol: dkg::Protocol<
+            CentralizedPartySecretKeyShare = SecretKeyShare<group::Value<GroupElement::Scalar>>,
+            CentralizedPartyDKGOutput = dkg::centralized_party::VersionedOutput<
+                SCALAR_LIMBS,
+                GroupElement::Value,
+            >,
+            DecentralizedPartyDKGOutput = crate::dkg::decentralized_party::VersionedOutput<
+                SCALAR_LIMBS,
+                GroupElement::Value,
+                class_groups::CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            >,
+            DecentralizedPartyTargetedDKGOutput = crate::dkg::decentralized_party::Output<
+                GroupElement::Value,
+                class_groups::CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            >,
+            ProtocolPublicParameters = crate::class_groups::ProtocolPublicParameters<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+            PublicKeyShareAndProof = PublicKeyShareAndProof<
+                GroupElement::Value,
+                KnowledgeOfDiscreteLogUCProof<SCALAR_LIMBS, GroupElement>,
+            >,
+            SecretKey = group::Value<GroupElement::Scalar>,
+        >,
+        <<P as Protocol>::SignDecentralizedParty as mpc::Party>::Message: Send + Sync,
+        P::PresignParty: mpc::Party<
+            PrivateOutput = Vec<
+                crate::schnorr::vss::presign::PrivatePresignOutput<
+                    group::Value<GroupElement::Scalar>,
+                    GroupElement::Value,
+                >,
+            >,
+        >,
+    {
+        // VSS requires weight-1 access structure
+        let party_to_weight: HashMap<PartyID, Weight> =
+            (1..=number_of_parties).map(|id| (id, 1)).collect();
+        let access_structure =
+            WeightedThresholdAccessStructure::new(threshold, party_to_weight.clone()).unwrap();
+
+        let scalar_group_public_parameters =
+            group::PublicParameters::<GroupElement::Scalar>::default();
+        let group_params = GroupElement::PublicParameters::default();
+
+        let party_ids: Vec<PartyID> = (1..=number_of_parties).collect();
+        let generator = GroupElement::generator_from_public_parameters(&group_params).unwrap();
+
+        // Mock enc-to-sharing by generating Shamir polynomials for secret keys,
+        // using the actual secret key share parts as free coefficients to ensure
+        // consistency with the protocol public parameters used by the DKG.
+        let secret_first = GroupElement::Scalar::new(
+            decentralized_party_secret_key_share_first_part,
+            &scalar_group_public_parameters,
+        )
+        .unwrap();
+        let first_secret_key_coefficients: Vec<_> = std::iter::once(secret_first)
+            .chain((1..threshold).map(|_| {
+                GroupElement::Scalar::sample(&scalar_group_public_parameters, &mut OsCsRng).unwrap()
+            }))
+            .collect();
+
+        let secret_second = GroupElement::Scalar::new(
+            decentralized_party_secret_key_share_second_part,
+            &scalar_group_public_parameters,
+        )
+        .unwrap();
+        let second_secret_key_coefficients: Vec<_> = std::iter::once(secret_second)
+            .chain((1..threshold).map(|_| {
+                GroupElement::Scalar::sample(&scalar_group_public_parameters, &mut OsCsRng).unwrap()
+            }))
+            .collect();
+
+        // Create Polynomial structs for evaluation
+        let first_secret_key_polynomial =
+            Polynomial::try_from(first_secret_key_coefficients.clone()).unwrap();
+        let second_secret_key_polynomial =
+            Polynomial::try_from(second_secret_key_coefficients.clone()).unwrap();
+
+        // Compute secret key shares by evaluating polynomials at party IDs
+        let secret_key_shares: HashMap<_, _> = party_ids
+            .iter()
+            .map(|&party_id| {
+                let share_first = first_secret_key_polynomial.evaluate_degree(
+                    party_id,
+                    false,
+                    &scalar_group_public_parameters,
+                );
+                let share_second = second_secret_key_polynomial.evaluate_degree(
+                    party_id,
+                    false,
+                    &scalar_group_public_parameters,
+                );
+                (party_id, (share_first.value(), share_second.value()))
+            })
+            .collect();
+
+        // Generate polynomial commitments for secret key polynomials
+        let first_secret_key_polynomial_commitments: Vec<_> = first_secret_key_coefficients
+            .iter()
+            .map(|coeff| (*coeff * generator).value())
+            .collect();
+        let second_secret_key_polynomial_commitments: Vec<_> = second_secret_key_coefficients
+            .iter()
+            .map(|coeff| (*coeff * generator).value())
+            .collect();
+
+        // Call the internal implementation with shares and polynomial commitments
+        dkg_presign_signs_vss_internal_internal::<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+            P,
+        >(
+            access_structure,
+            hash_type,
+            hash_context.clone(),
+            message,
+            verify_signature,
+            description,
+            protocol_public_parameters,
+            secret_key_shares,
+            first_secret_key_polynomial_commitments,
+            second_secret_key_polynomial_commitments,
+            sign_data_mode,
+        );
+    }
 
     pub(crate) fn dkg_presign_signs_async_class_groups_secp256k1_internal<P>(
         threshold: PartyID,
         party_to_weight: HashMap<PartyID, Weight>,
         hash_type: HashScheme,
+        hash_context: HashContext,
         is_trusted_dealer: bool,
         message: &[u8],
         verify_signature: fn(
@@ -920,10 +3038,37 @@ pub(crate) mod tests {
             signature: P::Signature,
             message: &[u8],
             hash_type: HashScheme,
+            hash_context: &HashContext,
         ) -> crate::Result<()>,
+        construct_sign_public_input: fn(
+            protocol_public_parameters: Arc<
+                crate::secp256k1::class_groups::ProtocolPublicParameters,
+            >,
+            dkg_output: crate::class_groups::DKGDecentralizedPartyVersionedOutput<
+                { secp256k1::SCALAR_LIMBS },
+                { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                secp256k1::GroupElement,
+            >,
+            presign: P::Presign,
+            decryption_key_share_public_parameters: Arc<
+                class_groups::Secp256k1DecryptionKeySharePublicParameters,
+            >,
+            message: Vec<u8>,
+            hash_type: HashScheme,
+            hash_context: HashContext,
+            sign_data: SignData<P::SignMessage, P::VerifiedSignData>,
+            expected_decrypters: HashSet<PartyID>,
+        ) -> P::SignDecentralizedPartyPublicInput,
+        number_of_rounds: usize,
         description: &str,
+        sign_data_mode: SignDataMode,
     ) where
         P: Protocol<
+            PresignPrivateInput = (),
+            SignDecentralizedPartyPrivateInput = HashMap<PartyID, SecretKeyShareSizedInteger>,
+        >,
+        P::DKGProtocol: dkg::Protocol<
             CentralizedPartySecretKeyShare = SecretKeyShare<group::Value<secp256k1::Scalar>>,
             CentralizedPartyDKGOutput = dkg::centralized_party::VersionedOutput<
                 { secp256k1::SCALAR_LIMBS },
@@ -932,11 +3077,15 @@ pub(crate) mod tests {
             DecentralizedPartyDKGOutput = crate::dkg::decentralized_party::VersionedOutput<
                 { secp256k1::SCALAR_LIMBS },
                 group::Value<secp256k1::GroupElement>,
-                class_groups::CiphertextSpaceValue<{ crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS }>,
+                class_groups::CiphertextSpaceValue<
+                    { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                >,
             >,
             DecentralizedPartyTargetedDKGOutput = crate::dkg::decentralized_party::Output<
                 group::Value<secp256k1::GroupElement>,
-                class_groups::CiphertextSpaceValue<{ crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS }>,
+                class_groups::CiphertextSpaceValue<
+                    { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                >,
             >,
             ProtocolPublicParameters = crate::class_groups::ProtocolPublicParameters<
                 { secp256k1::SCALAR_LIMBS },
@@ -944,8 +3093,6 @@ pub(crate) mod tests {
                 { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
                 secp256k1::GroupElement,
             >,
-            DecryptionKeySharePublicParameters = class_groups::Secp256k1DecryptionKeySharePublicParameters,
-            DecryptionKeyShare = SecretKeyShareSizedInteger,
             PublicKeyShareAndProof = PublicKeyShareAndProof<
                 group::Value<secp256k1::GroupElement>,
                 KnowledgeOfDiscreteLogUCProof<{ secp256k1::SCALAR_LIMBS }, secp256k1::GroupElement>,
@@ -953,6 +3100,28 @@ pub(crate) mod tests {
             SecretKey = group::Value<secp256k1::Scalar>,
         >,
         <<P as Protocol>::SignDecentralizedParty as mpc::Party>::Message: Send + Sync,
+        P::SignCentralizedPartyPublicInput: From<(
+            Vec<u8>,
+            HashScheme,
+            HashContext,
+            dkg::centralized_party::VersionedOutput<
+                { secp256k1::SCALAR_LIMBS },
+                group::Value<secp256k1::GroupElement>,
+            >,
+            P::Presign,
+            crate::class_groups::ProtocolPublicParameters<
+                { secp256k1::SCALAR_LIMBS },
+                { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                secp256k1::GroupElement,
+            >,
+        )>,
+        P: PresignPublicInputConstructor<
+            { secp256k1::SCALAR_LIMBS },
+            { secp256k1::SCALAR_LIMBS },
+            secp256k1::GroupElement,
+            Secp256k1EncryptionKey,
+        >,
     {
         let access_structure =
             WeightedThresholdAccessStructure::new(threshold, party_to_weight.clone()).unwrap();
@@ -1013,23 +3182,39 @@ pub(crate) mod tests {
             })
             .collect();
 
+        // AHE presign uses () as private input
+        let presign_private_inputs: HashMap<PartyID, ()> = access_structure
+            .party_to_virtual_parties()
+            .keys()
+            .map(|&party_id| (party_id, ()))
+            .collect();
+
         dkg_presign_signs_internal::<
             { secp256k1::SCALAR_LIMBS },
             { secp256k1::SCALAR_LIMBS },
             secp256k1::GroupElement,
             Secp256k1EncryptionKey,
             P,
+            class_groups::Secp256k1DecryptionKeySharePublicParameters,
+            _,
         >(
             dkg_session_id,
             access_structure,
             hash_type,
+            hash_context.clone(),
             decryption_key_share_public_parameters,
-            tangible_party_id_to_virtual_party_id_to_decryption_key_share,
+            |_presign_outputs, _presign| {
+                tangible_party_id_to_virtual_party_id_to_decryption_key_share.clone()
+            },
             message,
             verify_signature,
+            construct_sign_public_input,
             protocol_public_parameters,
+            presign_private_inputs,
             is_trusted_dealer,
+            number_of_rounds,
             description.to_string(),
+            sign_data_mode,
         );
     }
 
@@ -1044,6 +3229,7 @@ pub(crate) mod tests {
             threshold,
             party_to_weight,
             HashScheme::SHA256,
+            HashContext::None,
             HashSet::new(),
             false,
             true,
@@ -1058,6 +3244,7 @@ pub(crate) mod tests {
         threshold: PartyID,
         party_to_weight: HashMap<PartyID, Weight>,
         hash_type: HashScheme,
+        hash_context: HashContext,
         malicious_parties: HashSet<PartyID>,
         bench: bool,
         expected_case: bool,
@@ -1067,10 +3254,78 @@ pub(crate) mod tests {
             signature: P::Signature,
             message: &[u8],
             hash_type: HashScheme,
+            hash_context: &HashContext,
         ) -> crate::Result<()>,
         description: &str,
     ) where
         P: Protocol<
+            PresignPrivateInput = (),
+            SignDecentralizedPartyPrivateInput= HashMap<PartyID, SecretKeyShareSizedInteger>,
+            Presign = crate::class_groups::ecdsa::VersionedPresign<
+                { secp256r1::SCALAR_LIMBS },
+                { crate::secp256r1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::secp256r1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                secp256r1::GroupElement,
+            >,
+            SignMessage = crate::ecdsa::sign::centralized_party::message::class_groups::Message<
+                { secp256r1::SCALAR_LIMBS },
+                { crate::secp256r1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::secp256r1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::secp256r1::MESSAGE_LIMBS },
+                secp256r1::GroupElement,
+            >,
+            VerifiedSignData = crate::ecdsa::sign::centralized_party::message::class_groups::VerifiedSignData<
+                { secp256r1::SCALAR_LIMBS },
+                { crate::secp256r1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                secp256r1::GroupElement,
+            >,
+            SignDecentralizedPartyPublicInput = crate::ecdsa::sign::decentralized_party::PublicInput<
+                crate::dkg::decentralized_party::VersionedOutput<
+                    { secp256r1::SCALAR_LIMBS },
+                    group::Value<secp256r1::GroupElement>,
+                    class_groups::CiphertextSpaceValue<{ crate::secp256r1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS }>,
+                >,
+                crate::class_groups::ecdsa::VersionedPresign<
+                    { secp256r1::SCALAR_LIMBS },
+                    { crate::secp256r1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::secp256r1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    secp256r1::GroupElement,
+                >,
+                crate::ecdsa::sign::centralized_party::message::class_groups::SignData<
+                    { secp256r1::SCALAR_LIMBS },
+                    { crate::secp256r1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::secp256r1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::secp256r1::MESSAGE_LIMBS },
+                    secp256r1::GroupElement,
+                >,
+                class_groups::Secp256r1DecryptionKeySharePublicParameters,
+                crate::class_groups::ProtocolPublicParameters<
+                    { secp256r1::SCALAR_LIMBS },
+                    { crate::secp256r1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::secp256r1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    secp256r1::GroupElement,
+                >,
+            >,
+            SignCentralizedPartyPublicInput = crate::ecdsa::sign::centralized_party::signature_homomorphic_evaluation_round::PublicInput<
+                dkg::centralized_party::VersionedOutput<
+                    { secp256r1::SCALAR_LIMBS },
+                    group::Value<secp256r1::GroupElement>,
+                >,
+                crate::class_groups::ecdsa::VersionedPresign<
+                    { secp256r1::SCALAR_LIMBS },
+                    { crate::secp256r1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::secp256r1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    secp256r1::GroupElement,
+                >,
+                crate::class_groups::ProtocolPublicParameters<
+                    { secp256r1::SCALAR_LIMBS },
+                    { crate::secp256r1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::secp256r1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    secp256r1::GroupElement,
+                >,
+            >,
+        > + MockablePresignProtocol,
+        P::DKGProtocol: dkg::Protocol<
             CentralizedPartySecretKeyShare = SecretKeyShare<group::Value<secp256r1::Scalar>>,
             CentralizedPartyDKGOutput = dkg::centralized_party::VersionedOutput<
                 { secp256r1::SCALAR_LIMBS },
@@ -1091,10 +3346,8 @@ pub(crate) mod tests {
                 group::Value<secp256r1::GroupElement>,
                 KnowledgeOfDiscreteLogUCProof<{ secp256r1::SCALAR_LIMBS }, secp256r1::GroupElement>,
             >,
-            DecryptionKeySharePublicParameters = class_groups::Secp256r1DecryptionKeySharePublicParameters,
-            DecryptionKeyShare = SecretKeyShareSizedInteger,
             SecretKey = group::Value<secp256r1::Scalar>,
-        > + MockablePresignProtocol,
+        >,
         <<P as Protocol>::SignDecentralizedParty as mpc::Party>::Message: Send + Sync,
     {
         let access_structure =
@@ -1203,16 +3456,28 @@ pub(crate) mod tests {
             &protocol_public_parameters,
         );
 
+        let centralized_party_public_input =
+            crate::ecdsa::sign::centralized_party::signature_homomorphic_evaluation_round::PublicInput {
+                message: message.to_vec(),
+                hash_type,
+                hash_context: hash_context.clone(),
+                dkg_output: centralized_party_dkg_output.clone(),
+                presign: presign.clone(),
+                protocol_public_parameters: protocol_public_parameters.clone(),
+            };
+
         signs_internal_generic::<
             { secp256r1::SCALAR_LIMBS },
             { secp256r1::SCALAR_LIMBS },
             secp256r1::GroupElement,
             Secp256r1EncryptionKey,
             P,
+            class_groups::Secp256r1DecryptionKeySharePublicParameters,
         >(
             presign_session_id,
             access_structure,
             hash_type,
+            hash_context.clone(),
             centralized_party_secret_key_share,
             centralized_party_dkg_output,
             decentralized_party_dkg_output,
@@ -1221,11 +3486,21 @@ pub(crate) mod tests {
             tangible_party_id_to_virtual_party_id_to_decryption_key_share,
             message,
             verify_signature,
+            construct_decentralized_ecdsa_sign_party_public_inputs_class_groups::<
+                { secp256r1::SCALAR_LIMBS },
+                { crate::secp256r1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::secp256r1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::secp256r1::MESSAGE_LIMBS },
+                secp256r1::GroupElement,
+            >,
             protocol_public_parameters,
+            centralized_party_public_input,
             description.to_string(),
             malicious_parties,
             bench,
             expected_case,
+            false,
+            SignDataMode::Unverified,
         );
     }
 
@@ -1240,6 +3515,7 @@ pub(crate) mod tests {
             threshold,
             party_to_weight,
             HashScheme::SHA512,
+            HashContext::None,
             HashSet::new(),
             false,
             true,
@@ -1254,6 +3530,7 @@ pub(crate) mod tests {
         threshold: PartyID,
         party_to_weight: HashMap<PartyID, Weight>,
         hash_type: HashScheme,
+        hash_context: HashContext,
         malicious_parties: HashSet<PartyID>,
         bench: bool,
         expected_case: bool,
@@ -1263,10 +3540,71 @@ pub(crate) mod tests {
             signature: P::Signature,
             message: &[u8],
             hash_type: HashScheme,
+            hash_context: &HashContext,
         ) -> crate::Result<()>,
         description: &str,
     ) where
         P: Protocol<
+            PresignPrivateInput = (),
+            SignDecentralizedPartyPrivateInput= HashMap<PartyID, SecretKeyShareSizedInteger>,
+            Presign = crate::class_groups::schnorr::Presign<
+                { curve25519::SCALAR_LIMBS },
+                { crate::curve25519::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::curve25519::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                curve25519::GroupElement,
+            >,
+            SignMessage = schnorr::PartialSignature<
+                group::Value<curve25519::GroupElement>,
+                group::Value<curve25519::Scalar>,
+            >,
+            VerifiedSignData = schnorr::PartialSignature<
+                group::Value<curve25519::GroupElement>,
+                group::Value<curve25519::Scalar>,
+            >,
+            SignDecentralizedPartyPublicInput = crate::schnorr::ahe::sign::decentralized_party::PublicInput<
+                crate::dkg::decentralized_party::VersionedOutput<
+                    { curve25519::SCALAR_LIMBS },
+                    group::Value<curve25519::GroupElement>,
+                    class_groups::CiphertextSpaceValue<{ crate::curve25519::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS }>,
+                >,
+                crate::class_groups::schnorr::Presign<
+                    { curve25519::SCALAR_LIMBS },
+                    { crate::curve25519::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::curve25519::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    curve25519::GroupElement,
+                >,
+                schnorr::PartialSignature<
+                    group::Value<curve25519::GroupElement>,
+                    group::Value<curve25519::Scalar>,
+                >,
+                class_groups::Curve25519DecryptionKeySharePublicParameters,
+                crate::class_groups::ProtocolPublicParameters<
+                    { curve25519::SCALAR_LIMBS },
+                    { crate::curve25519::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::curve25519::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    curve25519::GroupElement,
+                >,
+            >,
+            SignCentralizedPartyPublicInput = crate::schnorr::ahe::sign::centralized_party::PublicInput<
+                dkg::centralized_party::VersionedOutput<
+                    { curve25519::SCALAR_LIMBS },
+                    group::Value<curve25519::GroupElement>,
+                >,
+                crate::class_groups::schnorr::Presign<
+                    { curve25519::SCALAR_LIMBS },
+                    { crate::curve25519::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::curve25519::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    curve25519::GroupElement,
+                >,
+                crate::class_groups::ProtocolPublicParameters<
+                    { curve25519::SCALAR_LIMBS },
+                    { crate::curve25519::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::curve25519::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    curve25519::GroupElement,
+                >,
+            >,
+        > + MockablePresignProtocol,
+        P::DKGProtocol: dkg::Protocol<
             CentralizedPartySecretKeyShare = SecretKeyShare<group::Value<curve25519::Scalar>>,
             CentralizedPartyDKGOutput = dkg::centralized_party::VersionedOutput<
                 { curve25519::SCALAR_LIMBS },
@@ -1287,10 +3625,8 @@ pub(crate) mod tests {
                 group::Value<curve25519::GroupElement>,
                 KnowledgeOfDiscreteLogUCProof<{ curve25519::SCALAR_LIMBS }, curve25519::GroupElement>,
             >,
-            DecryptionKeySharePublicParameters = class_groups::Curve25519DecryptionKeySharePublicParameters,
-            DecryptionKeyShare = SecretKeyShareSizedInteger,
             SecretKey = group::Value<curve25519::Scalar>,
-        > + MockablePresignProtocol,
+        >,
         <<P as Protocol>::SignDecentralizedParty as mpc::Party>::Message: Send + Sync,
     {
         let access_structure =
@@ -1399,16 +3735,28 @@ pub(crate) mod tests {
             &protocol_public_parameters,
         );
 
+        let centralized_party_public_input =
+            crate::schnorr::ahe::sign::centralized_party::PublicInput {
+                message: message.to_vec(),
+                hash_scheme: hash_type,
+                hash_context: hash_context.clone(),
+                dkg_output: centralized_party_dkg_output.clone(),
+                presign: presign.clone(),
+                protocol_public_parameters: protocol_public_parameters.clone(),
+            };
+
         signs_internal_generic::<
             { curve25519::SCALAR_LIMBS },
             { curve25519::SCALAR_LIMBS },
             curve25519::GroupElement,
             Curve25519EncryptionKey,
             P,
+            class_groups::Curve25519DecryptionKeySharePublicParameters,
         >(
             presign_session_id,
             access_structure,
             hash_type,
+            hash_context.clone(),
             centralized_party_secret_key_share,
             centralized_party_dkg_output,
             decentralized_party_dkg_output,
@@ -1417,11 +3765,20 @@ pub(crate) mod tests {
             tangible_party_id_to_virtual_party_id_to_decryption_key_share,
             message,
             verify_signature,
+            construct_decentralized_schnorr_sign_party_public_inputs_class_groups::<
+                { curve25519::SCALAR_LIMBS },
+                { crate::curve25519::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::curve25519::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                curve25519::GroupElement,
+            >,
             protocol_public_parameters,
+            centralized_party_public_input,
             description.to_string(),
             malicious_parties,
             bench,
             expected_case,
+            false,
+            SignDataMode::Unverified,
         );
     }
 
@@ -1433,11 +3790,14 @@ pub(crate) mod tests {
         #[case] party_to_weight: HashMap<PartyID, Weight>,
     ) {
         signs_async_class_groups_ristretto_internal::<
-            crate::ristretto::class_groups::SchnorrkelSubstrateProtocol,
+            crate::ristretto::class_groups::SchnorrkelProtocol,
         >(
             threshold,
             party_to_weight,
             HashScheme::Merlin,
+            HashContext::Schnorrkel {
+                signing_context: b"substrate".to_vec(),
+            },
             HashSet::new(),
             false,
             true,
@@ -1452,6 +3812,7 @@ pub(crate) mod tests {
         threshold: PartyID,
         party_to_weight: HashMap<PartyID, Weight>,
         hash_type: HashScheme,
+        hash_context: HashContext,
         malicious_parties: HashSet<PartyID>,
         bench: bool,
         expected_case: bool,
@@ -1461,10 +3822,71 @@ pub(crate) mod tests {
             signature: P::Signature,
             message: &[u8],
             hash_type: HashScheme,
+            hash_context: &HashContext,
         ) -> crate::Result<()>,
         description: &str,
     ) where
         P: Protocol<
+            PresignPrivateInput = (),
+            SignDecentralizedPartyPrivateInput= HashMap<PartyID, SecretKeyShareSizedInteger>,
+            Presign = crate::class_groups::schnorr::Presign<
+                { ristretto::SCALAR_LIMBS },
+                { crate::ristretto::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::ristretto::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                ristretto::GroupElement,
+            >,
+            SignMessage = schnorr::PartialSignature<
+                group::Value<ristretto::GroupElement>,
+                group::Value<ristretto::Scalar>,
+            >,
+            VerifiedSignData = schnorr::PartialSignature<
+                group::Value<ristretto::GroupElement>,
+                group::Value<ristretto::Scalar>,
+            >,
+            SignDecentralizedPartyPublicInput = crate::schnorr::ahe::sign::decentralized_party::PublicInput<
+                crate::dkg::decentralized_party::VersionedOutput<
+                    { ristretto::SCALAR_LIMBS },
+                    group::Value<ristretto::GroupElement>,
+                    class_groups::CiphertextSpaceValue<{ crate::ristretto::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS }>,
+                >,
+                crate::class_groups::schnorr::Presign<
+                    { ristretto::SCALAR_LIMBS },
+                    { crate::ristretto::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::ristretto::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    ristretto::GroupElement,
+                >,
+                schnorr::PartialSignature<
+                    group::Value<ristretto::GroupElement>,
+                    group::Value<ristretto::Scalar>,
+                >,
+                class_groups::RistrettoDecryptionKeySharePublicParameters,
+                crate::class_groups::ProtocolPublicParameters<
+                    { ristretto::SCALAR_LIMBS },
+                    { crate::ristretto::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::ristretto::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    ristretto::GroupElement,
+                >,
+            >,
+            SignCentralizedPartyPublicInput = crate::schnorr::ahe::sign::centralized_party::PublicInput<
+                dkg::centralized_party::VersionedOutput<
+                    { ristretto::SCALAR_LIMBS },
+                    group::Value<ristretto::GroupElement>,
+                >,
+                crate::class_groups::schnorr::Presign<
+                    { ristretto::SCALAR_LIMBS },
+                    { crate::ristretto::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::ristretto::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    ristretto::GroupElement,
+                >,
+                crate::class_groups::ProtocolPublicParameters<
+                    { ristretto::SCALAR_LIMBS },
+                    { crate::ristretto::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::ristretto::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    ristretto::GroupElement,
+                >,
+            >,
+        > + MockablePresignProtocol,
+        P::DKGProtocol: dkg::Protocol<
             CentralizedPartySecretKeyShare = SecretKeyShare<group::Value<ristretto::Scalar>>,
             CentralizedPartyDKGOutput = dkg::centralized_party::VersionedOutput<
                 { ristretto::SCALAR_LIMBS },
@@ -1485,10 +3907,8 @@ pub(crate) mod tests {
                 group::Value<ristretto::GroupElement>,
                 KnowledgeOfDiscreteLogUCProof<{ ristretto::SCALAR_LIMBS }, ristretto::GroupElement>,
             >,
-            DecryptionKeySharePublicParameters = class_groups::RistrettoDecryptionKeySharePublicParameters,
-            DecryptionKeyShare = SecretKeyShareSizedInteger,
             SecretKey = group::Value<ristretto::Scalar>,
-        > + MockablePresignProtocol,
+        >,
         <<P as Protocol>::SignDecentralizedParty as mpc::Party>::Message: Send + Sync,
     {
         let access_structure =
@@ -1597,16 +4017,28 @@ pub(crate) mod tests {
             &protocol_public_parameters,
         );
 
+        let centralized_party_public_input =
+            crate::schnorr::ahe::sign::centralized_party::PublicInput {
+                message: message.to_vec(),
+                hash_scheme: hash_type,
+                hash_context: hash_context.clone(),
+                dkg_output: centralized_party_dkg_output.clone(),
+                presign: presign.clone(),
+                protocol_public_parameters: protocol_public_parameters.clone(),
+            };
+
         signs_internal_generic::<
             { ristretto::SCALAR_LIMBS },
             { ristretto::SCALAR_LIMBS },
             ristretto::GroupElement,
             RistrettoEncryptionKey,
             P,
+            class_groups::RistrettoDecryptionKeySharePublicParameters,
         >(
             presign_session_id,
             access_structure,
             hash_type,
+            hash_context.clone(),
             centralized_party_secret_key_share,
             centralized_party_dkg_output,
             decentralized_party_dkg_output,
@@ -1615,11 +4047,20 @@ pub(crate) mod tests {
             tangible_party_id_to_virtual_party_id_to_decryption_key_share,
             message,
             verify_signature,
+            construct_decentralized_schnorr_sign_party_public_inputs_class_groups::<
+                { ristretto::SCALAR_LIMBS },
+                { crate::ristretto::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::ristretto::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                ristretto::GroupElement,
+            >,
             protocol_public_parameters,
+            centralized_party_public_input,
             description.to_string(),
             malicious_parties,
             bench,
             expected_case,
+            false,
+            SignDataMode::Unverified,
         );
     }
 
@@ -1630,10 +4071,13 @@ pub(crate) mod tests {
         #[case] threshold: PartyID,
         #[case] party_to_weight: HashMap<PartyID, Weight>,
     ) {
-        signs_async_class_groups_secp256k1_internal::<crate::secp256k1::class_groups::TaprootProtocol>(
+        signs_async_schnorr_class_groups_secp256k1_internal::<
+            crate::secp256k1::class_groups::TaprootProtocol,
+        >(
             threshold,
             party_to_weight,
             HashScheme::SHA256,
+            HashContext::None,
             HashSet::new(),
             false,
             true,
@@ -1655,10 +4099,13 @@ pub(crate) mod tests {
         #[case] party_to_weight: HashMap<PartyID, Weight>,
         #[case] hash_type: HashScheme,
     ) {
-        signs_async_class_groups_secp256k1_internal::<crate::secp256k1::class_groups::ECDSAProtocol>(
+        signs_async_ecdsa_class_groups_secp256k1_internal::<
+            crate::secp256k1::class_groups::ECDSAProtocol,
+        >(
             threshold,
             party_to_weight,
             hash_type,
+            HashContext::None,
             HashSet::new(),
             false,
             true,
@@ -1668,6 +4115,9 @@ pub(crate) mod tests {
         )
     }
 
+    // INSECURE `unsafe_mock`: malicious-party detection is exactly what the mocks skip, so the
+    // malicious flows are only meaningful for the real protocol.
+    #[cfg(not(feature = "unsafe_mock"))]
     #[rstest]
     #[case(3, HashMap::from([(1, 1), (2, 2), (3, 2)]), HashSet::from([1]))]
     #[case(4, HashMap::from([(1, 2), (2, 2), (3, 2)]), HashSet::from([1]))]
@@ -1678,10 +4128,13 @@ pub(crate) mod tests {
         #[case] party_to_weight: HashMap<PartyID, Weight>,
         #[case] malicious_parties: HashSet<PartyID>,
     ) {
-        signs_async_class_groups_secp256k1_internal::<crate::secp256k1::class_groups::ECDSAProtocol>(
+        signs_async_ecdsa_class_groups_secp256k1_internal::<
+            crate::secp256k1::class_groups::ECDSAProtocol,
+        >(
             threshold,
             party_to_weight,
             HashScheme::SHA256,
+            HashContext::None,
             malicious_parties,
             false,
             true,
@@ -1691,6 +4144,8 @@ pub(crate) mod tests {
         );
     }
 
+    // INSECURE `unsafe_mock`: see `signs_async_with_malicious_class_groups_secp256k1`.
+    #[cfg(not(feature = "unsafe_mock"))]
     #[rstest]
     #[case(8, HashMap::from([(1, 1), (2, 2), (3, 3), (4, 1), (5, 3), (6,6), (7, 1), (8, 1)]), HashSet::from([5, 7]))]
     fn signs_async_unexpected_with_malicious_class_groups_secp256k1(
@@ -1698,10 +4153,13 @@ pub(crate) mod tests {
         #[case] party_to_weight: HashMap<PartyID, Weight>,
         #[case] malicious_parties: HashSet<PartyID>,
     ) {
-        signs_async_class_groups_secp256k1_internal::<crate::secp256k1::class_groups::ECDSAProtocol>(
+        signs_async_ecdsa_class_groups_secp256k1_internal::<
+            crate::secp256k1::class_groups::ECDSAProtocol,
+        >(
             threshold,
             party_to_weight,
             HashScheme::SHA256,
+            HashContext::None,
             malicious_parties,
             false,
             false,
@@ -1712,10 +4170,11 @@ pub(crate) mod tests {
     }
 
 
-    pub(crate) fn signs_async_class_groups_secp256k1_internal<P>(
+    pub(crate) fn signs_async_ecdsa_class_groups_secp256k1_internal<P>(
         threshold: PartyID,
         party_to_weight: HashMap<PartyID, Weight>,
         hash_type: HashScheme,
+        hash_context: HashContext,
         malicious_parties: HashSet<PartyID>,
         bench: bool,
         expected_case: bool,
@@ -1725,10 +4184,78 @@ pub(crate) mod tests {
             signature: P::Signature,
             message: &[u8],
             hash_type: HashScheme,
+            hash_context: &HashContext,
         ) -> crate::Result<()>,
         description: &str,
     ) where
         P: Protocol<
+            PresignPrivateInput = (),
+            SignDecentralizedPartyPrivateInput= HashMap<PartyID, SecretKeyShareSizedInteger>,
+            Presign = crate::class_groups::ecdsa::VersionedPresign<
+                { secp256k1::SCALAR_LIMBS },
+                { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                secp256k1::GroupElement,
+            >,
+            SignMessage = crate::ecdsa::sign::centralized_party::message::class_groups::Message<
+                { secp256k1::SCALAR_LIMBS },
+                { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::secp256k1::MESSAGE_LIMBS },
+                secp256k1::GroupElement,
+            >,
+            VerifiedSignData = crate::ecdsa::sign::centralized_party::message::class_groups::VerifiedSignData<
+                { secp256k1::SCALAR_LIMBS },
+                { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                secp256k1::GroupElement,
+            >,
+            SignDecentralizedPartyPublicInput = crate::ecdsa::sign::decentralized_party::PublicInput<
+                crate::dkg::decentralized_party::VersionedOutput<
+                    { secp256k1::SCALAR_LIMBS },
+                    group::Value<secp256k1::GroupElement>,
+                    class_groups::CiphertextSpaceValue<{ crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS }>,
+                >,
+                crate::class_groups::ecdsa::VersionedPresign<
+                    { secp256k1::SCALAR_LIMBS },
+                    { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    secp256k1::GroupElement,
+                >,
+                crate::ecdsa::sign::centralized_party::message::class_groups::SignData<
+                    { secp256k1::SCALAR_LIMBS },
+                    { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::secp256k1::MESSAGE_LIMBS },
+                    secp256k1::GroupElement,
+                >,
+                class_groups::Secp256k1DecryptionKeySharePublicParameters,
+                crate::class_groups::ProtocolPublicParameters<
+                    { secp256k1::SCALAR_LIMBS },
+                    { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    secp256k1::GroupElement,
+                >,
+            >,
+            SignCentralizedPartyPublicInput = crate::ecdsa::sign::centralized_party::signature_homomorphic_evaluation_round::PublicInput<
+                dkg::centralized_party::VersionedOutput<
+                    { secp256k1::SCALAR_LIMBS },
+                    group::Value<secp256k1::GroupElement>,
+                >,
+                crate::class_groups::ecdsa::VersionedPresign<
+                    { secp256k1::SCALAR_LIMBS },
+                    { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    secp256k1::GroupElement,
+                >,
+                crate::class_groups::ProtocolPublicParameters<
+                    { secp256k1::SCALAR_LIMBS },
+                    { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    secp256k1::GroupElement,
+                >,
+            >,
+        > + MockablePresignProtocol,
+        P::DKGProtocol: dkg::Protocol<
             CentralizedPartySecretKeyShare = SecretKeyShare<group::Value<secp256k1::Scalar>>,
             CentralizedPartyDKGOutput = dkg::centralized_party::VersionedOutput<
                 { secp256k1::SCALAR_LIMBS },
@@ -1749,10 +4276,8 @@ pub(crate) mod tests {
                 group::Value<secp256k1::GroupElement>,
                 KnowledgeOfDiscreteLogUCProof<{ secp256k1::SCALAR_LIMBS }, secp256k1::GroupElement>,
             >,
-            DecryptionKeySharePublicParameters = class_groups::Secp256k1DecryptionKeySharePublicParameters,
-            DecryptionKeyShare = SecretKeyShareSizedInteger,
             SecretKey = group::Value<secp256k1::Scalar>,
-        > + MockablePresignProtocol,
+        >,
         <<P as Protocol>::SignDecentralizedParty as mpc::Party>::Message: Send + Sync,
     {
         let access_structure =
@@ -1861,16 +4386,28 @@ pub(crate) mod tests {
             &protocol_public_parameters,
         );
 
+        let centralized_party_public_input =
+            crate::ecdsa::sign::centralized_party::signature_homomorphic_evaluation_round::PublicInput {
+                message: message.to_vec(),
+                hash_type,
+                hash_context: hash_context.clone(),
+                dkg_output: centralized_party_dkg_output.clone(),
+                presign: presign.clone(),
+                protocol_public_parameters: protocol_public_parameters.clone(),
+            };
+
         signs_internal_generic::<
             { secp256k1::SCALAR_LIMBS },
             { secp256k1::SCALAR_LIMBS },
             secp256k1::GroupElement,
             Secp256k1EncryptionKey,
             P,
+            class_groups::Secp256k1DecryptionKeySharePublicParameters,
         >(
             presign_session_id,
             access_structure,
             hash_type,
+            hash_context.clone(),
             centralized_party_secret_key_share,
             centralized_party_dkg_output,
             decentralized_party_dkg_output,
@@ -1879,47 +4416,1338 @@ pub(crate) mod tests {
             tangible_party_id_to_virtual_party_id_to_decryption_key_share,
             message,
             verify_signature,
+            construct_decentralized_ecdsa_sign_party_public_inputs_class_groups::<
+                { secp256k1::SCALAR_LIMBS },
+                { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::secp256k1::MESSAGE_LIMBS },
+                secp256k1::GroupElement,
+            >,
             protocol_public_parameters,
+            centralized_party_public_input,
             description.to_string(),
             malicious_parties,
             bench,
             expected_case,
+            false,
+            SignDataMode::Unverified,
+        );
+    }
+
+    pub(crate) fn signs_async_schnorr_class_groups_secp256k1_internal<P>(
+        threshold: PartyID,
+        party_to_weight: HashMap<PartyID, Weight>,
+        hash_type: HashScheme,
+        hash_context: HashContext,
+        malicious_parties: HashSet<PartyID>,
+        bench: bool,
+        expected_case: bool,
+        message: &[u8],
+        verify_signature: fn(
+            public_key: secp256k1::GroupElement,
+            signature: P::Signature,
+            message: &[u8],
+            hash_type: HashScheme,
+            hash_context: &HashContext,
+        ) -> crate::Result<()>,
+        description: &str,
+    ) where
+        P: Protocol<
+            PresignPrivateInput = (),
+            SignDecentralizedPartyPrivateInput= HashMap<PartyID, SecretKeyShareSizedInteger>,
+            Presign = crate::class_groups::schnorr::Presign<
+                { secp256k1::SCALAR_LIMBS },
+                { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                secp256k1::GroupElement,
+            >,
+            SignMessage = schnorr::PartialSignature<
+                group::Value<secp256k1::GroupElement>,
+                group::Value<secp256k1::Scalar>,
+            >,
+            VerifiedSignData = schnorr::PartialSignature<
+                group::Value<secp256k1::GroupElement>,
+                group::Value<secp256k1::Scalar>,
+            >,
+            SignDecentralizedPartyPublicInput = crate::schnorr::ahe::sign::decentralized_party::PublicInput<
+                crate::dkg::decentralized_party::VersionedOutput<
+                    { secp256k1::SCALAR_LIMBS },
+                    group::Value<secp256k1::GroupElement>,
+                    class_groups::CiphertextSpaceValue<{ crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS }>,
+                >,
+                crate::class_groups::schnorr::Presign<
+                    { secp256k1::SCALAR_LIMBS },
+                    { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    secp256k1::GroupElement,
+                >,
+                schnorr::PartialSignature<
+                    group::Value<secp256k1::GroupElement>,
+                    group::Value<secp256k1::Scalar>,
+                >,
+                class_groups::Secp256k1DecryptionKeySharePublicParameters,
+                crate::class_groups::ProtocolPublicParameters<
+                    { secp256k1::SCALAR_LIMBS },
+                    { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    secp256k1::GroupElement,
+                >,
+            >,
+            SignCentralizedPartyPublicInput = crate::schnorr::ahe::sign::centralized_party::PublicInput<
+                dkg::centralized_party::VersionedOutput<
+                    { secp256k1::SCALAR_LIMBS },
+                    group::Value<secp256k1::GroupElement>,
+                >,
+                crate::class_groups::schnorr::Presign<
+                    { secp256k1::SCALAR_LIMBS },
+                    { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    secp256k1::GroupElement,
+                >,
+                crate::class_groups::ProtocolPublicParameters<
+                    { secp256k1::SCALAR_LIMBS },
+                    { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    secp256k1::GroupElement,
+                >,
+            >,
+        > + MockablePresignProtocol,
+        P::DKGProtocol: dkg::Protocol<
+            CentralizedPartySecretKeyShare = SecretKeyShare<group::Value<secp256k1::Scalar>>,
+            CentralizedPartyDKGOutput = dkg::centralized_party::VersionedOutput<
+                { secp256k1::SCALAR_LIMBS },
+                group::Value<secp256k1::GroupElement>,
+            >,
+            DecentralizedPartyDKGOutput = crate::dkg::decentralized_party::VersionedOutput<
+                { secp256k1::SCALAR_LIMBS },
+                group::Value<secp256k1::GroupElement>,
+                class_groups::CiphertextSpaceValue<{ crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS }>,
+            >,
+            ProtocolPublicParameters = crate::class_groups::ProtocolPublicParameters<
+                { secp256k1::SCALAR_LIMBS },
+                { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                secp256k1::GroupElement,
+            >,
+            PublicKeyShareAndProof = PublicKeyShareAndProof<
+                group::Value<secp256k1::GroupElement>,
+                KnowledgeOfDiscreteLogUCProof<{ secp256k1::SCALAR_LIMBS }, secp256k1::GroupElement>,
+            >,
+            SecretKey = group::Value<secp256k1::Scalar>,
+        >,
+        <<P as Protocol>::SignDecentralizedParty as mpc::Party>::Message: Send + Sync,
+    {
+        let access_structure =
+            WeightedThresholdAccessStructure::new(threshold, party_to_weight.clone()).unwrap();
+
+        let (protocol_public_parameters, decryption_key) = setup_class_groups_secp256k1();
+
+        let secret_key_bits = protocol_public_parameters
+            .encryption_scheme_public_parameters
+            .randomness_space_public_parameters()
+            .sample_bits;
+
+        let base = protocol_public_parameters
+            .encryption_scheme_public_parameters
+            .setup_parameters
+            .h;
+
+        let (decryption_key_share_public_parameters, decryption_key_shares) =
+            ::class_groups::test_helpers::deal_trusted_shares::<
+                { U256::LIMBS },
+                { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                secp256k1::GroupElement,
+            >(
+                threshold,
+                access_structure.number_of_virtual_parties(),
+                protocol_public_parameters
+                    .encryption_scheme_public_parameters
+                    .clone(),
+                decryption_key.decryption_key,
+                base,
+                secret_key_bits,
+            );
+
+        let decryption_key_shares: Vec<_> = decryption_key_shares
+            .into_iter()
+            .map(|(virtual_party_id, decryption_key_share)| {
+                let decryption_key_share = if malicious_parties.contains(
+                    &access_structure
+                        .to_tangible_party_id(virtual_party_id)
+                        .unwrap(),
+                ) {
+                    let wrong_share = Uint::random(&mut OsCsRng);
+                    let wrong_share = wrong_share
+                        & (Uint::ONE
+                            << secret_key_share_size_upper_bound(
+                                u32::from(access_structure.number_of_virtual_parties()),
+                                u32::from(access_structure.threshold),
+                                secret_key_bits,
+                            ));
+
+                    Int::new_from_abs_sign(
+                        wrong_share,
+                        ConstChoice::from(Choice::from(u8::from(virtual_party_id % 2 == 0))),
+                    )
+                    .unwrap()
+                } else {
+                    decryption_key_share
+                };
+
+                (virtual_party_id, decryption_key_share)
+            })
+            .collect();
+
+        let access_structure =
+            WeightedThresholdAccessStructure::new(threshold, party_to_weight).unwrap();
+
+        let party_to_virtual_parties = access_structure.party_to_virtual_parties();
+        let tangible_party_id_to_virtual_party_id_to_decryption_key_share: HashMap<
+            _,
+            HashMap<_, _>,
+        > = party_to_virtual_parties
+            .keys()
+            .map(|&tangible_party_id| {
+                let virtual_parties = party_to_virtual_parties
+                    .get(&tangible_party_id)
+                    .cloned()
+                    .unwrap();
+                (
+                    tangible_party_id,
+                    decryption_key_shares
+                        .clone()
+                        .into_iter()
+                        .filter(|(party_id, _)| virtual_parties.contains(party_id))
+                        .collect(),
+                )
+            })
+            .collect();
+
+        let (
+            centralized_party_dkg_output,
+            centralized_party_secret_key_share,
+            decentralized_party_dkg_output,
+        ) = mock_targeted_dkg_output::<
+            { secp256k1::SCALAR_LIMBS },
+            { secp256k1::SCALAR_LIMBS },
+            secp256k1::GroupElement,
+            Secp256k1EncryptionKey,
+        >(&protocol_public_parameters);
+
+        let presign_session_id = CommitmentSizedNumber::random(&mut OsCsRng);
+
+        let presign = P::mock_presign(
+            presign_session_id,
+            decentralized_party_dkg_output.clone(),
+            &protocol_public_parameters,
+        );
+
+        let centralized_party_public_input =
+            crate::schnorr::ahe::sign::centralized_party::PublicInput {
+                message: message.to_vec(),
+                hash_scheme: hash_type,
+                hash_context: hash_context.clone(),
+                dkg_output: centralized_party_dkg_output.clone(),
+                presign: presign.clone(),
+                protocol_public_parameters: protocol_public_parameters.clone(),
+            };
+
+        signs_internal_generic::<
+            { secp256k1::SCALAR_LIMBS },
+            { secp256k1::SCALAR_LIMBS },
+            secp256k1::GroupElement,
+            Secp256k1EncryptionKey,
+            P,
+            class_groups::Secp256k1DecryptionKeySharePublicParameters,
+        >(
+            presign_session_id,
+            access_structure,
+            hash_type,
+            hash_context.clone(),
+            centralized_party_secret_key_share,
+            centralized_party_dkg_output,
+            decentralized_party_dkg_output,
+            presign,
+            decryption_key_share_public_parameters,
+            tangible_party_id_to_virtual_party_id_to_decryption_key_share,
+            message,
+            verify_signature,
+            construct_decentralized_schnorr_sign_party_public_inputs_class_groups::<
+                { secp256k1::SCALAR_LIMBS },
+                { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                secp256k1::GroupElement,
+            >,
+            protocol_public_parameters,
+            centralized_party_public_input,
+            description.to_string(),
+            malicious_parties,
+            bench,
+            expected_case,
+            false,
+            SignDataMode::Unverified,
+        );
+    }
+
+    /// VSS Schnorr signing benchmark function.
+    ///
+    /// This function uses the same infrastructure as AHE but with VSS-specific setup:
+    /// - Weight-1 access structure (required by VSS)
+    /// - Shamir secret shares instead of decryption key shares
+    /// - UniversalPublicDKGOutput instead of TargetedPublicDKGOutput
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn signs_vss_async_schnorr_class_groups_secp256k1_internal<P>(
+        threshold: PartyID,
+        number_of_parties: PartyID,
+        hash_type: HashScheme,
+        hash_context: HashContext,
+        malicious_parties: HashSet<PartyID>,
+        bench: bool,
+        expected_case: bool,
+        message: &[u8],
+        verify_signature: fn(
+            public_key: secp256k1::GroupElement,
+            signature: P::Signature,
+            message: &[u8],
+            hash_type: HashScheme,
+            hash_context: &HashContext,
+        ) -> crate::Result<()>,
+        description: &str,
+    ) where
+        P: Protocol<
+            SignDecentralizedPartyPrivateInput= crate::schnorr::vss::sign::decentralized_party::PrivateInput<
+                group::Value<secp256k1::Scalar>,
+                group::Value<secp256k1::GroupElement>,
+            >,
+            Presign = crate::schnorr::vss::presign::Presign<group::Value<secp256k1::GroupElement>>,
+            SignMessage = schnorr::PartialSignature<
+                group::Value<secp256k1::GroupElement>,
+                group::Value<secp256k1::Scalar>,
+            >,
+            VerifiedSignData = schnorr::PartialSignature<
+                group::Value<secp256k1::GroupElement>,
+                group::Value<secp256k1::Scalar>,
+            >,
+            SignDecentralizedPartyPublicInput = crate::schnorr::vss::sign::decentralized_party::PublicInput<
+                crate::dkg::decentralized_party::VersionedOutput<
+                    { secp256k1::SCALAR_LIMBS },
+                    group::Value<secp256k1::GroupElement>,
+                    class_groups::CiphertextSpaceValue<{ crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS }>,
+                >,
+                crate::schnorr::vss::presign::Presign<group::Value<secp256k1::GroupElement>>,
+                schnorr::PartialSignature<
+                    group::Value<secp256k1::GroupElement>,
+                    group::Value<secp256k1::Scalar>,
+                >,
+                crate::class_groups::ProtocolPublicParameters<
+                    { secp256k1::SCALAR_LIMBS },
+                    { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    secp256k1::GroupElement,
+                >,
+                group::Value<secp256k1::GroupElement>,
+            >,
+            SignCentralizedPartyPublicInput = crate::schnorr::vss::sign::centralized_party::PublicInput<
+                dkg::centralized_party::VersionedOutput<
+                    { secp256k1::SCALAR_LIMBS },
+                    group::Value<secp256k1::GroupElement>,
+                >,
+                crate::schnorr::vss::presign::Presign<group::Value<secp256k1::GroupElement>>,
+                crate::class_groups::ProtocolPublicParameters<
+                    { secp256k1::SCALAR_LIMBS },
+                    { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    secp256k1::GroupElement,
+                >,
+            >,
+        >,
+        P::DKGProtocol: dkg::Protocol<
+            CentralizedPartySecretKeyShare = SecretKeyShare<group::Value<secp256k1::Scalar>>,
+            CentralizedPartyDKGOutput = dkg::centralized_party::VersionedOutput<
+                { secp256k1::SCALAR_LIMBS },
+                group::Value<secp256k1::GroupElement>,
+            >,
+            DecentralizedPartyDKGOutput = crate::dkg::decentralized_party::VersionedOutput<
+                { secp256k1::SCALAR_LIMBS },
+                group::Value<secp256k1::GroupElement>,
+                class_groups::CiphertextSpaceValue<{ crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS }>,
+            >,
+            ProtocolPublicParameters = crate::class_groups::ProtocolPublicParameters<
+                { secp256k1::SCALAR_LIMBS },
+                { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                secp256k1::GroupElement,
+            >,
+            PublicKeyShareAndProof = PublicKeyShareAndProof<
+                group::Value<secp256k1::GroupElement>,
+                KnowledgeOfDiscreteLogUCProof<{ secp256k1::SCALAR_LIMBS }, secp256k1::GroupElement>,
+            >,
+            SecretKey = group::Value<secp256k1::Scalar>,
+        >,
+        <<P as Protocol>::SignDecentralizedParty as mpc::Party>::Message: Send + Sync,
+    {
+        // VSS requires weight-1 access structure
+        let party_to_weight: HashMap<PartyID, Weight> =
+            (1..=number_of_parties).map(|id| (id, 1)).collect();
+        let access_structure =
+            WeightedThresholdAccessStructure::new(threshold, party_to_weight).unwrap();
+
+        let (protocol_public_parameters, _decryption_key) = setup_class_groups_secp256k1();
+
+        let mut rng = OsCsRng;
+        let scalar_group_public_parameters = secp256k1::scalar::PublicParameters::default();
+        let group_params = secp256k1::group_element::PublicParameters::default();
+
+        let party_ids: Vec<PartyID> = (1..=number_of_parties).collect();
+        let generator =
+            secp256k1::GroupElement::generator_from_public_parameters(&group_params).unwrap();
+
+        // Generate mock keygen outputs with Shamir shares
+        let centralized_party_secret_key_share =
+            secp256k1::Scalar::sample(&scalar_group_public_parameters, &mut rng).unwrap();
+        let centralized_party_public_key_share =
+            (centralized_party_secret_key_share * generator).value();
+
+        // Generate first secret key polynomial of length `threshold` (degree threshold-1)
+        let first_secret_key_coefficients: Vec<_> = (0..threshold)
+            .map(|_| secp256k1::Scalar::sample(&scalar_group_public_parameters, &mut rng).unwrap())
+            .collect();
+
+        // Generate second secret key polynomial (all zeros for this test)
+        let zero = secp256k1::Scalar::from(Uint::<{ secp256k1::SCALAR_LIMBS }>::ZERO);
+        let second_secret_key_coefficients: Vec<_> = (0..threshold).map(|_| zero).collect();
+
+        // Generate polynomial commitments for secret key polynomials
+        // Commitment[i] = coefficient[i] * G
+        let first_secret_key_polynomial_commitments: Vec<_> = first_secret_key_coefficients
+            .iter()
+            .map(|coeff| (*coeff * generator).value())
+            .collect();
+        let second_secret_key_polynomial_commitments: Vec<_> = second_secret_key_coefficients
+            .iter()
+            .map(|coeff| (*coeff * generator).value())
+            .collect();
+
+        // Create Polynomial structs for evaluation
+        let first_secret_key_polynomial =
+            Polynomial::try_from(first_secret_key_coefficients.clone()).unwrap();
+        let second_secret_key_polynomial =
+            Polynomial::try_from(second_secret_key_coefficients.clone()).unwrap();
+
+        // Compute secret key shares by evaluating polynomials at party IDs
+        let secret_key_shares: HashMap<_, _> = party_ids
+            .iter()
+            .map(|&party_id| {
+                let share_first = first_secret_key_polynomial.evaluate_degree(
+                    party_id,
+                    false,
+                    &scalar_group_public_parameters,
+                );
+                let share_second = second_secret_key_polynomial.evaluate_degree(
+                    party_id,
+                    false,
+                    &scalar_group_public_parameters,
+                );
+                (party_id, (share_first.value(), share_second.value()))
+            })
+            .collect();
+
+        // The decentralized party's public key share is the free coefficient commitment
+        let decentralized_secret_first = first_secret_key_coefficients[0];
+        let decentralized_public_key_first = (decentralized_secret_first * generator).value();
+        let public_key = (centralized_party_secret_key_share * generator
+            + decentralized_secret_first * generator)
+            .value();
+
+        let dkg_output_inner = crate::dkg::decentralized_party::Output {
+            public_key_share: decentralized_public_key_first,
+            public_key,
+            encryption_of_secret_key_share: class_groups::CiphertextSpaceValue::<
+                { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            >::default(),
+            centralized_party_public_key_share,
+        };
+
+        let first_key_public_randomizer = Uint::<{ secp256k1::SCALAR_LIMBS }>::ONE;
+        let second_key_public_randomizer = Uint::<{ secp256k1::SCALAR_LIMBS }>::ZERO;
+        let free_coefficient_key_public_randomizer = Uint::<{ secp256k1::SCALAR_LIMBS }>::ZERO;
+
+        let decentralized_party_dkg_output =
+            crate::dkg::decentralized_party::VersionedOutput::UniversalPublicDKGOutput {
+                output: dkg_output_inner,
+                first_key_public_randomizer,
+                second_key_public_randomizer,
+                free_coefficient_key_public_randomizer,
+                global_decentralized_party_output_commitment: CommitmentSizedNumber::ZERO,
+            };
+
+        let centralized_party_dkg_output: dkg::centralized_party::VersionedOutput<
+            { secp256k1::SCALAR_LIMBS },
+            group::Value<secp256k1::GroupElement>,
+        > = decentralized_party_dkg_output.clone().into();
+
+        let centralized_party_secret_key_share =
+            SecretKeyShare(centralized_party_secret_key_share.value());
+
+        // Generate mock presign with nonce shares
+        let presign_session_id = CommitmentSizedNumber::random(&mut rng);
+
+        // Generate first nonce polynomial of length `threshold`
+        let first_nonce_coefficients: Vec<_> = (0..threshold)
+            .map(|_| secp256k1::Scalar::sample(&scalar_group_public_parameters, &mut rng).unwrap())
+            .collect();
+
+        // Generate second nonce polynomial of length `threshold`
+        let second_nonce_coefficients: Vec<_> = (0..threshold)
+            .map(|_| secp256k1::Scalar::sample(&scalar_group_public_parameters, &mut rng).unwrap())
+            .collect();
+
+        // Generate polynomial commitments for nonce polynomials
+        let first_nonce_polynomial_commitments: Vec<_> = first_nonce_coefficients
+            .iter()
+            .map(|coeff| (*coeff * generator).value())
+            .collect();
+        let second_nonce_polynomial_commitments: Vec<_> = second_nonce_coefficients
+            .iter()
+            .map(|coeff| (*coeff * generator).value())
+            .collect();
+
+        // Create Polynomial structs for nonce evaluation
+        let first_nonce_polynomial =
+            Polynomial::try_from(first_nonce_coefficients.clone()).unwrap();
+        let second_nonce_polynomial =
+            Polynomial::try_from(second_nonce_coefficients.clone()).unwrap();
+
+        // Compute nonce shares by evaluating polynomials at party IDs
+        let nonce_shares: HashMap<_, _> = party_ids
+            .iter()
+            .map(|&party_id| {
+                let nonce_share_first = first_nonce_polynomial.evaluate_degree(
+                    party_id,
+                    false,
+                    &scalar_group_public_parameters,
+                );
+                let nonce_share_second = second_nonce_polynomial.evaluate_degree(
+                    party_id,
+                    false,
+                    &scalar_group_public_parameters,
+                );
+                (
+                    party_id,
+                    (nonce_share_first.value(), nonce_share_second.value()),
+                )
+            })
+            .collect();
+
+        // The public nonce shares are the free coefficients (polynomial evaluated at 0)
+        let nonce_secret_first = first_nonce_coefficients[0];
+        let nonce_secret_second = second_nonce_coefficients[0];
+
+        let presign = crate::schnorr::vss::presign::Presign {
+            session_id: presign_session_id,
+            presign_blending_index: 0,
+            decentralized_party_nonce_public_share_first_part: (nonce_secret_first * generator)
+                .value(),
+            decentralized_party_nonce_public_share_second_part: (nonce_secret_second * generator)
+                .value(),
+        };
+
+        // Build private inputs (VSSPrivateInput per party)
+        // For VSS with weight-1, we use a flat HashMap (no nested virtual party IDs)
+        let private_inputs: HashMap<
+            PartyID,
+            VSSPrivateInput<group::Value<secp256k1::Scalar>, group::Value<secp256k1::GroupElement>>,
+        > = party_ids
+            .iter()
+            .map(|&party_id| {
+                let (secret_key_share_first, secret_key_share_second) =
+                    secret_key_shares.get(&party_id).unwrap();
+                let (nonce_share_first, nonce_share_second) = nonce_shares.get(&party_id).unwrap();
+
+                let private_input = VSSPrivateInput {
+                    secret_key_share_first_part: *secret_key_share_first,
+                    secret_key_share_second_part: *secret_key_share_second,
+                    session_id: presign_session_id,
+                    presign_blending_index: 0,
+                    nonce_share_first_part: *nonce_share_first,
+                    nonce_share_second_part: *nonce_share_second,
+                    first_nonce_polynomial_commitments: first_nonce_polynomial_commitments.clone(),
+                    second_nonce_polynomial_commitments: second_nonce_polynomial_commitments
+                        .clone(),
+                };
+
+                (party_id, private_input)
+            })
+            .collect();
+
+        let centralized_party_public_input =
+            crate::schnorr::vss::sign::centralized_party::PublicInput {
+                message: message.to_vec(),
+                hash_scheme: hash_type,
+                hash_context: hash_context.clone(),
+                dkg_output: centralized_party_dkg_output.clone(),
+                presign: presign.clone(),
+                protocol_public_parameters: protocol_public_parameters.clone(),
+            };
+
+        // Only secret key polynomial commitments are passed to the constructor
+        // Nonce polynomial commitments come from private input (presign output)
+        let secret_key_polynomial_commitments = (
+            first_secret_key_polynomial_commitments,
+            second_secret_key_polynomial_commitments,
+        );
+
+        signs_internal_generic::<
+            { secp256k1::SCALAR_LIMBS },
+            { secp256k1::SCALAR_LIMBS },
+            secp256k1::GroupElement,
+            Secp256k1EncryptionKey,
+            P,
+            (
+                Vec<secp256k1::group_element::Value>,
+                Vec<secp256k1::group_element::Value>,
+            ),
+        >(
+            presign_session_id,
+            access_structure,
+            hash_type,
+            hash_context.clone(),
+            centralized_party_secret_key_share,
+            centralized_party_dkg_output,
+            decentralized_party_dkg_output,
+            presign,
+            secret_key_polynomial_commitments,
+            private_inputs,
+            message,
+            verify_signature,
+            construct_decentralized_schnorr_vss_sign_party_public_inputs::<
+                { secp256k1::SCALAR_LIMBS },
+                { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                secp256k1::GroupElement,
+            >,
+            protocol_public_parameters,
+            centralized_party_public_input,
+            description.to_string(),
+            malicious_parties,
+            bench,
+            expected_case,
+            true,
+            SignDataMode::Unverified,
+        );
+    }
+
+    /// VSS Schnorr signing test function for curve25519 (EdDSA).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn signs_vss_async_schnorr_class_groups_curve25519_internal<P>(
+        threshold: PartyID,
+        number_of_parties: PartyID,
+        hash_type: HashScheme,
+        hash_context: HashContext,
+        malicious_parties: HashSet<PartyID>,
+        bench: bool,
+        expected_case: bool,
+        message: &[u8],
+        verify_signature: fn(
+            public_key: curve25519::GroupElement,
+            signature: P::Signature,
+            message: &[u8],
+            hash_type: HashScheme,
+            hash_context: &HashContext,
+        ) -> crate::Result<()>,
+        description: &str,
+    ) where
+        P: Protocol<
+            SignDecentralizedPartyPrivateInput = crate::schnorr::vss::sign::decentralized_party::PrivateInput<
+                group::Value<curve25519::Scalar>,
+                group::Value<curve25519::GroupElement>,
+            >,
+            Presign = crate::schnorr::vss::presign::Presign<group::Value<curve25519::GroupElement>>,
+            SignMessage = schnorr::PartialSignature<
+                group::Value<curve25519::GroupElement>,
+                group::Value<curve25519::Scalar>,
+            >,
+            VerifiedSignData = schnorr::PartialSignature<
+                group::Value<curve25519::GroupElement>,
+                group::Value<curve25519::Scalar>,
+            >,
+            SignDecentralizedPartyPublicInput = crate::schnorr::vss::sign::decentralized_party::PublicInput<
+                crate::dkg::decentralized_party::VersionedOutput<
+                    { curve25519::SCALAR_LIMBS },
+                    group::Value<curve25519::GroupElement>,
+                    class_groups::CiphertextSpaceValue<{ crate::curve25519::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS }>,
+                >,
+                crate::schnorr::vss::presign::Presign<group::Value<curve25519::GroupElement>>,
+                schnorr::PartialSignature<
+                    group::Value<curve25519::GroupElement>,
+                    group::Value<curve25519::Scalar>,
+                >,
+                crate::class_groups::ProtocolPublicParameters<
+                    { curve25519::SCALAR_LIMBS },
+                    { crate::curve25519::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::curve25519::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    curve25519::GroupElement,
+                >,
+                group::Value<curve25519::GroupElement>,
+            >,
+            SignCentralizedPartyPublicInput = crate::schnorr::vss::sign::centralized_party::PublicInput<
+                dkg::centralized_party::VersionedOutput<
+                    { curve25519::SCALAR_LIMBS },
+                    group::Value<curve25519::GroupElement>,
+                >,
+                crate::schnorr::vss::presign::Presign<group::Value<curve25519::GroupElement>>,
+                crate::class_groups::ProtocolPublicParameters<
+                    { curve25519::SCALAR_LIMBS },
+                    { crate::curve25519::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::curve25519::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    curve25519::GroupElement,
+                >,
+            >,
+        >,
+        P::DKGProtocol: dkg::Protocol<
+            CentralizedPartySecretKeyShare = SecretKeyShare<group::Value<curve25519::Scalar>>,
+            CentralizedPartyDKGOutput = dkg::centralized_party::VersionedOutput<
+                { curve25519::SCALAR_LIMBS },
+                group::Value<curve25519::GroupElement>,
+            >,
+            DecentralizedPartyDKGOutput = crate::dkg::decentralized_party::VersionedOutput<
+                { curve25519::SCALAR_LIMBS },
+                group::Value<curve25519::GroupElement>,
+                class_groups::CiphertextSpaceValue<{ crate::curve25519::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS }>,
+            >,
+            ProtocolPublicParameters = crate::class_groups::ProtocolPublicParameters<
+                { curve25519::SCALAR_LIMBS },
+                { crate::curve25519::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::curve25519::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                curve25519::GroupElement,
+            >,
+            PublicKeyShareAndProof = PublicKeyShareAndProof<
+                group::Value<curve25519::GroupElement>,
+                KnowledgeOfDiscreteLogUCProof<{ curve25519::SCALAR_LIMBS }, curve25519::GroupElement>,
+            >,
+            SecretKey = group::Value<curve25519::Scalar>,
+        >,
+        <<P as Protocol>::SignDecentralizedParty as mpc::Party>::Message: Send + Sync,
+    {
+        use crate::schnorr::vss::sign::decentralized_party::PrivateInput as VSSPrivateInput;
+        use group::{CyclicGroupElement, Samplable};
+
+        let party_to_weight: HashMap<PartyID, Weight> =
+            (1..=number_of_parties).map(|id| (id, 1)).collect();
+        let access_structure =
+            WeightedThresholdAccessStructure::new(threshold, party_to_weight).unwrap();
+
+        let (protocol_public_parameters, _decryption_key) = setup_class_groups_curve25519();
+
+        let mut rng = OsCsRng;
+        let scalar_group_public_parameters = curve25519::scalar::PublicParameters::default();
+        let group_params = curve25519::PublicParameters::default();
+
+        let party_ids: Vec<PartyID> = (1..=number_of_parties).collect();
+        let generator =
+            curve25519::GroupElement::generator_from_public_parameters(&group_params).unwrap();
+
+        let centralized_party_secret_key_share =
+            curve25519::Scalar::sample(&scalar_group_public_parameters, &mut rng).unwrap();
+        let centralized_party_public_key_share =
+            (centralized_party_secret_key_share * generator).value();
+
+        let first_secret_key_coefficients: Vec<_> = (0..threshold)
+            .map(|_| curve25519::Scalar::sample(&scalar_group_public_parameters, &mut rng).unwrap())
+            .collect();
+
+        let zero = curve25519::Scalar::from(Uint::<{ curve25519::SCALAR_LIMBS }>::ZERO);
+        let second_secret_key_coefficients: Vec<_> = (0..threshold).map(|_| zero).collect();
+
+        let first_secret_key_polynomial_commitments: Vec<_> = first_secret_key_coefficients
+            .iter()
+            .map(|coeff| (*coeff * generator).value())
+            .collect();
+        let second_secret_key_polynomial_commitments: Vec<_> = second_secret_key_coefficients
+            .iter()
+            .map(|coeff| (*coeff * generator).value())
+            .collect();
+
+        let first_secret_key_polynomial =
+            Polynomial::try_from(first_secret_key_coefficients.clone()).unwrap();
+        let second_secret_key_polynomial =
+            Polynomial::try_from(second_secret_key_coefficients.clone()).unwrap();
+
+        let secret_key_shares: HashMap<_, _> = party_ids
+            .iter()
+            .map(|&party_id| {
+                let share_first = first_secret_key_polynomial.evaluate_degree(
+                    party_id,
+                    false,
+                    &scalar_group_public_parameters,
+                );
+                let share_second = second_secret_key_polynomial.evaluate_degree(
+                    party_id,
+                    false,
+                    &scalar_group_public_parameters,
+                );
+                (party_id, (share_first.value(), share_second.value()))
+            })
+            .collect();
+
+        let decentralized_secret_first = first_secret_key_coefficients[0];
+        let decentralized_public_key_first = (decentralized_secret_first * generator).value();
+        let public_key = (centralized_party_secret_key_share * generator
+            + decentralized_secret_first * generator)
+            .value();
+
+        let dkg_output_inner = crate::dkg::decentralized_party::Output {
+            public_key_share: decentralized_public_key_first,
+            public_key,
+            encryption_of_secret_key_share: class_groups::CiphertextSpaceValue::<
+                { crate::curve25519::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            >::default(),
+            centralized_party_public_key_share,
+        };
+
+        let first_key_public_randomizer = Uint::<{ curve25519::SCALAR_LIMBS }>::ONE;
+        let second_key_public_randomizer = Uint::<{ curve25519::SCALAR_LIMBS }>::ZERO;
+        let free_coefficient_key_public_randomizer = Uint::<{ curve25519::SCALAR_LIMBS }>::ZERO;
+
+        let decentralized_party_dkg_output =
+            crate::dkg::decentralized_party::VersionedOutput::UniversalPublicDKGOutput {
+                output: dkg_output_inner,
+                first_key_public_randomizer,
+                second_key_public_randomizer,
+                free_coefficient_key_public_randomizer,
+                global_decentralized_party_output_commitment: CommitmentSizedNumber::ZERO,
+            };
+
+        let centralized_party_dkg_output: dkg::centralized_party::VersionedOutput<
+            { curve25519::SCALAR_LIMBS },
+            group::Value<curve25519::GroupElement>,
+        > = decentralized_party_dkg_output.clone().into();
+
+        let centralized_party_secret_key_share =
+            SecretKeyShare(centralized_party_secret_key_share.value());
+
+        let presign_session_id = CommitmentSizedNumber::random(&mut rng);
+
+        let first_nonce_coefficients: Vec<_> = (0..threshold)
+            .map(|_| curve25519::Scalar::sample(&scalar_group_public_parameters, &mut rng).unwrap())
+            .collect();
+
+        let second_nonce_coefficients: Vec<_> = (0..threshold)
+            .map(|_| curve25519::Scalar::sample(&scalar_group_public_parameters, &mut rng).unwrap())
+            .collect();
+
+        let first_nonce_polynomial_commitments: Vec<_> = first_nonce_coefficients
+            .iter()
+            .map(|coeff| (*coeff * generator).value())
+            .collect();
+        let second_nonce_polynomial_commitments: Vec<_> = second_nonce_coefficients
+            .iter()
+            .map(|coeff| (*coeff * generator).value())
+            .collect();
+
+        let first_nonce_polynomial =
+            Polynomial::try_from(first_nonce_coefficients.clone()).unwrap();
+        let second_nonce_polynomial =
+            Polynomial::try_from(second_nonce_coefficients.clone()).unwrap();
+
+        let nonce_shares: HashMap<_, _> = party_ids
+            .iter()
+            .map(|&party_id| {
+                let nonce_share_first = first_nonce_polynomial.evaluate_degree(
+                    party_id,
+                    false,
+                    &scalar_group_public_parameters,
+                );
+                let nonce_share_second = second_nonce_polynomial.evaluate_degree(
+                    party_id,
+                    false,
+                    &scalar_group_public_parameters,
+                );
+                (
+                    party_id,
+                    (nonce_share_first.value(), nonce_share_second.value()),
+                )
+            })
+            .collect();
+
+        let nonce_secret_first = first_nonce_coefficients[0];
+        let nonce_secret_second = second_nonce_coefficients[0];
+
+        let presign = crate::schnorr::vss::presign::Presign {
+            session_id: presign_session_id,
+            presign_blending_index: 0,
+            decentralized_party_nonce_public_share_first_part: (nonce_secret_first * generator)
+                .value(),
+            decentralized_party_nonce_public_share_second_part: (nonce_secret_second * generator)
+                .value(),
+        };
+
+        let private_inputs: HashMap<
+            PartyID,
+            VSSPrivateInput<
+                group::Value<curve25519::Scalar>,
+                group::Value<curve25519::GroupElement>,
+            >,
+        > = party_ids
+            .iter()
+            .map(|&party_id| {
+                let (secret_key_share_first, secret_key_share_second) =
+                    secret_key_shares.get(&party_id).unwrap();
+                let (nonce_share_first, nonce_share_second) = nonce_shares.get(&party_id).unwrap();
+
+                let private_input = VSSPrivateInput {
+                    secret_key_share_first_part: *secret_key_share_first,
+                    secret_key_share_second_part: *secret_key_share_second,
+                    session_id: presign_session_id,
+                    presign_blending_index: 0,
+                    nonce_share_first_part: *nonce_share_first,
+                    nonce_share_second_part: *nonce_share_second,
+                    first_nonce_polynomial_commitments: first_nonce_polynomial_commitments.clone(),
+                    second_nonce_polynomial_commitments: second_nonce_polynomial_commitments
+                        .clone(),
+                };
+
+                (party_id, private_input)
+            })
+            .collect();
+
+        let centralized_party_public_input =
+            crate::schnorr::vss::sign::centralized_party::PublicInput {
+                message: message.to_vec(),
+                hash_scheme: hash_type,
+                hash_context: hash_context.clone(),
+                dkg_output: centralized_party_dkg_output.clone(),
+                presign: presign.clone(),
+                protocol_public_parameters: protocol_public_parameters.clone(),
+            };
+
+        let secret_key_polynomial_commitments = (
+            first_secret_key_polynomial_commitments,
+            second_secret_key_polynomial_commitments,
+        );
+
+        signs_internal_generic::<
+            { curve25519::SCALAR_LIMBS },
+            { curve25519::SCALAR_LIMBS },
+            curve25519::GroupElement,
+            Curve25519EncryptionKey,
+            P,
+            (Vec<curve25519::Value>, Vec<curve25519::Value>),
+        >(
+            presign_session_id,
+            access_structure,
+            hash_type,
+            hash_context.clone(),
+            centralized_party_secret_key_share,
+            centralized_party_dkg_output,
+            decentralized_party_dkg_output,
+            presign,
+            secret_key_polynomial_commitments,
+            private_inputs,
+            message,
+            verify_signature,
+            construct_decentralized_schnorr_vss_sign_party_public_inputs::<
+                { curve25519::SCALAR_LIMBS },
+                { crate::curve25519::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::curve25519::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                curve25519::GroupElement,
+            >,
+            protocol_public_parameters,
+            centralized_party_public_input,
+            description.to_string(),
+            malicious_parties,
+            bench,
+            expected_case,
+            true,
+            SignDataMode::Unverified,
+        );
+    }
+
+    /// VSS Schnorr signing test function for ristretto (Schnorrkel).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn signs_vss_async_schnorr_class_groups_ristretto_internal<P>(
+        threshold: PartyID,
+        number_of_parties: PartyID,
+        hash_type: HashScheme,
+        hash_context: HashContext,
+        malicious_parties: HashSet<PartyID>,
+        bench: bool,
+        expected_case: bool,
+        message: &[u8],
+        verify_signature: fn(
+            public_key: ristretto::GroupElement,
+            signature: P::Signature,
+            message: &[u8],
+            hash_type: HashScheme,
+            hash_context: &HashContext,
+        ) -> crate::Result<()>,
+        description: &str,
+    ) where
+        P: Protocol<
+            SignDecentralizedPartyPrivateInput = crate::schnorr::vss::sign::decentralized_party::PrivateInput<
+                group::Value<ristretto::Scalar>,
+                group::Value<ristretto::GroupElement>,
+            >,
+            Presign = crate::schnorr::vss::presign::Presign<group::Value<ristretto::GroupElement>>,
+            SignMessage = schnorr::PartialSignature<
+                group::Value<ristretto::GroupElement>,
+                group::Value<ristretto::Scalar>,
+            >,
+            VerifiedSignData = schnorr::PartialSignature<
+                group::Value<ristretto::GroupElement>,
+                group::Value<ristretto::Scalar>,
+            >,
+            SignDecentralizedPartyPublicInput = crate::schnorr::vss::sign::decentralized_party::PublicInput<
+                crate::dkg::decentralized_party::VersionedOutput<
+                    { ristretto::SCALAR_LIMBS },
+                    group::Value<ristretto::GroupElement>,
+                    class_groups::CiphertextSpaceValue<{ crate::ristretto::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS }>,
+                >,
+                crate::schnorr::vss::presign::Presign<group::Value<ristretto::GroupElement>>,
+                schnorr::PartialSignature<
+                    group::Value<ristretto::GroupElement>,
+                    group::Value<ristretto::Scalar>,
+                >,
+                crate::class_groups::ProtocolPublicParameters<
+                    { ristretto::SCALAR_LIMBS },
+                    { crate::ristretto::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::ristretto::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    ristretto::GroupElement,
+                >,
+                group::Value<ristretto::GroupElement>,
+            >,
+            SignCentralizedPartyPublicInput = crate::schnorr::vss::sign::centralized_party::PublicInput<
+                dkg::centralized_party::VersionedOutput<
+                    { ristretto::SCALAR_LIMBS },
+                    group::Value<ristretto::GroupElement>,
+                >,
+                crate::schnorr::vss::presign::Presign<group::Value<ristretto::GroupElement>>,
+                crate::class_groups::ProtocolPublicParameters<
+                    { ristretto::SCALAR_LIMBS },
+                    { crate::ristretto::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::ristretto::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    ristretto::GroupElement,
+                >,
+            >,
+        >,
+        P::DKGProtocol: dkg::Protocol<
+            CentralizedPartySecretKeyShare = SecretKeyShare<group::Value<ristretto::Scalar>>,
+            CentralizedPartyDKGOutput = dkg::centralized_party::VersionedOutput<
+                { ristretto::SCALAR_LIMBS },
+                group::Value<ristretto::GroupElement>,
+            >,
+            DecentralizedPartyDKGOutput = crate::dkg::decentralized_party::VersionedOutput<
+                { ristretto::SCALAR_LIMBS },
+                group::Value<ristretto::GroupElement>,
+                class_groups::CiphertextSpaceValue<{ crate::ristretto::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS }>,
+            >,
+            ProtocolPublicParameters = crate::class_groups::ProtocolPublicParameters<
+                { ristretto::SCALAR_LIMBS },
+                { crate::ristretto::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::ristretto::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                ristretto::GroupElement,
+            >,
+            PublicKeyShareAndProof = PublicKeyShareAndProof<
+                group::Value<ristretto::GroupElement>,
+                KnowledgeOfDiscreteLogUCProof<{ ristretto::SCALAR_LIMBS }, ristretto::GroupElement>,
+            >,
+            SecretKey = group::Value<ristretto::Scalar>,
+        >,
+        <<P as Protocol>::SignDecentralizedParty as mpc::Party>::Message: Send + Sync,
+    {
+        use crate::schnorr::vss::sign::decentralized_party::PrivateInput as VSSPrivateInput;
+        use group::{CyclicGroupElement, Samplable};
+
+        let party_to_weight: HashMap<PartyID, Weight> =
+            (1..=number_of_parties).map(|id| (id, 1)).collect();
+        let access_structure =
+            WeightedThresholdAccessStructure::new(threshold, party_to_weight).unwrap();
+
+        let (protocol_public_parameters, _decryption_key) = setup_class_groups_ristretto();
+
+        let mut rng = OsCsRng;
+        let scalar_group_public_parameters = ristretto::scalar::PublicParameters::default();
+        let group_params = ristretto::group_element::PublicParameters::default();
+
+        let party_ids: Vec<PartyID> = (1..=number_of_parties).collect();
+        let generator =
+            ristretto::GroupElement::generator_from_public_parameters(&group_params).unwrap();
+
+        let centralized_party_secret_key_share =
+            ristretto::Scalar::sample(&scalar_group_public_parameters, &mut rng).unwrap();
+        let centralized_party_public_key_share =
+            (centralized_party_secret_key_share * generator).value();
+
+        let first_secret_key_coefficients: Vec<_> = (0..threshold)
+            .map(|_| ristretto::Scalar::sample(&scalar_group_public_parameters, &mut rng).unwrap())
+            .collect();
+
+        let zero = ristretto::Scalar::from(Uint::<{ ristretto::SCALAR_LIMBS }>::ZERO);
+        let second_secret_key_coefficients: Vec<_> = (0..threshold).map(|_| zero).collect();
+
+        let first_secret_key_polynomial_commitments: Vec<_> = first_secret_key_coefficients
+            .iter()
+            .map(|coeff| (*coeff * generator).value())
+            .collect();
+        let second_secret_key_polynomial_commitments: Vec<_> = second_secret_key_coefficients
+            .iter()
+            .map(|coeff| (*coeff * generator).value())
+            .collect();
+
+        let first_secret_key_polynomial =
+            Polynomial::try_from(first_secret_key_coefficients.clone()).unwrap();
+        let second_secret_key_polynomial =
+            Polynomial::try_from(second_secret_key_coefficients.clone()).unwrap();
+
+        let secret_key_shares: HashMap<_, _> = party_ids
+            .iter()
+            .map(|&party_id| {
+                let share_first = first_secret_key_polynomial.evaluate_degree(
+                    party_id,
+                    false,
+                    &scalar_group_public_parameters,
+                );
+                let share_second = second_secret_key_polynomial.evaluate_degree(
+                    party_id,
+                    false,
+                    &scalar_group_public_parameters,
+                );
+                (party_id, (share_first.value(), share_second.value()))
+            })
+            .collect();
+
+        let decentralized_secret_first = first_secret_key_coefficients[0];
+        let decentralized_public_key_first = (decentralized_secret_first * generator).value();
+        let public_key = (centralized_party_secret_key_share * generator
+            + decentralized_secret_first * generator)
+            .value();
+
+        let dkg_output_inner = crate::dkg::decentralized_party::Output {
+            public_key_share: decentralized_public_key_first,
+            public_key,
+            encryption_of_secret_key_share: class_groups::CiphertextSpaceValue::<
+                { crate::ristretto::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            >::default(),
+            centralized_party_public_key_share,
+        };
+
+        let first_key_public_randomizer = Uint::<{ ristretto::SCALAR_LIMBS }>::ONE;
+        let second_key_public_randomizer = Uint::<{ ristretto::SCALAR_LIMBS }>::ZERO;
+        let free_coefficient_key_public_randomizer = Uint::<{ ristretto::SCALAR_LIMBS }>::ZERO;
+
+        let decentralized_party_dkg_output =
+            crate::dkg::decentralized_party::VersionedOutput::UniversalPublicDKGOutput {
+                output: dkg_output_inner,
+                first_key_public_randomizer,
+                second_key_public_randomizer,
+                free_coefficient_key_public_randomizer,
+                global_decentralized_party_output_commitment: CommitmentSizedNumber::ZERO,
+            };
+
+        let centralized_party_dkg_output: dkg::centralized_party::VersionedOutput<
+            { ristretto::SCALAR_LIMBS },
+            group::Value<ristretto::GroupElement>,
+        > = decentralized_party_dkg_output.clone().into();
+
+        let centralized_party_secret_key_share =
+            SecretKeyShare(centralized_party_secret_key_share.value());
+
+        let presign_session_id = CommitmentSizedNumber::random(&mut rng);
+
+        let first_nonce_coefficients: Vec<_> = (0..threshold)
+            .map(|_| ristretto::Scalar::sample(&scalar_group_public_parameters, &mut rng).unwrap())
+            .collect();
+
+        let second_nonce_coefficients: Vec<_> = (0..threshold)
+            .map(|_| ristretto::Scalar::sample(&scalar_group_public_parameters, &mut rng).unwrap())
+            .collect();
+
+        let first_nonce_polynomial_commitments: Vec<_> = first_nonce_coefficients
+            .iter()
+            .map(|coeff| (*coeff * generator).value())
+            .collect();
+        let second_nonce_polynomial_commitments: Vec<_> = second_nonce_coefficients
+            .iter()
+            .map(|coeff| (*coeff * generator).value())
+            .collect();
+
+        let first_nonce_polynomial =
+            Polynomial::try_from(first_nonce_coefficients.clone()).unwrap();
+        let second_nonce_polynomial =
+            Polynomial::try_from(second_nonce_coefficients.clone()).unwrap();
+
+        let nonce_shares: HashMap<_, _> = party_ids
+            .iter()
+            .map(|&party_id| {
+                let nonce_share_first = first_nonce_polynomial.evaluate_degree(
+                    party_id,
+                    false,
+                    &scalar_group_public_parameters,
+                );
+                let nonce_share_second = second_nonce_polynomial.evaluate_degree(
+                    party_id,
+                    false,
+                    &scalar_group_public_parameters,
+                );
+                (
+                    party_id,
+                    (nonce_share_first.value(), nonce_share_second.value()),
+                )
+            })
+            .collect();
+
+        let nonce_secret_first = first_nonce_coefficients[0];
+        let nonce_secret_second = second_nonce_coefficients[0];
+
+        let presign = crate::schnorr::vss::presign::Presign {
+            session_id: presign_session_id,
+            presign_blending_index: 0,
+            decentralized_party_nonce_public_share_first_part: (nonce_secret_first * generator)
+                .value(),
+            decentralized_party_nonce_public_share_second_part: (nonce_secret_second * generator)
+                .value(),
+        };
+
+        let private_inputs: HashMap<
+            PartyID,
+            VSSPrivateInput<group::Value<ristretto::Scalar>, group::Value<ristretto::GroupElement>>,
+        > = party_ids
+            .iter()
+            .map(|&party_id| {
+                let (secret_key_share_first, secret_key_share_second) =
+                    secret_key_shares.get(&party_id).unwrap();
+                let (nonce_share_first, nonce_share_second) = nonce_shares.get(&party_id).unwrap();
+
+                let private_input = VSSPrivateInput {
+                    secret_key_share_first_part: *secret_key_share_first,
+                    secret_key_share_second_part: *secret_key_share_second,
+                    session_id: presign_session_id,
+                    presign_blending_index: 0,
+                    nonce_share_first_part: *nonce_share_first,
+                    nonce_share_second_part: *nonce_share_second,
+                    first_nonce_polynomial_commitments: first_nonce_polynomial_commitments.clone(),
+                    second_nonce_polynomial_commitments: second_nonce_polynomial_commitments
+                        .clone(),
+                };
+
+                (party_id, private_input)
+            })
+            .collect();
+
+        let centralized_party_public_input =
+            crate::schnorr::vss::sign::centralized_party::PublicInput {
+                message: message.to_vec(),
+                hash_scheme: hash_type,
+                hash_context: hash_context.clone(),
+                dkg_output: centralized_party_dkg_output.clone(),
+                presign: presign.clone(),
+                protocol_public_parameters: protocol_public_parameters.clone(),
+            };
+
+        let secret_key_polynomial_commitments = (
+            first_secret_key_polynomial_commitments,
+            second_secret_key_polynomial_commitments,
+        );
+
+        signs_internal_generic::<
+            { ristretto::SCALAR_LIMBS },
+            { ristretto::SCALAR_LIMBS },
+            ristretto::GroupElement,
+            RistrettoEncryptionKey,
+            P,
+            (
+                Vec<ristretto::group_element::GroupElement>,
+                Vec<ristretto::group_element::GroupElement>,
+            ),
+        >(
+            presign_session_id,
+            access_structure,
+            hash_type,
+            hash_context.clone(),
+            centralized_party_secret_key_share,
+            centralized_party_dkg_output,
+            decentralized_party_dkg_output,
+            presign,
+            secret_key_polynomial_commitments,
+            private_inputs,
+            message,
+            verify_signature,
+            construct_decentralized_schnorr_vss_sign_party_public_inputs::<
+                { ristretto::SCALAR_LIMBS },
+                { crate::ristretto::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::ristretto::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                ristretto::GroupElement,
+            >,
+            protocol_public_parameters,
+            centralized_party_public_input,
+            description.to_string(),
+            malicious_parties,
+            bench,
+            expected_case,
+            true,
+            SignDataMode::Unverified,
         );
     }
 
     pub(crate) fn dkg_presign_signs_internal<
         const SCALAR_LIMBS: usize,
         const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
         EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
         P,
+        SignPublicInputExtraData,
+        ConstructSignPrivateInputs,
     >(
         dkg_session_id: CommitmentSizedNumber,
         access_structure: WeightedThresholdAccessStructure,
         hash_type: HashScheme,
-        decryption_key_share_public_parameters: P::DecryptionKeySharePublicParameters,
-        tangible_party_id_to_virtual_party_id_to_decryption_key_share: HashMap<
-            PartyID,
-            HashMap<PartyID, P::DecryptionKeyShare>,
-        >,
+        hash_context: HashContext,
+        sign_public_input_extra_data: SignPublicInputExtraData,
+        construct_sign_private_inputs: ConstructSignPrivateInputs,
         message: &[u8],
         verify_signature: fn(
             public_key: GroupElement,
             signature: P::Signature,
             message: &[u8],
             hash_type: HashScheme,
+            hash_context: &HashContext,
         ) -> crate::Result<()>,
-        protocol_public_parameters: P::ProtocolPublicParameters,
+        construct_sign_public_input: fn(
+            protocol_public_parameters: Arc<
+                <P::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
+            >,
+            dkg_output: <P::DKGProtocol as dkg::Protocol>::DecentralizedPartyDKGOutput,
+            presign: P::Presign,
+            decryption_key_share_public_parameters: Arc<SignPublicInputExtraData>,
+            message: Vec<u8>,
+            hash_type: HashScheme,
+            hash_context: HashContext,
+            sign_data: SignData<P::SignMessage, P::VerifiedSignData>,
+            expected_decrypters: HashSet<PartyID>,
+        ) -> P::SignDecentralizedPartyPublicInput,
+        protocol_public_parameters: <P::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
+        presign_private_inputs: HashMap<PartyID, P::PresignPrivateInput>,
         is_trusted_dealer: bool,
+        number_of_rounds: usize,
         description: String,
+        sign_data_mode: SignDataMode,
     ) -> (
-        P::CentralizedPartyDKGOutput,
-        P::CentralizedPartySecretKeyShare,
-        P::DecentralizedPartyDKGOutput,
+        <P::DKGProtocol as dkg::Protocol>::CentralizedPartyDKGOutput,
+        <P::DKGProtocol as dkg::Protocol>::CentralizedPartySecretKeyShare,
+        <P::DKGProtocol as dkg::Protocol>::DecentralizedPartyDKGOutput,
     )
     where
+        SignPublicInputExtraData: Clone,
         GroupElement::Scalar: From<Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>>,
-        P: Protocol<
+        P: Protocol,
+        P::PresignPrivateInput: Clone,
+        ConstructSignPrivateInputs: Fn(
+            &HashMap<PartyID, <P::PresignParty as mpc::Party>::PrivateOutput>,
+            &P::Presign,
+        )
+            -> HashMap<PartyID, P::SignDecentralizedPartyPrivateInput>,
+        P::DKGProtocol: dkg::Protocol<
             CentralizedPartyDKGOutput = crate::dkg::centralized_party::VersionedOutput<
                 SCALAR_LIMBS,
                 group::Value<GroupElement>,
@@ -1940,7 +5768,7 @@ pub(crate) mod tests {
             >,
             SecretKey = group::Value<GroupElement::Scalar>,
         >,
-        P::ProtocolPublicParameters: AsRef<
+        <P::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters: AsRef<
             ProtocolPublicParameters<
                 group::PublicParameters<GroupElement::Scalar>,
                 GroupElement::PublicParameters,
@@ -1952,19 +5780,48 @@ pub(crate) mod tests {
                 EncryptionKey::PublicParameters,
             >,
         >,
+        P::SignCentralizedPartyPublicInput: From<(
+            Vec<u8>,
+            HashScheme,
+            HashContext,
+            <P::DKGProtocol as dkg::Protocol>::CentralizedPartyDKGOutput,
+            P::Presign,
+            <P::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
+        )>,
+        P: PresignPublicInputConstructor<
+            SCALAR_LIMBS,
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            GroupElement,
+            EncryptionKey,
+        >,
         Uint<SCALAR_LIMBS>: Encoding,
+        <<P as Protocol>::SignDecentralizedParty as mpc::Party>::Message: Send + Sync,
     {
         let (
             centralized_party_dkg_output,
             centralized_party_secret_key_share,
             decentralized_party_dkg_output,
-        ) = if is_trusted_dealer {
+        ) = if sign_data_mode == SignDataMode::Emulated {
+            generates_distributed_key_internal::<
+                SCALAR_LIMBS,
+                PLAINTEXT_SPACE_SCALAR_LIMBS,
+                GroupElement,
+                EncryptionKey,
+                P::DKGProtocol,
+            >(
+                dkg_session_id,
+                access_structure.clone(),
+                protocol_public_parameters.clone(),
+                description.clone(),
+                true,
+            )
+        } else if is_trusted_dealer {
             deals_trusted_shares_internal::<
                 SCALAR_LIMBS,
                 PLAINTEXT_SPACE_SCALAR_LIMBS,
                 GroupElement,
                 EncryptionKey,
-                P,
+                P::DKGProtocol,
             >(
                 dkg_session_id,
                 access_structure.clone(),
@@ -1976,14 +5833,28 @@ pub(crate) mod tests {
                 PLAINTEXT_SPACE_SCALAR_LIMBS,
                 GroupElement,
                 EncryptionKey,
-                P,
+                P::DKGProtocol,
             >(
                 dkg_session_id,
                 access_structure.clone(),
                 protocol_public_parameters.clone(),
                 description.clone(),
+                false,
             )
         };
+
+        let dkg_output = match decentralized_party_dkg_output.clone() {
+            crate::dkg::decentralized_party::VersionedOutput::TargetedPublicDKGOutput(
+                dkg_output,
+            ) => Some(dkg_output),
+            crate::dkg::decentralized_party::VersionedOutput::UniversalPublicDKGOutput {
+                ..
+            } => None,
+        };
+
+        let protocol_public_parameters = Arc::new(protocol_public_parameters);
+        let presign_public_input =
+            P::construct_presign_public_input(protocol_public_parameters.clone(), dkg_output);
 
         presign_signs_internal::<
             SCALAR_LIMBS,
@@ -1991,18 +5862,26 @@ pub(crate) mod tests {
             GroupElement,
             EncryptionKey,
             P,
+            SignPublicInputExtraData,
+            ConstructSignPrivateInputs,
         >(
             access_structure,
             hash_type,
+            hash_context.clone(),
             centralized_party_dkg_output.clone(),
             centralized_party_secret_key_share,
             decentralized_party_dkg_output.clone(),
-            decryption_key_share_public_parameters,
-            tangible_party_id_to_virtual_party_id_to_decryption_key_share,
+            sign_public_input_extra_data,
+            construct_sign_private_inputs,
             message,
             verify_signature,
+            construct_sign_public_input,
             protocol_public_parameters,
+            presign_public_input,
+            presign_private_inputs,
+            number_of_rounds,
             description,
+            sign_data_mode,
         );
 
         (
@@ -2015,32 +5894,60 @@ pub(crate) mod tests {
     pub(crate) fn presign_signs_internal<
         const SCALAR_LIMBS: usize,
         const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
         EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
         P,
+        SignPublicInputExtraData,
+        ConstructSignPrivateInputs,
     >(
         access_structure: WeightedThresholdAccessStructure,
         hash_type: HashScheme,
-        centralized_party_dkg_output: P::CentralizedPartyDKGOutput,
-        centralized_party_secret_key_share: P::CentralizedPartySecretKeyShare,
-        decentralized_party_dkg_output: P::DecentralizedPartyDKGOutput,
-        decryption_key_share_public_parameters: P::DecryptionKeySharePublicParameters,
-        tangible_party_id_to_virtual_party_id_to_decryption_key_share: HashMap<
-            PartyID,
-            HashMap<PartyID, P::DecryptionKeyShare>,
-        >,
+        hash_context: HashContext,
+        centralized_party_dkg_output: <P::DKGProtocol as dkg::Protocol>::CentralizedPartyDKGOutput,
+        centralized_party_secret_key_share: <P::DKGProtocol as dkg::Protocol>::CentralizedPartySecretKeyShare,
+        decentralized_party_dkg_output: <P::DKGProtocol as dkg::Protocol>::DecentralizedPartyDKGOutput,
+        sign_public_input_extra_data: SignPublicInputExtraData,
+        construct_sign_private_inputs: ConstructSignPrivateInputs,
         message: &[u8],
         verify_signature: fn(
             public_key: GroupElement,
             signature: P::Signature,
             message: &[u8],
             hash_type: HashScheme,
+            hash_context: &HashContext,
         ) -> crate::Result<()>,
-        protocol_public_parameters: P::ProtocolPublicParameters,
+        construct_sign_public_input: fn(
+            protocol_public_parameters: Arc<
+                <P::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
+            >,
+            dkg_output: <P::DKGProtocol as dkg::Protocol>::DecentralizedPartyDKGOutput,
+            presign: P::Presign,
+            decryption_key_share_public_parameters: Arc<SignPublicInputExtraData>,
+            message: Vec<u8>,
+            hash_type: HashScheme,
+            hash_context: HashContext,
+            sign_data: SignData<P::SignMessage, P::VerifiedSignData>,
+            expected_decrypters: HashSet<PartyID>,
+        ) -> P::SignDecentralizedPartyPublicInput,
+        protocol_public_parameters: Arc<
+            <P::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
+        >,
+        presign_public_input: P::PresignPublicInput,
+        presign_private_inputs: HashMap<PartyID, P::PresignPrivateInput>,
+        number_of_rounds: usize,
         description: String,
+        sign_data_mode: SignDataMode,
     ) where
+        ConstructSignPrivateInputs: Fn(
+            &HashMap<PartyID, <P::PresignParty as mpc::Party>::PrivateOutput>,
+            &P::Presign,
+        )
+            -> HashMap<PartyID, P::SignDecentralizedPartyPrivateInput>,
+        SignPublicInputExtraData: Clone,
         GroupElement::Scalar: From<Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>>,
-        P: Protocol<
+        P: Protocol,
+        P::PresignPrivateInput: Clone,
+        P::DKGProtocol: dkg::Protocol<
             CentralizedPartyDKGOutput = crate::dkg::centralized_party::VersionedOutput<
                 SCALAR_LIMBS,
                 group::Value<GroupElement>,
@@ -2061,7 +5968,7 @@ pub(crate) mod tests {
             >,
             SecretKey = group::Value<GroupElement::Scalar>,
         >,
-        P::ProtocolPublicParameters: AsRef<
+        <P::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters: AsRef<
             ProtocolPublicParameters<
                 group::PublicParameters<GroupElement::Scalar>,
                 GroupElement::PublicParameters,
@@ -2073,7 +5980,17 @@ pub(crate) mod tests {
                 EncryptionKey::PublicParameters,
             >,
         >,
+        P::SignCentralizedPartyPublicInput: From<(
+            Vec<u8>,
+            HashScheme,
+            HashContext,
+            <P::DKGProtocol as dkg::Protocol>::CentralizedPartyDKGOutput,
+            P::Presign,
+            <P::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
+        )>,
+        P::PresignPublicInput: Clone,
         Uint<SCALAR_LIMBS>: Encoding,
+        <<P as Protocol>::SignDecentralizedParty as mpc::Party>::Message: Send + Sync,
     {
         let parties: Vec<PartyID> = access_structure
             .party_to_virtual_parties()
@@ -2081,28 +5998,23 @@ pub(crate) mod tests {
             .copied()
             .collect();
 
-        let dkg_output = match decentralized_party_dkg_output.clone() {
-            crate::dkg::decentralized_party::VersionedOutput::TargetedPublicDKGOutput(
-                dkg_output,
-            ) => Some(dkg_output),
-            crate::dkg::decentralized_party::VersionedOutput::UniversalPublicDKGOutput {
-                ..
-            } => None,
-        };
-
-        let protocol_public_parameters = Arc::new(protocol_public_parameters);
         let encryption_of_mask_and_masked_key_share_round_public_inputs = parties
+            .clone()
             .into_iter()
-            .map(|party_id| {
-                (
-                    party_id,
-                    (protocol_public_parameters.clone(), dkg_output.clone()).into(),
-                )
-            })
+            .map(|party_id| (party_id, presign_public_input.clone()))
             .collect();
 
         let presign_session_id = CommitmentSizedNumber::random(&mut OsCsRng);
-        let presign = generates_presignatures_internal::<
+
+        // All parties must participate in presign to ensure we have private outputs for everyone.
+        // Without this, the framework picks random subsets which might not include parties needed for Sign.
+        let all_parties_set: HashSet<PartyID> = parties.into_iter().collect();
+        let presign_parties_by_round: HashMap<u64, HashSet<PartyID>> = (1..=number_of_rounds
+            as u64)
+            .map(|round| (round, all_parties_set.clone()))
+            .collect();
+
+        let (presigns, presign_private_outputs) = generates_presignatures_internal::<
             SCALAR_LIMBS,
             PLAINTEXT_SPACE_SCALAR_LIMBS,
             GroupElement,
@@ -2112,8 +6024,26 @@ pub(crate) mod tests {
             presign_session_id,
             access_structure.clone(),
             encryption_of_mask_and_masked_key_share_round_public_inputs,
+            presign_private_inputs,
+            number_of_rounds,
+            presign_parties_by_round,
             description.clone(),
         );
+
+        let presign = presigns.last().unwrap().clone();
+
+        // Build sign private inputs from presign outputs using the provided callback
+        let private_inputs = construct_sign_private_inputs(&presign_private_outputs, &presign);
+
+        let centralized_party_public_input: P::SignCentralizedPartyPublicInput = (
+            message.to_vec(),
+            hash_type,
+            hash_context.clone(),
+            centralized_party_dkg_output.clone(),
+            presign.clone(),
+            (*protocol_public_parameters).clone(),
+        )
+            .into();
 
         signs_internal_generic::<
             SCALAR_LIMBS,
@@ -2121,23 +6051,221 @@ pub(crate) mod tests {
             GroupElement,
             EncryptionKey,
             P,
+            SignPublicInputExtraData,
         >(
             presign_session_id,
             access_structure,
             hash_type,
+            hash_context.clone(),
             centralized_party_secret_key_share,
             centralized_party_dkg_output,
             decentralized_party_dkg_output,
             presign,
-            decryption_key_share_public_parameters,
-            tangible_party_id_to_virtual_party_id_to_decryption_key_share,
+            sign_public_input_extra_data,
+            private_inputs,
             message,
             verify_signature,
+            construct_sign_public_input,
             (*protocol_public_parameters).clone(),
+            centralized_party_public_input,
             description.clone(),
             HashSet::new(),
             false,
             true,
+            false,
+            sign_data_mode,
+        );
+    }
+
+    /// Variant of `presign_signs_internal` that supports specifying malicious parties.
+    ///
+    /// This function runs presign followed by sign, where the malicious parties will submit
+    /// incorrect signature shares. The malicious detection path will be exercised, and the
+    /// signature should still be successfully reconstructed from honest parties.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn presign_signs_internal_with_malicious<
+        const SCALAR_LIMBS: usize,
+        const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
+        EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
+        P,
+        SignPublicInputExtraData,
+        ConstructSignPrivateInputs,
+    >(
+        access_structure: WeightedThresholdAccessStructure,
+        hash_type: HashScheme,
+        hash_context: HashContext,
+        centralized_party_dkg_output: <P::DKGProtocol as dkg::Protocol>::CentralizedPartyDKGOutput,
+        centralized_party_secret_key_share: <P::DKGProtocol as dkg::Protocol>::CentralizedPartySecretKeyShare,
+        decentralized_party_dkg_output: <P::DKGProtocol as dkg::Protocol>::DecentralizedPartyDKGOutput,
+        sign_public_input_extra_data: SignPublicInputExtraData,
+        construct_sign_private_inputs: ConstructSignPrivateInputs,
+        message: &[u8],
+        verify_signature: fn(
+            public_key: GroupElement,
+            signature: P::Signature,
+            message: &[u8],
+            hash_type: HashScheme,
+            hash_context: &HashContext,
+        ) -> crate::Result<()>,
+        construct_sign_public_input: fn(
+            protocol_public_parameters: Arc<
+                <P::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
+            >,
+            dkg_output: <P::DKGProtocol as dkg::Protocol>::DecentralizedPartyDKGOutput,
+            presign: P::Presign,
+            decryption_key_share_public_parameters: Arc<SignPublicInputExtraData>,
+            message: Vec<u8>,
+            hash_type: HashScheme,
+            hash_context: HashContext,
+            sign_data: SignData<P::SignMessage, P::VerifiedSignData>,
+            expected_decrypters: HashSet<PartyID>,
+        ) -> P::SignDecentralizedPartyPublicInput,
+        protocol_public_parameters: Arc<
+            <P::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
+        >,
+        presign_public_input: P::PresignPublicInput,
+        presign_private_inputs: HashMap<PartyID, P::PresignPrivateInput>,
+        number_of_rounds: usize,
+        description: String,
+        malicious_parties: HashSet<PartyID>,
+    ) where
+        ConstructSignPrivateInputs: Fn(
+            &HashMap<PartyID, <P::PresignParty as mpc::Party>::PrivateOutput>,
+            &P::Presign,
+        )
+            -> HashMap<PartyID, P::SignDecentralizedPartyPrivateInput>,
+        SignPublicInputExtraData: Clone,
+        GroupElement::Scalar: From<Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>>,
+        P: Protocol,
+        P::PresignPrivateInput: Clone,
+        P::DKGProtocol: dkg::Protocol<
+            CentralizedPartyDKGOutput = crate::dkg::centralized_party::VersionedOutput<
+                SCALAR_LIMBS,
+                group::Value<GroupElement>,
+            >,
+            CentralizedPartySecretKeyShare = SecretKeyShare<group::Value<GroupElement::Scalar>>,
+            DecentralizedPartyDKGOutput = crate::dkg::decentralized_party::VersionedOutput<
+                SCALAR_LIMBS,
+                GroupElement::Value,
+                group::Value<EncryptionKey::CiphertextSpaceGroupElement>,
+            >,
+            DecentralizedPartyTargetedDKGOutput = crate::dkg::decentralized_party::Output<
+                GroupElement::Value,
+                group::Value<EncryptionKey::CiphertextSpaceGroupElement>,
+            >,
+            PublicKeyShareAndProof = PublicKeyShareAndProof<
+                group::Value<GroupElement>,
+                KnowledgeOfDiscreteLogUCProof<SCALAR_LIMBS, GroupElement>,
+            >,
+            SecretKey = group::Value<GroupElement::Scalar>,
+        >,
+        <P::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters: AsRef<
+            ProtocolPublicParameters<
+                group::PublicParameters<GroupElement::Scalar>,
+                GroupElement::PublicParameters,
+                GroupElement::Value,
+                homomorphic_encryption::CiphertextSpaceValue<
+                    PLAINTEXT_SPACE_SCALAR_LIMBS,
+                    EncryptionKey,
+                >,
+                EncryptionKey::PublicParameters,
+            >,
+        >,
+        P::SignCentralizedPartyPublicInput: From<(
+            Vec<u8>,
+            HashScheme,
+            HashContext,
+            <P::DKGProtocol as dkg::Protocol>::CentralizedPartyDKGOutput,
+            P::Presign,
+            <P::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
+        )>,
+        P::PresignPublicInput: Clone,
+        Uint<SCALAR_LIMBS>: Encoding,
+        <<P as Protocol>::SignDecentralizedParty as mpc::Party>::Message: Send + Sync,
+    {
+        let parties: Vec<PartyID> = access_structure
+            .party_to_virtual_parties()
+            .keys()
+            .copied()
+            .collect();
+
+        let encryption_of_mask_and_masked_key_share_round_public_inputs = parties
+            .clone()
+            .into_iter()
+            .map(|party_id| (party_id, presign_public_input.clone()))
+            .collect();
+
+        let presign_session_id = CommitmentSizedNumber::random(&mut OsCsRng);
+
+        // All parties must participate in presign to ensure we have private outputs for everyone.
+        // Without this, the framework picks random subsets which might not include parties needed for Sign.
+        let all_parties_set: HashSet<PartyID> = parties.into_iter().collect();
+        let presign_parties_by_round: HashMap<u64, HashSet<PartyID>> = (1..=number_of_rounds
+            as u64)
+            .map(|round| (round, all_parties_set.clone()))
+            .collect();
+
+        let (presigns, presign_private_outputs) = generates_presignatures_internal::<
+            SCALAR_LIMBS,
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            GroupElement,
+            EncryptionKey,
+            P,
+        >(
+            presign_session_id,
+            access_structure.clone(),
+            encryption_of_mask_and_masked_key_share_round_public_inputs,
+            presign_private_inputs,
+            number_of_rounds,
+            presign_parties_by_round,
+            description.clone(),
+        );
+
+        let presign = presigns.last().unwrap().clone();
+
+        // Build sign private inputs from presign outputs using the provided callback
+        let private_inputs = construct_sign_private_inputs(&presign_private_outputs, &presign);
+
+        let centralized_party_public_input: P::SignCentralizedPartyPublicInput = (
+            message.to_vec(),
+            hash_type,
+            hash_context.clone(),
+            centralized_party_dkg_output.clone(),
+            presign.clone(),
+            (*protocol_public_parameters).clone(),
+        )
+            .into();
+
+        signs_internal_generic::<
+            SCALAR_LIMBS,
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            GroupElement,
+            EncryptionKey,
+            P,
+            SignPublicInputExtraData,
+        >(
+            presign_session_id,
+            access_structure,
+            hash_type,
+            hash_context.clone(),
+            centralized_party_secret_key_share,
+            centralized_party_dkg_output,
+            decentralized_party_dkg_output,
+            presign,
+            sign_public_input_extra_data,
+            private_inputs,
+            message,
+            verify_signature,
+            construct_sign_public_input,
+            (*protocol_public_parameters).clone(),
+            centralized_party_public_input,
+            description.clone(),
+            malicious_parties,
+            false,
+            true,
+            false,
+            SignDataMode::Unverified,
         );
     }
 
@@ -2146,6 +6274,7 @@ pub(crate) mod tests {
         signature: ECDSASecp256r1Signature,
         message: &[u8],
         hash_type: HashScheme,
+        _hash_context: &HashContext,
     ) -> crate::Result<()> {
         <secp256r1::GroupElement as crate::ecdsa::VerifyingKey<{ secp256r1::SCALAR_LIMBS }>>::verify(
             &public_key,
@@ -2160,7 +6289,23 @@ pub(crate) mod tests {
         signature: ECDSASecp256k1Signature,
         message: &[u8],
         hash_type: HashScheme,
+        hash_context: &HashContext,
     ) -> crate::Result<()> {
+        // Zcash-style verification: compute the personalized BLAKE2b-256
+        // digest with `blake2b_simd` (Zcash's own BLAKE2b implementation —
+        // see crate docs) via `group::hash`, then verify the secp256k1 ECDSA
+        // signature against that prehash with stock `k256`. This mirrors
+        // Zcash's transparent-input signature stack.
+        if hash_type == HashScheme::Blake2b256 {
+            use k256::ecdsa::signature::hazmat::PrehashVerifier;
+            let digest = group::hash(message, hash_type, hash_context)?;
+            let verifying_key = k256::ecdsa::VerifyingKey::from_affine(public_key.value().into())
+                .map_err(|_| Error::from(ErrorKind::SignatureVerification))?;
+            let signature = signature.signature()?;
+            return verifying_key
+                .verify_prehash(&digest, &signature)
+                .map_err(|_| Error::from(ErrorKind::SignatureVerification));
+        }
         <secp256k1::GroupElement as crate::ecdsa::VerifyingKey<{ secp256k1::SCALAR_LIMBS }>>::verify(
             &public_key,
             message,
@@ -2174,25 +6319,29 @@ pub(crate) mod tests {
         signature: TaprootSignature,
         message: &[u8],
         hash_type: HashScheme,
+        hash_context: &HashContext,
     ) -> crate::Result<()> {
         <secp256k1::GroupElement as schnorr::VerifyingKey<{ secp256k1::SCALAR_LIMBS }>>::verify(
             &public_key,
             message,
             hash_type,
+            hash_context,
             &signature,
         )
     }
 
     pub(crate) fn verify_schnorrkel_signature(
         public_key: ristretto::GroupElement,
-        signature: SchnorrkelSubstrateSignature,
+        signature: SchnorrkelSignature,
         message: &[u8],
         hash_type: HashScheme,
+        hash_context: &HashContext,
     ) -> crate::Result<()> {
         <ristretto::GroupElement as schnorr::VerifyingKey<{ ristretto::SCALAR_LIMBS }>>::verify(
             &public_key,
             message,
             hash_type,
+            hash_context,
             &signature,
         )
     }
@@ -2202,11 +6351,13 @@ pub(crate) mod tests {
         signature: EdDSASignature,
         message: &[u8],
         hash_type: HashScheme,
+        hash_context: &HashContext,
     ) -> crate::Result<()> {
         <curve25519::GroupElement as schnorr::VerifyingKey<{ curve25519::SCALAR_LIMBS }>>::verify(
             &public_key,
             message,
             hash_type,
+            hash_context,
             &signature,
         )
     }
@@ -2214,16 +6365,16 @@ pub(crate) mod tests {
     pub trait MockablePresignProtocol: Protocol {
         fn mock_presign(
             session_id: CommitmentSizedNumber,
-            dkg_output: Self::DecentralizedPartyDKGOutput,
-            protocol_public_parameters: &Self::ProtocolPublicParameters,
+            dkg_output: <Self::DKGProtocol as dkg::Protocol>::DecentralizedPartyDKGOutput,
+            protocol_public_parameters: &<Self::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
         ) -> Self::Presign;
     }
 
     impl MockablePresignProtocol for ECDSAProtocol {
         fn mock_presign(
             session_id: CommitmentSizedNumber,
-            dkg_output: Self::DecentralizedPartyDKGOutput,
-            protocol_public_parameters: &Self::ProtocolPublicParameters,
+            dkg_output: <Self::DKGProtocol as dkg::Protocol>::DecentralizedPartyDKGOutput,
+            protocol_public_parameters: &<Self::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
         ) -> Self::Presign {
             mock_ecdsa_presign::<
                 { secp256k1::SCALAR_LIMBS },
@@ -2242,8 +6393,8 @@ pub(crate) mod tests {
     impl MockablePresignProtocol for TaprootProtocol {
         fn mock_presign(
             session_id: CommitmentSizedNumber,
-            _dkg_output: Self::DecentralizedPartyDKGOutput,
-            protocol_public_parameters: &Self::ProtocolPublicParameters,
+            _dkg_output: <Self::DKGProtocol as dkg::Protocol>::DecentralizedPartyDKGOutput,
+            protocol_public_parameters: &<Self::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
         ) -> Self::Presign {
             mock_schnorr_presign::<
                 { secp256k1::SCALAR_LIMBS },
@@ -2262,8 +6413,8 @@ pub(crate) mod tests {
     impl MockablePresignProtocol for crate::curve25519::class_groups::EdDSAProtocol {
         fn mock_presign(
             session_id: CommitmentSizedNumber,
-            _dkg_output: Self::DecentralizedPartyDKGOutput,
-            protocol_public_parameters: &Self::ProtocolPublicParameters,
+            _dkg_output: <Self::DKGProtocol as dkg::Protocol>::DecentralizedPartyDKGOutput,
+            protocol_public_parameters: &<Self::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
         ) -> Self::Presign {
             mock_schnorr_presign::<
                 { curve25519::SCALAR_LIMBS },
@@ -2279,11 +6430,11 @@ pub(crate) mod tests {
         }
     }
 
-    impl MockablePresignProtocol for crate::ristretto::class_groups::SchnorrkelSubstrateProtocol {
+    impl MockablePresignProtocol for crate::ristretto::class_groups::SchnorrkelProtocol {
         fn mock_presign(
             session_id: CommitmentSizedNumber,
-            _dkg_output: Self::DecentralizedPartyDKGOutput,
-            protocol_public_parameters: &Self::ProtocolPublicParameters,
+            _dkg_output: <Self::DKGProtocol as dkg::Protocol>::DecentralizedPartyDKGOutput,
+            protocol_public_parameters: &<Self::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
         ) -> Self::Presign {
             mock_schnorr_presign::<
                 { ristretto::SCALAR_LIMBS },
@@ -2302,8 +6453,8 @@ pub(crate) mod tests {
     impl MockablePresignProtocol for crate::secp256r1::class_groups::ECDSAProtocol {
         fn mock_presign(
             session_id: CommitmentSizedNumber,
-            dkg_output: Self::DecentralizedPartyDKGOutput,
-            protocol_public_parameters: &Self::ProtocolPublicParameters,
+            dkg_output: <Self::DKGProtocol as dkg::Protocol>::DecentralizedPartyDKGOutput,
+            protocol_public_parameters: &<Self::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
         ) -> Self::Presign {
             mock_ecdsa_presign::<
                 { secp256r1::SCALAR_LIMBS },
@@ -2322,12 +6473,15 @@ pub(crate) mod tests {
 
 #[cfg(all(test, feature = "benchmarking"))]
 mod benches {
+    use crate::curve25519::vss::EdDSAVSSProtocol;
+    use crate::ristretto::vss::SchnorrkelVSSProtocol;
     use crate::secp256k1::class_groups::{ECDSAProtocol, TaprootProtocol};
+    use crate::secp256k1::vss::TaprootVSSProtocol;
     use crate::sign::tests::{
         verify_eddsa_signature, verify_schnorrkel_signature, verify_secp256k1_ecdsa_signature,
         verify_secp256r1_ecdsa_signature, verify_taproot_signature, MESSAGE,
     };
-    use group::{HashScheme, OsCsRng};
+    use group::{HashContext, HashScheme, OsCsRng, PartyID};
     use mpc::WeightedThresholdAccessStructure;
     use std::collections::HashSet;
 
@@ -2348,10 +6502,11 @@ mod benches {
             )
             .unwrap();
 
-            super::tests::signs_async_class_groups_secp256k1_internal::<TaprootProtocol>(
+            super::tests::signs_async_schnorr_class_groups_secp256k1_internal::<TaprootProtocol>(
                 access_structure.threshold,
                 access_structure.party_to_weight.clone(),
                 HashScheme::SHA256,
+                HashContext::None,
                 HashSet::new(),
                 true,
                 true,
@@ -2360,12 +6515,71 @@ mod benches {
                 "Class Groups Asynchronous Schnorr secp256k1 (Taproot)",
             );
 
+            println!(
+                "\nProtocol, Number of Parties, Threshold, Centralized Party Total Time (μs), Decentralized Party Total Time (μs), Decentralized Party Signature Share Time (μs), Decentralized Party Signature Finalization Time (μs)",
+            );
+
+            // VSS-based Schnorr (Taproot) benchmark
+            super::tests::signs_vss_async_schnorr_class_groups_secp256k1_internal::<
+                TaprootVSSProtocol,
+            >(
+                threshold as PartyID,
+                number_of_tangible_parties as PartyID,
+                HashScheme::SHA256,
+                HashContext::None,
+                HashSet::new(),
+                true,
+                true,
+                MESSAGE.as_bytes(),
+                verify_taproot_signature,
+                "VSS Schnorr secp256k1 (Taproot)",
+            );
+
+            // VSS-based Schnorr (EdDSA) benchmark
+            super::tests::signs_vss_async_schnorr_class_groups_curve25519_internal::<
+                EdDSAVSSProtocol,
+            >(
+                threshold as PartyID,
+                number_of_tangible_parties as PartyID,
+                HashScheme::SHA512,
+                HashContext::None,
+                HashSet::new(),
+                true,
+                true,
+                MESSAGE.as_bytes(),
+                verify_eddsa_signature,
+                "VSS Schnorr curve25519 (EdDSA)",
+            );
+
+            // VSS-based Schnorr (Schnorrkel/sr25519) benchmark
+            super::tests::signs_vss_async_schnorr_class_groups_ristretto_internal::<
+                SchnorrkelVSSProtocol,
+            >(
+                threshold as PartyID,
+                number_of_tangible_parties as PartyID,
+                HashScheme::Merlin,
+                HashContext::Schnorrkel {
+                    signing_context: b"substrate".to_vec(),
+                },
+                HashSet::new(),
+                true,
+                true,
+                MESSAGE.as_bytes(),
+                verify_schnorrkel_signature,
+                "VSS Schnorr ristretto (Schnorrkel/sr25519)",
+            );
+
+            println!(
+                "\nProtocol, Number of Parties, Threshold, Centralized Party Total Time (ms), Decentralized Party Total Time (ms), Decentralized Party Decryption Share Time (ms), Decentralized Party Threshold Decryption Time (ms)",
+            );
+
             super::tests::signs_async_class_groups_curve25519_internal::<
                 crate::curve25519::class_groups::EdDSAProtocol,
             >(
                 access_structure.threshold,
                 access_structure.party_to_weight.clone(),
                 HashScheme::SHA512,
+                HashContext::None,
                 HashSet::new(),
                 true,
                 true,
@@ -2375,11 +6589,14 @@ mod benches {
             );
 
             super::tests::signs_async_class_groups_ristretto_internal::<
-                crate::ristretto::class_groups::SchnorrkelSubstrateProtocol,
+                crate::ristretto::class_groups::SchnorrkelProtocol,
             >(
                 access_structure.threshold,
                 access_structure.party_to_weight.clone(),
                 HashScheme::Merlin,
+                HashContext::Schnorrkel {
+                    signing_context: b"substrate".to_vec(),
+                },
                 HashSet::new(),
                 true,
                 true,
@@ -2388,10 +6605,11 @@ mod benches {
                 "Class Groups Asynchronous Schnorr Ristretto (Schnorrkel/sr25519)",
             );
 
-            super::tests::signs_async_class_groups_secp256k1_internal::<ECDSAProtocol>(
+            super::tests::signs_async_ecdsa_class_groups_secp256k1_internal::<ECDSAProtocol>(
                 access_structure.threshold,
                 access_structure.party_to_weight.clone(),
                 HashScheme::SHA256,
+                HashContext::None,
                 HashSet::new(),
                 true,
                 true,
@@ -2400,10 +6618,11 @@ mod benches {
                 "Class Groups Asynchronous ECDSA secp256k1",
             );
 
-            super::tests::signs_async_class_groups_secp256k1_internal::<ECDSAProtocol>(
+            super::tests::signs_async_ecdsa_class_groups_secp256k1_internal::<ECDSAProtocol>(
                 access_structure.threshold,
                 access_structure.party_to_weight.clone(),
                 HashScheme::SHA256,
+                HashContext::None,
                 HashSet::new(),
                 true,
                 false,
@@ -2418,6 +6637,7 @@ mod benches {
                 access_structure.threshold,
                 access_structure.party_to_weight.clone(),
                 HashScheme::SHA256,
+                HashContext::None,
                 HashSet::new(),
                 true,
                 true,
@@ -2432,6 +6652,7 @@ mod benches {
                 access_structure.threshold,
                 access_structure.party_to_weight.clone(),
                 HashScheme::SHA256,
+                HashContext::None,
                 HashSet::new(),
                 true,
                 false,

@@ -97,7 +97,7 @@ pub trait Protocol {
     type DKGDecentralizedPartyPublicInput: From<(
             Arc<Self::ProtocolPublicParameters>,
             Self::PublicKeyShareAndProof,
-            CentralizedPartyKeyShareVerification<
+            crate::dkg::CentralizedPartyKeyShareVerification<
                 Self::CentralizedPartySecretKeyShare,
                 Self::EncryptionKeyValue,
                 Self::EncryptedSecretKeyShareMessage,
@@ -108,8 +108,11 @@ pub trait Protocol {
         + Eq;
 
     /// The decentralized party's DKG protocol.
+    // NOTE: the party `Message` type is deliberately NOT pinned to `()` here. The
+    // real decentralized DKG party uses `Message = ()`, but the `unsafe_mock`
+    // party simulates the round structure with a magic `u64` message (for
+    // malicious-party detection), so the trait leaves `Message` to the impl.
     type DKGDecentralizedParty: mpc::Party<
-            Message = (),
             PublicOutput = Self::DecentralizedPartyDKGOutput,
             PublicOutputValue = Self::DecentralizedPartyDKGOutput,
             PublicInput = Self::DKGDecentralizedPartyPublicInput,
@@ -223,6 +226,17 @@ pub trait Protocol {
         centralized_party_secret_key_share: Self::CentralizedPartySecretKeyShare,
     ) -> crate::Result<()>;
 
+    /// Compute the decentralized party DKG output for threshold mode (no centralized party).
+    ///
+    /// Uses neutral for the centralized party's public key share and default proof bytes
+    /// in the Fiat-Shamir transcript, derives the randomized decentralized party public key
+    /// share and encryption of secret key share, and returns the DKG output with
+    /// `$\textsf{pk} = X_B$` (the decentralized party's key share is the full public key).
+    fn threshold_dkg_output(
+        protocol_public_parameters: &Self::ProtocolPublicParameters,
+        session_id: CommitmentSizedNumber,
+    ) -> crate::Result<Self::DecentralizedPartyDKGOutput>;
+
     /// The message sent by the centralized party in a trusted dealer setting.
     /// Used for the "import" feature.
     type DealTrustedShareMessage: Serialize
@@ -250,7 +264,7 @@ pub trait Protocol {
             Arc<Self::ProtocolPublicParameters>,
             CommitmentSizedNumber,
             Self::DealTrustedShareMessage,
-            CentralizedPartyKeyShareVerification<
+            crate::dkg::CentralizedPartyKeyShareVerification<
                 Self::CentralizedPartySecretKeyShare,
                 Self::EncryptionKeyValue,
                 Self::EncryptedSecretKeyShareMessage,
@@ -310,7 +324,7 @@ pub enum CentralizedPartyKeyShareVerification<
 fn derive_randomized_decentralized_party_public_key_share_and_encryption_of_secret_key_share<
     const SCALAR_LIMBS: usize,
     const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
-    GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
     EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
 >(
     session_id: CommitmentSizedNumber,
@@ -437,30 +451,42 @@ where
             true,
         );
 
+    let ciphertext_space_public_parameters =
+        encryption_scheme_public_parameters.ciphertext_space_public_parameters();
+
     //  Compute $\textsf{ct}_{\textsf{key}}=(\mu_{x}^{0}\odot \textsf{ct}_{\textsf{key}}^{0})\oplus (\mu_{x}^{1}\odot \textsf{ct}_{\textsf{key}}^{1})\oplus \mu_{x}^{G}$
     let decentralized_party_encryption_of_secret_key_share =
-        ((encryption_of_decentralized_party_secret_key_share_first_part
-            .scale_vartime_accelerated(
-                &first_key_public_randomizer,
-                encryption_scheme_public_parameters.ciphertext_space_public_parameters(),
-            ))
-        .add_vartime(
-            &(encryption_of_decentralized_party_secret_key_share_second_part
-                .scale_vartime_accelerated(
-                    &second_key_public_randomizer,
-                    encryption_scheme_public_parameters.ciphertext_space_public_parameters(),
-                )),
+        ((encryption_of_decentralized_party_secret_key_share_first_part.scale_vartime_by(
+            &first_key_public_randomizer,
+            ciphertext_space_public_parameters,
         ))
-        .add_vartime(&(encryption_of_free_coefficient_key_public_randomizer));
+        .add_vartime(
+            &(encryption_of_decentralized_party_secret_key_share_second_part.scale_vartime_by(
+                &second_key_public_randomizer,
+                ciphertext_space_public_parameters,
+            )),
+            ciphertext_space_public_parameters,
+        ))
+        .add_vartime(
+            &encryption_of_free_coefficient_key_public_randomizer,
+            ciphertext_space_public_parameters,
+        );
 
     //  Compute $X_B=\mu_{x}^{0}\cdot X_B^{0}+\mu_{x}^{1}X_B^{1}+\mu_{x}^{G}\cdot G$
     let decentralized_party_public_key_share = ((decentralized_party_public_key_share_first_part
-        .scale_vartime(&first_key_public_randomizer))
+        .scale_vartime(&first_key_public_randomizer, group_public_parameters))
     .add_vartime(
         &(decentralized_party_public_key_share_second_part
-            .scale_vartime(&second_key_public_randomizer)),
+            .scale_vartime(&second_key_public_randomizer, group_public_parameters)),
+        group_public_parameters,
     ))
-    .add_vartime(&(generator.scale_vartime(&free_coefficient_key_public_randomizer)));
+    .add_vartime(
+        &(generator.scale_vartime(
+            &free_coefficient_key_public_randomizer,
+            group_public_parameters,
+        )),
+        group_public_parameters,
+    );
 
     Ok((
         first_key_public_randomizer,
@@ -475,6 +501,7 @@ where
 #[allow(dead_code)]
 pub(crate) mod tests {
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     use crate::dkg::centralized_party::{PublicKeyShareAndProof, SecretKeyShare};
     use crate::languages::KnowledgeOfDiscreteLogUCProof;
@@ -515,18 +542,26 @@ pub(crate) mod tests {
     }
 
     #[rstest]
-    #[case(2, HashMap::from([(1, 1), (2, 1)]))]
-    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]))]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), false)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false)]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), true)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), true)]
     fn generates_distributed_key_async_class_groups_secp256r1(
         #[case] threshold: PartyID,
         #[case] party_to_weight: HashMap<PartyID, Weight>,
+        #[case] emulated: bool,
     ) {
-        generates_distributed_key_async_class_groups_secp256r1_internal(threshold, party_to_weight)
+        generates_distributed_key_async_class_groups_secp256r1_internal(
+            threshold,
+            party_to_weight,
+            emulated,
+        )
     }
 
     pub(crate) fn generates_distributed_key_async_class_groups_secp256r1_internal(
         threshold: PartyID,
         party_to_weight: HashMap<PartyID, Weight>,
+        emulated: bool,
     ) {
         let (protocol_public_parameters, _) = setup_class_groups_secp256r1();
 
@@ -537,28 +572,37 @@ pub(crate) mod tests {
             { secp256r1::SCALAR_LIMBS },
             secp256r1::GroupElement,
             Secp256r1EncryptionKey,
-            crate::secp256r1::class_groups::ECDSAProtocol,
+            crate::secp256r1::class_groups::DKGProtocol,
         >(
             session_id,
             access_structure,
             protocol_public_parameters,
             "Class Groups Asynchronous secp256r1".to_string(),
+            emulated,
         );
     }
 
     #[rstest]
-    #[case(2, HashMap::from([(1, 1), (2, 1)]))]
-    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]))]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), false)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false)]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), true)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), true)]
     fn generates_distributed_key_async_class_groups_curve25519(
         #[case] threshold: PartyID,
         #[case] party_to_weight: HashMap<PartyID, Weight>,
+        #[case] emulated: bool,
     ) {
-        generates_distributed_key_async_class_groups_curve25519_internal(threshold, party_to_weight)
+        generates_distributed_key_async_class_groups_curve25519_internal(
+            threshold,
+            party_to_weight,
+            emulated,
+        )
     }
 
     pub(crate) fn generates_distributed_key_async_class_groups_curve25519_internal(
         threshold: PartyID,
         party_to_weight: HashMap<PartyID, Weight>,
+        emulated: bool,
     ) {
         let (protocol_public_parameters, _) = setup_class_groups_curve25519();
 
@@ -569,28 +613,37 @@ pub(crate) mod tests {
             { curve25519::SCALAR_LIMBS },
             curve25519::GroupElement,
             Curve25519EncryptionKey,
-            crate::curve25519::class_groups::EdDSAProtocol,
+            crate::curve25519::class_groups::DKGProtocol,
         >(
             session_id,
             access_structure,
             protocol_public_parameters,
             "Class Groups Asynchronous Curve25519 (EdDSA)".to_string(),
+            emulated,
         );
     }
 
     #[rstest]
-    #[case(2, HashMap::from([(1, 1), (2, 1)]))]
-    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]))]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), false)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false)]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), true)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), true)]
     fn generates_distributed_key_async_class_groups_ristretto(
         #[case] threshold: PartyID,
         #[case] party_to_weight: HashMap<PartyID, Weight>,
+        #[case] emulated: bool,
     ) {
-        generates_distributed_key_async_class_groups_ristretto_internal(threshold, party_to_weight)
+        generates_distributed_key_async_class_groups_ristretto_internal(
+            threshold,
+            party_to_weight,
+            emulated,
+        )
     }
 
     pub(crate) fn generates_distributed_key_async_class_groups_ristretto_internal(
         threshold: PartyID,
         party_to_weight: HashMap<PartyID, Weight>,
+        emulated: bool,
     ) {
         let (protocol_public_parameters, _) = setup_class_groups_ristretto();
 
@@ -601,28 +654,37 @@ pub(crate) mod tests {
             { ristretto::SCALAR_LIMBS },
             ristretto::GroupElement,
             RistrettoEncryptionKey,
-            crate::ristretto::class_groups::SchnorrkelSubstrateProtocol,
+            crate::ristretto::class_groups::DKGProtocol,
         >(
             session_id,
             access_structure,
             protocol_public_parameters,
             "Class Groups Asynchronous Ristretto (Schnorrkel/sr25519)".to_string(),
+            emulated,
         );
     }
 
     #[rstest]
-    #[case(2, HashMap::from([(1, 1), (2, 1)]))]
-    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]))]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), false)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false)]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), true)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), true)]
     fn generates_distributed_key_async_class_groups_secp256k1(
         #[case] threshold: PartyID,
         #[case] party_to_weight: HashMap<PartyID, Weight>,
+        #[case] emulated: bool,
     ) {
-        generates_distributed_key_async_class_groups_secp256k1_internal(threshold, party_to_weight)
+        generates_distributed_key_async_class_groups_secp256k1_internal(
+            threshold,
+            party_to_weight,
+            emulated,
+        )
     }
 
     pub(crate) fn generates_distributed_key_async_class_groups_secp256k1_internal(
         threshold: PartyID,
         party_to_weight: HashMap<PartyID, Weight>,
+        emulated: bool,
     ) {
         let (protocol_public_parameters, _) = setup_class_groups_secp256k1();
 
@@ -633,12 +695,13 @@ pub(crate) mod tests {
             { secp256k1::SCALAR_LIMBS },
             secp256k1::GroupElement,
             Secp256k1EncryptionKey,
-            crate::secp256k1::class_groups::ECDSAProtocol,
+            crate::secp256k1::class_groups::DKGProtocol,
         >(
             session_id,
             access_structure,
             protocol_public_parameters,
             "Class Groups Asynchronous secp256k1".to_string(),
+            emulated,
         );
     }
 
@@ -665,14 +728,19 @@ pub(crate) mod tests {
             { secp256k1::SCALAR_LIMBS },
             secp256k1::GroupElement,
             Secp256k1EncryptionKey,
-            crate::secp256k1::class_groups::ECDSAProtocol,
+            crate::class_groups::asynchronous::DKGProtocol<
+                { secp256k1::SCALAR_LIMBS },
+                { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                secp256k1::GroupElement,
+            >,
         >(session_id, access_structure, protocol_public_parameters);
     }
 
     pub fn generates_distributed_key_internal<
         const SCALAR_LIMBS: usize,
         const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
         EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
         P,
     >(
@@ -680,6 +748,7 @@ pub(crate) mod tests {
         access_structure: WeightedThresholdAccessStructure,
         protocol_public_parameters: P::ProtocolPublicParameters,
         description: String,
+        emulated: bool,
     ) -> (
         P::CentralizedPartyDKGOutput,
         P::CentralizedPartySecretKeyShare,
@@ -717,6 +786,49 @@ pub(crate) mod tests {
         >,
         Uint<SCALAR_LIMBS>: Encoding,
     {
+        if emulated {
+            // Emulated mode: no centralized party participates.
+            // Use threshold_dkg_output which sets $x_A = 0$ (neutral public key share).
+            let decentralized_party_dkg_output =
+                P::threshold_dkg_output(&protocol_public_parameters, session_id).unwrap();
+            let centralized_party_dkg_output: P::CentralizedPartyDKGOutput =
+                decentralized_party_dkg_output.clone().into();
+
+            let decentralized_party_dkg_output_inner =
+                decentralized_party::Output::from(decentralized_party_dkg_output.clone());
+
+            // Verify centralized party public key share is neutral (X_A = 0 and implies x_{A}=0).
+            let centralized_party_public_key_share = GroupElement::new(
+                decentralized_party_dkg_output_inner
+                    .centralized_party_public_key_share
+                    .clone(),
+                &protocol_public_parameters.as_ref().group_public_parameters,
+            )
+            .unwrap();
+            assert!(
+                bool::from(centralized_party_public_key_share.is_neutral()),
+                "emulated DKG must have neutral centralized party public key share"
+            );
+
+            // Verify public_key = public_key_share (since $X_A = 0$, $X = X_B$).
+            assert_eq!(
+                decentralized_party_dkg_output_inner.public_key,
+                decentralized_party_dkg_output_inner.public_key_share,
+            );
+
+            let zero_scalar_value: group::Value<GroupElement::Scalar> =
+                Uint::<SCALAR_LIMBS>::ZERO.into();
+            let zero_secret_key_share = SecretKeyShare::from(zero_scalar_value);
+
+            println!("{description} DKG (emulated)");
+
+            return (
+                centralized_party_dkg_output,
+                zero_secret_key_share,
+                decentralized_party_dkg_output,
+            );
+        }
+
         let measurement = WallTime;
 
         let parties: Vec<PartyID> = access_structure
@@ -730,7 +842,7 @@ pub(crate) mod tests {
             .map(|party_id| (party_id, ()))
             .collect();
 
-        let centralized_party_public_input =
+        let centralized_party_public_input: P::DKGCentralizedPartyPublicInput =
             (protocol_public_parameters.clone(), session_id).into();
 
         let now = measurement.start();
@@ -752,7 +864,9 @@ pub(crate) mod tests {
         let centralized_party_time = measurement.end(now);
 
         let decentralized_party_public_key_share = GroupElement::new(
-            centralized_party_dkg_output_inner.decentralized_party_public_key_share,
+            centralized_party_dkg_output_inner
+                .decentralized_party_public_key_share
+                .clone(),
             &protocol_public_parameters.as_ref().group_public_parameters,
         )
         .unwrap();
@@ -766,19 +880,22 @@ pub(crate) mod tests {
         .unwrap();
 
         let public_key_share = GroupElement::new(
-            centralized_party_dkg_output_inner.public_key_share,
+            centralized_party_dkg_output_inner.public_key_share.clone(),
             &protocol_public_parameters.as_ref().group_public_parameters,
         )
         .unwrap();
 
         let public_key = GroupElement::new(
-            centralized_party_dkg_output_inner.public_key,
+            centralized_party_dkg_output_inner.public_key.clone(),
             &protocol_public_parameters.as_ref().group_public_parameters,
         )
         .unwrap();
 
         assert_eq!(
-            decentralized_party_public_key_share + public_key_share,
+            decentralized_party_public_key_share.add_vartime(
+                &public_key_share,
+                &protocol_public_parameters.as_ref().group_public_parameters
+            ),
             public_key
         );
 
@@ -844,79 +961,90 @@ pub(crate) mod tests {
             decentralized_party::Output::from(decentralized_party_dkg_output.clone());
 
         assert_eq!(
-            centralized_party_dkg_output_inner.public_key_share,
+            centralized_party_dkg_output_inner.public_key_share.clone(),
             decentralized_party_dkg_output_inner.centralized_party_public_key_share,
         );
 
         assert_eq!(
-            centralized_party_dkg_output_inner.decentralized_party_public_key_share,
+            centralized_party_dkg_output_inner
+                .decentralized_party_public_key_share
+                .clone(),
             decentralized_party_dkg_output_inner.public_key_share,
         );
 
         assert_eq!(
-            centralized_party_dkg_output_inner.public_key,
+            centralized_party_dkg_output_inner.public_key.clone(),
             decentralized_party_dkg_output_inner.public_key,
         );
 
-        // Test malicious case
-        let wrong_centralized_party_secret_key_share = SecretKeyShare(
-            GroupElement::Scalar::neutral_from_public_parameters(
-                &protocol_public_parameters
-                    .as_ref()
-                    .as_ref()
-                    .scalar_group_public_parameters,
-            )
-            .unwrap()
-            .value(),
-        );
-        let wrong_encryption_of_secret_key_share_and_proof =
-            P::encrypt_and_prove_centralized_party_share(
-                &protocol_public_parameters,
-                user_encryption_key.clone(),
-                wrong_centralized_party_secret_key_share,
+        // Test malicious case.
+        // INSECURE `unsafe_mock`: the mock decentralized party skips all verification, so
+        // malformed centralized shares are (by design) not rejected — the malicious flow is
+        // only meaningful for the real protocol.
+        #[cfg(not(feature = "unsafe_mock"))]
+        {
+            let wrong_centralized_party_secret_key_share = SecretKeyShare(
+                GroupElement::Scalar::neutral_from_public_parameters(
+                    &protocol_public_parameters
+                        .as_ref()
+                        .as_ref()
+                        .scalar_group_public_parameters,
+                )
+                .unwrap()
+                .value(),
+            );
+            let wrong_encryption_of_secret_key_share_and_proof =
+                P::encrypt_and_prove_centralized_party_share(
+                    &protocol_public_parameters,
+                    user_encryption_key.clone(),
+                    wrong_centralized_party_secret_key_share,
+                    &mut OsCsRng,
+                )
+                .unwrap();
+
+            let malicious_encrypted_secret_key_share_public_input: P::DKGDecentralizedPartyPublicInput =
+                (
+                    protocol_public_parameters.clone(),
+                    public_key_share_and_proof.clone(),
+                    CentralizedPartyKeyShareVerification::Encrypted {
+                        encryption_key_value: user_encryption_key.clone(),
+                        encrypted_secret_key_share_message:
+                            wrong_encryption_of_secret_key_share_and_proof.clone(),
+                    },
+                )
+                    .into();
+            let malicious_encrypted_secret_key_share_result = P::DKGDecentralizedParty::advance(
+                session_id,
+                1,
+                &access_structure,
+                vec![],
+                None,
+                &malicious_encrypted_secret_key_share_public_input,
                 &mut OsCsRng,
-            )
-            .unwrap();
+            );
 
-        let malicious_encrypted_secret_key_share_result = P::DKGDecentralizedParty::advance(
-            session_id,
-            1,
-            &access_structure,
-            vec![],
-            None,
-            &(
-                protocol_public_parameters.clone(),
-                public_key_share_and_proof.clone(),
-                CentralizedPartyKeyShareVerification::Encrypted {
-                    encryption_key_value: user_encryption_key.clone(),
-                    encrypted_secret_key_share_message:
-                        wrong_encryption_of_secret_key_share_and_proof.clone(),
-                },
-            )
-                .into(),
-            &mut OsCsRng,
-        );
+            assert!(malicious_encrypted_secret_key_share_result.is_err());
 
-        assert!(malicious_encrypted_secret_key_share_result.is_err());
-
-        let malicious_public_secret_key_share_result = P::DKGDecentralizedParty::advance(
-            session_id,
-            1,
-            &access_structure,
-            vec![],
-            None,
-            &(
+            let malicious_public_secret_key_share_public_input: P::DKGDecentralizedPartyPublicInput = (
                 protocol_public_parameters.clone(),
                 public_key_share_and_proof.clone(),
                 CentralizedPartyKeyShareVerification::Public {
                     centralized_party_secret_key_share: wrong_centralized_party_secret_key_share,
                 },
             )
-                .into(),
-            &mut OsCsRng,
-        );
+                .into();
+            let malicious_public_secret_key_share_result = P::DKGDecentralizedParty::advance(
+                session_id,
+                1,
+                &access_structure,
+                vec![],
+                None,
+                &malicious_public_secret_key_share_public_input,
+                &mut OsCsRng,
+            );
 
-        assert!(malicious_public_secret_key_share_result.is_err());
+            assert!(malicious_public_secret_key_share_result.is_err());
+        }
 
         let number_of_tangible_parties = access_structure.number_of_tangible_parties();
         let number_of_virtual_parties = access_structure.number_of_virtual_parties();
@@ -938,7 +1066,7 @@ pub(crate) mod tests {
     pub fn deals_trusted_shares_internal<
         const SCALAR_LIMBS: usize,
         const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
         EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
         P,
     >(
@@ -994,7 +1122,7 @@ pub(crate) mod tests {
             .map(|party_id| (party_id, ()))
             .collect();
 
-        let centralized_party_public_input =
+        let centralized_party_public_input: P::DKGCentralizedPartyPublicInput =
             (protocol_public_parameters.clone(), session_id).into();
 
         let secret_key = GroupElement::Scalar::sample(
@@ -1027,7 +1155,9 @@ pub(crate) mod tests {
         let centralized_party_secret_key_share = round_result.private_output;
 
         let decentralized_party_public_key_share = GroupElement::new(
-            centralized_party_dkg_output_inner.decentralized_party_public_key_share,
+            centralized_party_dkg_output_inner
+                .decentralized_party_public_key_share
+                .clone(),
             &protocol_public_parameters.as_ref().group_public_parameters,
         )
         .unwrap();
@@ -1041,13 +1171,13 @@ pub(crate) mod tests {
         .unwrap();
 
         let public_key_share = GroupElement::new(
-            centralized_party_dkg_output_inner.public_key_share,
+            centralized_party_dkg_output_inner.public_key_share.clone(),
             &protocol_public_parameters.as_ref().group_public_parameters,
         )
         .unwrap();
 
         let public_key = GroupElement::new(
-            centralized_party_dkg_output_inner.public_key,
+            centralized_party_dkg_output_inner.public_key.clone(),
             &protocol_public_parameters.as_ref().group_public_parameters,
         )
         .unwrap();
@@ -1055,7 +1185,10 @@ pub(crate) mod tests {
         assert_eq!(public_key, expected_public_key);
 
         assert_eq!(
-            decentralized_party_public_key_share + public_key_share,
+            decentralized_party_public_key_share.add_vartime(
+                &public_key_share,
+                &protocol_public_parameters.as_ref().group_public_parameters
+            ),
             public_key
         );
 
@@ -1098,17 +1231,19 @@ pub(crate) mod tests {
             decentralized_party::Output::from(decentralized_party_dkg_output.clone());
 
         assert_eq!(
-            centralized_party_dkg_output_inner.public_key_share,
+            centralized_party_dkg_output_inner.public_key_share.clone(),
             decentralized_party_dkg_output_inner.centralized_party_public_key_share,
         );
 
         assert_eq!(
-            centralized_party_dkg_output_inner.decentralized_party_public_key_share,
+            centralized_party_dkg_output_inner
+                .decentralized_party_public_key_share
+                .clone(),
             decentralized_party_dkg_output_inner.public_key_share,
         );
 
         assert_eq!(
-            centralized_party_dkg_output_inner.public_key,
+            centralized_party_dkg_output_inner.public_key.clone(),
             decentralized_party_dkg_output_inner.public_key,
         );
 
@@ -1122,7 +1257,7 @@ pub(crate) mod tests {
     pub(crate) fn mock_targeted_dkg_output<
         const SCALAR_LIMBS: usize,
         const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
         EncryptionKey: AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>,
     >(
         protocol_public_parameters: &ProtocolPublicParameters<
@@ -1192,7 +1327,10 @@ pub(crate) mod tests {
         let centralized_party_public_key_share = centralized_party_secret_key_share * generator;
         let decentralized_party_public_key_share = decentralized_party_secret_key_share * generator;
 
-        let public_key = centralized_party_public_key_share + decentralized_party_public_key_share;
+        let public_key = centralized_party_public_key_share.add_vartime(
+            &decentralized_party_public_key_share,
+            &protocol_public_parameters.group_public_parameters,
+        );
 
         let centralized_party_output = centralized_party::Output {
             public_key_share: centralized_party_public_key_share.value(),
@@ -1212,6 +1350,80 @@ pub(crate) mod tests {
             SecretKeyShare(centralized_party_secret_key_share.value()),
             decentralized_party_output.into(),
         )
+    }
+
+    /// Verify that `threshold_dkg_output` is deterministic: the same seeded RNG and
+    /// session ID always produce the same public key.
+    #[test]
+    fn threshold_dkg_output_is_deterministic() {
+        use commitment::CommitmentSizedNumber;
+        use group::secp256k1;
+        use rand_chacha::rand_core::SeedableRng;
+        use rand_chacha::ChaCha20Rng;
+
+        type Secp256k1EncryptionKey = ::class_groups::Secp256k1EncryptionKey;
+
+        let mut rng = ChaCha20Rng::seed_from_u64(0);
+        let (protocol_public_parameters, _) =
+            crate::test_helpers::setup_class_groups_secp256k1_with_rng(&mut rng);
+
+        let session_id = CommitmentSizedNumber::from(42u64);
+
+        let dkg_output = decentralized_party::Party::<
+            { secp256k1::SCALAR_LIMBS },
+            { secp256k1::SCALAR_LIMBS },
+            secp256k1::GroupElement,
+            Secp256k1EncryptionKey,
+            crate::class_groups::ProtocolPublicParameters<
+                { secp256k1::SCALAR_LIMBS },
+                { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                secp256k1::GroupElement,
+            >,
+            (),
+        >::threshold_dkg_output(&protocol_public_parameters, session_id)
+        .unwrap();
+
+        let output: decentralized_party::Output<_, _> = dkg_output.into();
+
+        // Hardcoded expected public key (captured from seed=0, session_id=42).
+        // If this changes, it means threshold_dkg_output behavior changed.
+        let expected_public_key: group::Value<secp256k1::GroupElement> = serde_json::from_str(
+            "\"03765AA6BD79B0F1B8BE255D2F1E711F9039FBB08B7B9B712AF7821F60FC7B6660\"",
+        )
+        .unwrap();
+        assert_eq!(
+            output.public_key, expected_public_key,
+            "threshold_dkg_output should produce the expected deterministic public key"
+        );
+
+        // Run again with the same seed to verify determinism.
+        let mut rng_second = ChaCha20Rng::seed_from_u64(0);
+        let (protocol_public_parameters_second, _) =
+            crate::test_helpers::setup_class_groups_secp256k1_with_rng(&mut rng_second);
+
+        let dkg_output_second =
+            decentralized_party::Party::<
+                { secp256k1::SCALAR_LIMBS },
+                { secp256k1::SCALAR_LIMBS },
+                secp256k1::GroupElement,
+                Secp256k1EncryptionKey,
+                crate::class_groups::ProtocolPublicParameters<
+                    { secp256k1::SCALAR_LIMBS },
+                    { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    secp256k1::GroupElement,
+                >,
+                (),
+            >::threshold_dkg_output(&protocol_public_parameters_second, session_id)
+            .unwrap();
+
+        let output_second: decentralized_party::Output<_, _> = dkg_output_second.into();
+
+        assert_eq!(
+            output.public_key, output_second.public_key,
+            "threshold_dkg_output should be deterministic for the same seed and session_id"
+        );
     }
 }
 
@@ -1240,21 +1452,25 @@ mod benches {
             super::tests::generates_distributed_key_async_class_groups_secp256k1_internal(
                 access_structure.threshold,
                 access_structure.party_to_weight.clone(),
+                false,
             );
 
             super::tests::generates_distributed_key_async_class_groups_secp256r1_internal(
                 access_structure.threshold,
                 access_structure.party_to_weight.clone(),
+                false,
             );
 
             super::tests::generates_distributed_key_async_class_groups_curve25519_internal(
                 access_structure.threshold,
                 access_structure.party_to_weight.clone(),
+                false,
             );
 
             super::tests::generates_distributed_key_async_class_groups_ristretto_internal(
                 access_structure.threshold,
                 access_structure.party_to_weight.clone(),
+                false,
             );
         }
     }

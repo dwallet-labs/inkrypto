@@ -10,7 +10,7 @@ use std::fmt::Debug;
 use crate::class_groups::DKGCentralizedPartyVersionedOutput;
 use crate::ecdsa::VerifyingKey;
 use crate::presign::Protocol;
-use crate::{Error, ProtocolPublicParameters};
+use crate::{Error, ErrorKind, ProtocolPublicParameters};
 use commitment::CommitmentSizedNumber;
 use group::{direct_product, self_product, GroupElement, Scale, Transcribeable};
 use homomorphic_encryption::{AdditivelyHomomorphicEncryptionKey, GroupsPublicParametersAccessors};
@@ -211,7 +211,7 @@ where
     }
 }
 
-impl<GroupElementValue: Copy, CiphertextSpaceValue: Copy>
+impl<GroupElementValue: Clone, CiphertextSpaceValue: Clone>
     UniversalPresign<GroupElementValue, CiphertextSpaceValue>
 {
     /// Derives a targeted `Presign` from the universal presign `self`,
@@ -237,60 +237,69 @@ impl<GroupElementValue: Copy, CiphertextSpaceValue: Copy>
     {
         let encryption_of_masked_decentralized_party_key_share_first_part =
             EncryptionKey::CiphertextSpaceGroupElement::new(
-                self.encryption_of_masked_decentralized_party_key_share_first_part,
+                self.encryption_of_masked_decentralized_party_key_share_first_part
+                    .clone(),
                 encryption_scheme_public_parameters.ciphertext_space_public_parameters(),
             )?;
         let encryption_of_masked_decentralized_party_key_share_second_part =
             EncryptionKey::CiphertextSpaceGroupElement::new(
-                self.encryption_of_masked_decentralized_party_key_share_second_part,
+                self.encryption_of_masked_decentralized_party_key_share_second_part
+                    .clone(),
                 encryption_scheme_public_parameters.ciphertext_space_public_parameters(),
             )?;
 
         let encryption_of_mask = EncryptionKey::CiphertextSpaceGroupElement::new(
-            self.encryption_of_mask,
+            self.encryption_of_mask.clone(),
             encryption_scheme_public_parameters.ciphertext_space_public_parameters(),
         )?;
 
+        let ciphertext_space_public_parameters =
+            encryption_scheme_public_parameters.ciphertext_space_public_parameters();
+
         //  Compute $\textsf{ct}_{\gamma\cdot x_{B}}=(\mu_{x}^{0}\odot \textsf{ct}_{\gamma\cdot x_{B,0})\oplus (\mu_{x}^{1}\odot\textsf{ct}_{\gamma\cdot x_{B,1})\oplus \mu_{x}^{G}$
         let encryption_of_masked_decentralized_party_key_share =
-            ((encryption_of_masked_decentralized_party_key_share_first_part
-                .scale_vartime_accelerated(
-                    &first_key_public_randomizer,
-                    encryption_scheme_public_parameters.ciphertext_space_public_parameters(),
-                ))
-            .add_vartime(
-                &(encryption_of_masked_decentralized_party_key_share_second_part
-                    .scale_vartime_accelerated(
-                        &second_key_public_randomizer,
-                        encryption_scheme_public_parameters.ciphertext_space_public_parameters(),
-                    )),
+            ((encryption_of_masked_decentralized_party_key_share_first_part.scale_vartime_by(
+                &first_key_public_randomizer,
+                ciphertext_space_public_parameters,
             ))
             .add_vartime(
-                &(encryption_of_mask.scale_vartime_accelerated(
-                    &free_coefficient_key_public_randomizer,
-                    encryption_scheme_public_parameters.ciphertext_space_public_parameters(),
+                &(encryption_of_masked_decentralized_party_key_share_second_part.scale_vartime_by(
+                    &second_key_public_randomizer,
+                    ciphertext_space_public_parameters,
                 )),
+                ciphertext_space_public_parameters,
+            ))
+            .add_vartime(
+                &(encryption_of_mask.scale_vartime_by(
+                    &free_coefficient_key_public_randomizer,
+                    ciphertext_space_public_parameters,
+                )),
+                ciphertext_space_public_parameters,
             );
 
         Ok(Presign {
             session_id: self.session_id,
-            encryption_of_mask: self.encryption_of_mask,
+            encryption_of_mask: self.encryption_of_mask.clone(),
             encryption_of_masked_decentralized_party_key_share:
                 encryption_of_masked_decentralized_party_key_share.value(),
             encryption_of_masked_decentralized_party_nonce_share_first_part: self
-                .encryption_of_masked_decentralized_party_nonce_share_first_part,
+                .encryption_of_masked_decentralized_party_nonce_share_first_part
+                .clone(),
             encryption_of_masked_decentralized_party_nonce_share_second_part: self
-                .encryption_of_masked_decentralized_party_nonce_share_second_part,
+                .encryption_of_masked_decentralized_party_nonce_share_second_part
+                .clone(),
             decentralized_party_nonce_public_share_first_part: self
-                .decentralized_party_nonce_public_share_first_part,
+                .decentralized_party_nonce_public_share_first_part
+                .clone(),
             decentralized_party_nonce_public_share_second_part: self
-                .decentralized_party_nonce_public_share_second_part,
+                .decentralized_party_nonce_public_share_second_part
+                .clone(),
             public_key,
         })
     }
 }
 
-impl<GroupElementValue: PartialEq + Serialize + Copy, CiphertextSpaceValue: Serialize + Copy>
+impl<GroupElementValue: PartialEq + Serialize + Clone, CiphertextSpaceValue: Serialize + Clone>
     VersionedPresign<GroupElementValue, CiphertextSpaceValue>
 {
     /// Derives a targeted `Presign` from `VersionedPresign::UniversalPresign`;
@@ -323,7 +332,7 @@ impl<GroupElementValue: PartialEq + Serialize + Copy, CiphertextSpaceValue: Seri
             || self != protocol_public_parameters
             || self != &dkg_output
         {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         match self {
@@ -332,7 +341,7 @@ impl<GroupElementValue: PartialEq + Serialize + Copy, CiphertextSpaceValue: Seri
                 match dkg_output {
                     crate::dkg::centralized_party::VersionedOutput::TargetedPublicDKGOutput(_) => {
                         // Cannot use universal presign with targeted dkg output.
-                        Err(Error::InvalidParameters)
+                        Err(Error::from(ErrorKind::InvalidParameters))
                     }
                     crate::dkg::centralized_party::VersionedOutput::UniversalPublicDKGOutput {
                         output,

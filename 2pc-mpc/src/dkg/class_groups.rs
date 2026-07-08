@@ -39,13 +39,13 @@ pub mod asynchronous {
         EncryptionOfDiscreteLogProof,
     };
     use crate::languages::{KnowledgeOfDiscreteLogProof, KnowledgeOfDiscreteLogUCProof};
-    use crate::{dkg, Error, ProtocolContext};
+    use crate::{dkg, Error, ErrorKind, ProtocolContext};
 
     pub(crate) fn verify_centralized_party_key_share<
         const SCALAR_LIMBS: usize,
         const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
     >(
         protocol_public_parameters: &ProtocolPublicParameters<
         SCALAR_LIMBS,
@@ -162,7 +162,7 @@ pub mod asynchronous {
         const SCALAR_LIMBS: usize,
         const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
     >(protocol_public_parameters: &ProtocolPublicParameters<
         SCALAR_LIMBS,
         FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -240,7 +240,7 @@ pub mod asynchronous {
         >,
     {
         if &dkg_output != protocol_public_parameters {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         let dkg_output = decentralized_party::Output::from(dkg_output);
@@ -283,7 +283,7 @@ pub mod asynchronous {
         const SCALAR_LIMBS: usize,
         const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
     >(
         protocol_public_parameters: &ProtocolPublicParameters<
             SCALAR_LIMBS,
@@ -360,7 +360,7 @@ pub mod asynchronous {
             group::PublicParameters<GroupElement::Scalar>,
     >,{
         if &dkg_output != protocol_public_parameters {
-            return Err(Error::InvalidParameters);
+            return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
         let dkg_output = decentralized_party::Output::from(dkg_output);
@@ -379,7 +379,7 @@ pub mod asynchronous {
         if centralized_party_secret_key_share * generator == centralized_party_public_key_share {
             Ok(())
         } else {
-            Err(Error::InvalidPublicCentralizedKeyShare)
+            Err(Error::from(ErrorKind::InvalidPublicCentralizedKeyShare))
         }
     }
 
@@ -387,7 +387,7 @@ pub mod asynchronous {
         const SCALAR_LIMBS: usize,
         const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
-        GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
     >(
         protocol_public_parameters: &ProtocolPublicParameters<
             SCALAR_LIMBS,
@@ -520,22 +520,23 @@ pub mod asynchronous {
                 &encryption_of_centralized_party_secret_key_share,
                 &encryption_scheme_public_parameters,
             ))
-            .ok_or(Error::InternalError)?;
+            .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
 
         Ok(SecretKeyShare(centralized_party_secret_key_share.value()))
     }
 
-    macro_rules! impl_class_groups_dkg_protocol_for_types {
-        ($($t:ty),*) => {
-            $(
-                impl<
+    impl<
                         const SCALAR_LIMBS: usize,
                         const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
                         const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
-                        const MESSAGE_LIMBS: usize,
-                        GroupElement: PrimeGroupElement<SCALAR_LIMBS>,
+                        GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
                     > super::super::Protocol
-                    for $t
+                    for  crate::class_groups::asynchronous::DKGProtocol<
+                    SCALAR_LIMBS,
+                    FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    GroupElement,
+                >
                 where
                     Int<SCALAR_LIMBS>: Encoding,
                     Uint<SCALAR_LIMBS>: Encoding,
@@ -623,7 +624,6 @@ pub mod asynchronous {
                         >,
                         SecretKey = ::class_groups::SecretKey<FUNDAMENTAL_DISCRIMINANT_LIMBS>
                     >,
-                    Uint<MESSAGE_LIMBS>: Encoding,
                     group::PublicParameters<GroupElement::Scalar>: Default,
                 {
                     type ProtocolPublicParameters = ProtocolPublicParameters<
@@ -766,6 +766,21 @@ pub mod asynchronous {
                         >(protocol_public_parameters, dkg_output, centralized_party_secret_key_share)
                     }
 
+                    fn threshold_dkg_output(
+                        protocol_public_parameters: &Self::ProtocolPublicParameters,
+                        session_id: commitment::CommitmentSizedNumber,
+                    ) -> crate::Result<Self::DecentralizedPartyDKGOutput> {
+                        crate::class_groups::DKGDecentralizedParty::<
+                            SCALAR_LIMBS,
+                            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                            GroupElement,
+                        >::threshold_dkg_output(
+                            protocol_public_parameters,
+                            session_id,
+                        )
+                    }
+
                     type DealTrustedShareMessage = centralized_party::trusted_dealer::class_groups::Message<
                         KnowledgeOfDiscreteLogProof<SCALAR_LIMBS, GroupElement,>,
                         EncryptionOfDiscreteLogProof<
@@ -826,24 +841,4 @@ pub mod asynchronous {
                         GroupElement,
                     >;
                 }
-            )*
-        };
-    }
-
-    impl_class_groups_dkg_protocol_for_types!(
-        crate::class_groups::ecdsa::asynchronous::Protocol<
-        SCALAR_LIMBS,
-        FUNDAMENTAL_DISCRIMINANT_LIMBS,
-        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-        MESSAGE_LIMBS,
-        GroupElement,
-    > ,
-        crate::class_groups::schnorr::asynchronous::Protocol<
-        SCALAR_LIMBS,
-        FUNDAMENTAL_DISCRIMINANT_LIMBS,
-        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-        MESSAGE_LIMBS,
-        GroupElement,
-    >
-    );
 }

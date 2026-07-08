@@ -8,27 +8,44 @@ use std::fmt::Debug;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use group::{CsRng, GroupElement, PartyID, Samplable, Transcribeable};
-use mpc::SeedableCollection;
-pub use range::{AggregatableRangeProof, RangeProof};
+use group::{CsRng, GroupElement, PartyID, Samplable, SeedableCollection, Transcribeable};
+pub use range::RangeProof;
 pub use transcript_protocol::TranscriptProtocol;
 
 mod transcript_protocol;
 
-pub mod aggregation;
 pub mod range;
 
-/// Proof error.
+/// Proof error wrapper that carries a backtrace captured at construction.
+///
+/// See `group::Error` for details.
+#[derive(thiserror::Error, Clone, Debug)]
+#[error("{kind}\n{backtrace}")]
+pub struct Error {
+    pub kind: ErrorKind,
+    pub backtrace: std::sync::Arc<std::backtrace::Backtrace>,
+}
+
+impl<E> From<E> for Error
+where
+    ErrorKind: From<E>,
+{
+    fn from(value: E) -> Self {
+        Self {
+            kind: ErrorKind::from(value),
+            backtrace: std::sync::Arc::new(std::backtrace::Backtrace::capture()),
+        }
+    }
+}
+
+/// Proof error kind.
 #[derive(thiserror::Error, Debug, Clone)]
-pub enum Error {
+pub enum ErrorKind {
     #[error("invalid parameters")]
     InvalidParameters,
 
     #[error("an internal error that should never have happened and signifies a bug")]
     InternalError,
-
-    #[error("aggregation error")]
-    Aggregation(#[from] aggregation::Error),
 
     #[error("serialization/deserialization error: {0:?}")]
     Serialization(String),
@@ -45,24 +62,12 @@ pub enum Error {
 
 impl From<serde_json::Error> for Error {
     fn from(e: serde_json::Error) -> Self {
-        Error::Serialization(e.to_string())
+        Error::from(ErrorKind::Serialization(e.to_string()))
     }
 }
 
 /// Proof result.
 pub type Result<T> = std::result::Result<T, Error>;
-
-impl From<Error> for mpc::Error {
-    fn from(value: Error) -> Self {
-        match value {
-            Error::Aggregation(e) => e.into(),
-            Error::Group(e) => mpc::Error::Group(e),
-            Error::InternalError => mpc::Error::InternalError,
-            Error::InvalidParameters => mpc::Error::InvalidParameters,
-            e => mpc::Error::Consumer(format!("proof error {e:?}")),
-        }
-    }
-}
 
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub struct GroupsPublicParameters<WitnessSpacePublicParameters, StatementSpacePublicParameters> {
@@ -102,7 +107,7 @@ impl<
     }
 }
 
-/// An (Aggregateable) Proof.
+/// A Zero-Knowledge Proof.
 pub trait Proof:
     Serialize + for<'a> Deserialize<'a> + Clone + Debug + PartialEq + Eq + Send + Sync
 {
@@ -113,18 +118,6 @@ pub trait Proof:
     /// used to provide extra necessary context that will parameterize the proof (and thus verifier
     /// code) and be inserted to the Fiat-Shamir transcript.
     type ProtocolContext: Clone + Serialize + Debug + PartialEq + Eq + Send + Sync + Send + Sync;
-
-    /// The proof but with the protocol context used for aggregation.
-    /// A patch used by the generic asynchronous aggregation code,
-    /// which requires inserting the party ID into the transcript.
-    type ProofWithAggregationProtocolContext: Proof<
-        Error = Self::Error,
-        ProtocolContext = aggregation::ProtocolContext<Self::ProtocolContext>,
-        PublicParameters = Self::PublicParameters,
-        WitnessSpaceGroupElement = Self::WitnessSpaceGroupElement,
-        StatementSpaceGroupElement = Self::StatementSpaceGroupElement,
-        AggregationStatementSpaceValue = Self::AggregationStatementSpaceValue,
-    >;
 
     /// Public parameters for a language family $\pp \gets \Setup(1^\kappa)$.
     ///
@@ -188,12 +181,15 @@ pub trait Proof:
         statements: Vec<Vec<Self::StatementSpaceGroupElement>>,
         rng: &mut impl CsRng,
     ) -> std::result::Result<(), Self::Error> {
-        let batch_size = statements.first().ok_or(Error::InvalidParameters)?.len();
+        let batch_size = statements
+            .first()
+            .ok_or_else(|| Error::from(ErrorKind::InvalidParameters))?
+            .len();
         if proofs.len() != statements.len()
             || proofs.len() != protocol_contexts.len()
             || statements.iter().any(|v| v.len() != batch_size)
         {
-            return Err(Error::InvalidParameters)?;
+            return Err(Error::from(ErrorKind::InvalidParameters))?;
         }
 
         proofs
@@ -226,6 +222,10 @@ pub trait Proof:
         Vec<PartyID>,
         HashMap<PartyID, Vec<Vec<Self::StatementSpaceGroupElement>>>,
     ) {
+        if proofs_and_protocol_contexts_and_statements.is_empty() {
+            return (vec![], HashMap::new());
+        }
+
         let (proofs, contexts_and_statements): (Vec<_>, Vec<_>) =
             proofs_and_protocol_contexts_and_statements
                 .clone()
@@ -344,15 +344,4 @@ impl<
         StatementSpacePublicParameters,
     > for T
 {
-}
-
-impl TryInto<aggregation::Error> for Error {
-    type Error = Self;
-
-    fn try_into(self) -> std::result::Result<aggregation::Error, Self::Error> {
-        match self {
-            Error::Aggregation(e) => Ok(e),
-            e => Err(e),
-        }
-    }
 }

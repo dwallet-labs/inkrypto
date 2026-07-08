@@ -29,7 +29,7 @@ pub mod asynchronous {
     use crate::ecdsa::VerifyingKey;
     use crate::languages::class_groups::ScalingOfDiscreteLogProof;
     use crate::languages::class_groups::{EncryptionOfTupleProof, ExtendedEncryptionOfTupleProof};
-    use crate::{Error, Result};
+    use crate::{Error, ErrorKind, Result};
 
     pub type Message<
         const SCALAR_LIMBS: usize,
@@ -38,7 +38,7 @@ pub mod asynchronous {
         const MESSAGE_LIMBS: usize,
         GroupElement,
     > = super::super::Message<
-        proof::aggregation::asynchronous::Message<
+        proof_aggregation::asynchronous::Message<
             EncryptionOfTupleProof<
                 SCALAR_LIMBS,
                 FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -47,7 +47,7 @@ pub mod asynchronous {
                 GroupElement,
             >,
         >,
-        proof::aggregation::asynchronous::Message<
+        proof_aggregation::asynchronous::Message<
             ExtendedEncryptionOfTupleProof<
                 2,
                 SCALAR_LIMBS,
@@ -69,7 +69,7 @@ pub mod asynchronous {
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             GroupElement,
         >,
-        proof::aggregation::asynchronous::Message<
+        proof_aggregation::asynchronous::Message<
             ScalingOfDiscreteLogProof<
                 SCALAR_LIMBS,
                 FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -98,7 +98,7 @@ pub mod asynchronous {
             const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
             const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
             const MESSAGE_LIMBS: usize,
-            GroupElement: VerifyingKey<SCALAR_LIMBS>,
+            GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
         > mpc::Party
         for Party<
             SCALAR_LIMBS,
@@ -172,11 +172,13 @@ pub mod asynchronous {
             >,
         >;
         type PrivateOutput = ();
-        type PublicOutputValue = VersionedPresign<
-            SCALAR_LIMBS,
-            FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            GroupElement,
+        type PublicOutputValue = Vec<
+            VersionedPresign<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
         >;
         type PublicOutput = Self::PublicOutputValue;
         type Message = Message<
@@ -193,7 +195,7 @@ pub mod asynchronous {
             const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
             const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
             const MESSAGE_LIMBS: usize,
-            GroupElement: VerifyingKey<SCALAR_LIMBS>,
+            GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
         > AsynchronouslyAdvanceable
         for Party<
             SCALAR_LIMBS,
@@ -315,10 +317,10 @@ pub mod asynchronous {
                         AsynchronousRoundResult::Finalize {
                             malicious_parties,
                             private_output: (),
-                            public_output: presign,
+                            public_output: vec![presign],
                         }
                     }),
-                _ => Err(Error::InternalError),
+                _ => Err(Error::from(ErrorKind::InternalError)),
             }
         }
 

@@ -18,7 +18,7 @@ use crate::languages::class_groups::{
     EncryptionOfTuplePublicParameters, ExtendedEncryptionOfTupleProof,
     ExtendedEncryptionOfTuplePublicParameters,
 };
-use crate::{Error, ProtocolContext, Result};
+use crate::{Error, ErrorKind, ProtocolContext, Result};
 use class_groups::equivalence_class::EquivalenceClassOps;
 use class_groups::{
     encryption_key, equivalence_class, CiphertextSpaceGroupElement,
@@ -39,7 +39,7 @@ impl<
         const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
         const MESSAGE_LIMBS: usize,
-        GroupElement: VerifyingKey<SCALAR_LIMBS>,
+        GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
     >
     Party<
         SCALAR_LIMBS,
@@ -118,7 +118,7 @@ where
             GroupElement,
         >,
     ) -> Result<
-        proof::aggregation::asynchronous::PublicInput<
+        proof_aggregation::asynchronous::PublicInput<
             ProtocolContext,
             EncryptionOfTuplePublicParameters<
                 SCALAR_LIMBS,
@@ -147,7 +147,7 @@ where
                 .clone(),
         )?;
 
-        let aggregation_public_input = proof::aggregation::asynchronous::PublicInput {
+        let aggregation_public_input = proof_aggregation::asynchronous::PublicInput {
             protocol_context: public_input
                 .encryption_of_mask_and_masked_key_share_round_protocol_context_v1(session_id),
             public_parameters: language_public_parameters,
@@ -170,7 +170,7 @@ where
             >,
         >,
     ) -> Result<
-        proof::aggregation::asynchronous::PublicInput<
+        proof_aggregation::asynchronous::PublicInput<
             ProtocolContext,
             ExtendedEncryptionOfTuplePublicParameters<
                 2,
@@ -208,7 +208,7 @@ where
                 .clone(),
         )?;
 
-        let aggregation_public_input = proof::aggregation::asynchronous::PublicInput {
+        let aggregation_public_input = proof_aggregation::asynchronous::PublicInput {
             protocol_context: public_input
                 .encryption_of_mask_and_masked_key_share_round_protocol_context_v1(session_id),
             public_parameters: language_public_parameters,
@@ -261,7 +261,7 @@ where
                         dkg_output,
                     )?;
 
-                let (proof, statement_values) = proof::aggregation::asynchronous::Party::<
+                let (proof, statement_values) = proof_aggregation::asynchronous::Party::<
                     EncryptionOfTupleProof<
                         SCALAR_LIMBS,
                         FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -300,7 +300,7 @@ where
                         public_input,
                     )?;
 
-                let (proof, statement_values) = proof::aggregation::asynchronous::Party::<
+                let (proof, statement_values) = proof_aggregation::asynchronous::Party::<
                     ExtendedEncryptionOfTupleProof<
                         2,
                         SCALAR_LIMBS,
@@ -372,7 +372,7 @@ where
                             Message::EncryptionOfMaskAndMaskedKeyShareAndProof(message) => {
                                 Ok(message)
                             }
-                            _ => Err(Error::InvalidParameters),
+                            _ => Err(Error::from(ErrorKind::InvalidParameters)),
                         };
 
                         (party_id, res)
@@ -387,7 +387,7 @@ where
                     )?;
 
                 let (malicious_provers, aggregated_statements) =
-                    proof::aggregation::asynchronous::Party::<
+                    proof_aggregation::asynchronous::Party::<
                         EncryptionOfTupleProof<
                             SCALAR_LIMBS,
                             FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -414,7 +414,7 @@ where
                         malicious_parties,
                         Message::EncryptionOfMaskAndMaskedKeyShare(statement.value()),
                     )),
-                    _ => Err(Error::InternalError),
+                    _ => Err(Error::from(ErrorKind::InternalError)),
                 }
             }
             None => {
@@ -429,7 +429,7 @@ where
                             Message::EncryptionOfMaskAndMaskedKeySharePartsAndProof(message) => {
                                 Ok(message)
                             }
-                            _ => Err(Error::InvalidParameters),
+                            _ => Err(Error::from(ErrorKind::InvalidParameters)),
                         };
 
                         (party_id, res)
@@ -443,7 +443,7 @@ where
                     )?;
 
                 let (malicious_provers, aggregated_statements) =
-                    proof::aggregation::asynchronous::Party::<
+                    proof_aggregation::asynchronous::Party::<
                         ExtendedEncryptionOfTupleProof<
                             2,
                             SCALAR_LIMBS,
@@ -471,7 +471,7 @@ where
                         malicious_parties,
                         Message::EncryptionOfMaskAndMaskedKeyShareParts(statement.value()),
                     )),
-                    _ => Err(Error::InternalError),
+                    _ => Err(Error::from(ErrorKind::InternalError)),
                 }
             }
         }
@@ -507,7 +507,7 @@ where
             .map(|(party_id, message)| {
                 let res = match message {
                     Message::EncryptionOfMaskAndMaskedKeyShare(message) => Ok(message),
-                    _ => Err(Error::InvalidParameters),
+                    _ => Err(Error::from(ErrorKind::InvalidParameters)),
                 };
 
                 (party_id, res)
@@ -520,7 +520,7 @@ where
             encryption_of_mask_and_masked_key_share_messages
                 .clone()
                 .weighted_majority_vote(access_structure)
-                .map_err(|_| Error::InternalError)?;
+                .map_err(Error::from)?;
 
         let malicious_parties =
             parties_sending_invalid_encryption_of_mask_and_masked_key_share_messages
@@ -561,7 +561,7 @@ where
             .map(|(party_id, message)| {
                 let res = match message {
                     Message::EncryptionOfMaskAndMaskedKeyShareParts(message) => Ok(message),
-                    _ => Err(Error::InvalidParameters),
+                    _ => Err(Error::from(ErrorKind::InvalidParameters)),
                 };
 
                 (party_id, res)
@@ -574,7 +574,7 @@ where
             encryption_of_mask_and_masked_key_share_parts_messages
                 .clone()
                 .weighted_majority_vote(access_structure)
-                .map_err(|_| Error::InternalError)?;
+                .map_err(Error::from)?;
 
         let malicious_parties =
             parties_sending_invalid_encryption_of_mask_and_masked_key_share_messages

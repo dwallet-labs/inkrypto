@@ -1,18 +1,14 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
-use std::fmt::Debug;
-use std::ops::{Add, AddAssign, BitAnd, Mul, Neg, Sub, SubAssign};
+use std::ops::{Add, AddAssign, BitAnd, Neg, Sub, SubAssign};
 
-use crypto_bigint::{Encoding, Int, Uint};
+use crypto_bigint::{Int, Uint};
 use serde::{Deserialize, Serialize};
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 
 use crate::CsRng;
-use crate::{
-    bounded_integers_group, bounded_natural_numbers_group, GroupElement as _, LinearlyCombinable,
-    Samplable, Scale, Transcribeable,
-};
+use crate::{Samplable, Transcribeable};
 
 /// An element of the Direct Product of the two Groups `FirstGroupElement` and `SecondGroupElement`.
 #[derive(PartialEq, Eq, Clone, Debug, Copy)]
@@ -181,52 +177,6 @@ impl<FirstGroupElementValue: Default, SecondGroupElementValue: Default> Default
 }
 
 impl<FirstGroupElement: crate::GroupElement, SecondGroupElement: crate::GroupElement>
-    LinearlyCombinable for GroupElement<FirstGroupElement, SecondGroupElement>
-{
-    fn linearly_combine_bounded<const RHS_LIMBS: usize>(
-        bases_and_multiplicands: Vec<(Self, Uint<RHS_LIMBS>)>,
-        exponent_bits: u32,
-    ) -> crate::Result<Self> {
-        let (first_bases_and_multiplicands, second_bases_and_multiplicands): (Vec<_>, Vec<_>) =
-            bases_and_multiplicands
-                .into_iter()
-                .map(|(base, multiplicand)| ((base.0, multiplicand), (base.1, multiplicand)))
-                .unzip();
-        let first_linear_combination = FirstGroupElement::linearly_combine_bounded(
-            first_bases_and_multiplicands,
-            exponent_bits,
-        )?;
-        let second_linear_combination = SecondGroupElement::linearly_combine_bounded(
-            second_bases_and_multiplicands,
-            exponent_bits,
-        )?;
-
-        Ok(Self(first_linear_combination, second_linear_combination))
-    }
-
-    fn linearly_combine_bounded_vartime<const RHS_LIMBS: usize>(
-        bases_and_multiplicands: Vec<(Self, Uint<RHS_LIMBS>)>,
-        exponent_bits: u32,
-    ) -> crate::Result<Self> {
-        let (first_bases_and_multiplicands, second_bases_and_multiplicands): (Vec<_>, Vec<_>) =
-            bases_and_multiplicands
-                .into_iter()
-                .map(|(base, multiplicand)| ((base.0, multiplicand), (base.1, multiplicand)))
-                .unzip();
-        let first_linear_combination = FirstGroupElement::linearly_combine_bounded_vartime(
-            first_bases_and_multiplicands,
-            exponent_bits,
-        )?;
-        let second_linear_combination = SecondGroupElement::linearly_combine_bounded_vartime(
-            second_bases_and_multiplicands,
-            exponent_bits,
-        )?;
-
-        Ok(Self(first_linear_combination, second_linear_combination))
-    }
-}
-
-impl<FirstGroupElement: crate::GroupElement, SecondGroupElement: crate::GroupElement>
     crate::GroupElement for GroupElement<FirstGroupElement, SecondGroupElement>
 {
     type Value = Value<FirstGroupElement::Value, SecondGroupElement::Value>;
@@ -257,14 +207,49 @@ impl<FirstGroupElement: crate::GroupElement, SecondGroupElement: crate::GroupEle
         ))
     }
 
-    fn scale<const LIMBS: usize>(&self, scalar: &Uint<LIMBS>) -> Self {
-        Self(self.0.scale(scalar), self.1.scale(scalar))
+    fn add_constant_time(&self, other: &Self, public_parameters: &Self::PublicParameters) -> Self {
+        Self(
+            self.0.add_constant_time(&other.0, &public_parameters.0),
+            self.1.add_constant_time(&other.1, &public_parameters.1),
+        )
     }
 
-    fn scale_bounded<const LIMBS: usize>(&self, scalar: &Uint<LIMBS>, scalar_bits: u32) -> Self {
+    fn sub_constant_time(&self, other: &Self, public_parameters: &Self::PublicParameters) -> Self {
         Self(
-            self.0.scale_bounded(scalar, scalar_bits),
-            self.1.scale_bounded(scalar, scalar_bits),
+            self.0.sub_constant_time(&other.0, &public_parameters.0),
+            self.1.sub_constant_time(&other.1, &public_parameters.1),
+        )
+    }
+
+    fn neg_constant_time(&self, public_parameters: &Self::PublicParameters) -> Self {
+        Self(
+            self.0.neg_constant_time(&public_parameters.0),
+            self.1.neg_constant_time(&public_parameters.1),
+        )
+    }
+
+    fn scale<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0.scale(scalar, &public_parameters.0),
+            self.1.scale(scalar, &public_parameters.1),
+        )
+    }
+
+    fn scale_bounded<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .scale_bounded(scalar, scalar_bits, &public_parameters.0),
+            self.1
+                .scale_bounded(scalar, scalar_bits, &public_parameters.1),
         )
     }
 
@@ -272,107 +257,379 @@ impl<FirstGroupElement: crate::GroupElement, SecondGroupElement: crate::GroupEle
         &self,
         scalar: &Uint<LIMBS>,
         scalar_bits: u32,
-    ) -> Self {
-        Self(
-            self.0.scale_bounded_vartime(scalar, scalar_bits),
-            self.1.scale_bounded_vartime(scalar, scalar_bits),
-        )
-    }
-
-    fn add_randomized(self, other: &Self) -> Self {
-        Self(
-            self.0.add_randomized(&other.0),
-            self.1.add_randomized(&other.1),
-        )
-    }
-
-    fn add_vartime(self, other: &Self) -> Self {
-        Self(self.0.add_vartime(&other.0), self.1.add_vartime(&other.1))
-    }
-
-    fn sub_randomized(self, other: &Self) -> Self {
-        Self(self.0.sub_vartime(&other.0), self.1.sub_vartime(&other.1))
-    }
-
-    fn sub_vartime(self, other: &Self) -> Self {
-        Self(self.0.sub_vartime(&other.0), self.1.sub_vartime(&other.1))
-    }
-
-    fn double(&self) -> Self {
-        Self(self.0.double(), self.1.double())
-    }
-    fn double_vartime(&self) -> Self {
-        Self(self.0.double_vartime(), self.1.double_vartime())
-    }
-}
-
-impl<V, FirstGroupElement: crate::GroupElement, SecondGroupElement: crate::GroupElement> Scale<V>
-    for GroupElement<FirstGroupElement, SecondGroupElement>
-where
-    V: Serialize
-        + for<'r> Deserialize<'r>
-        + Clone
-        + Debug
-        + PartialEq
-        + Eq
-        + ConstantTimeEq
-        + ConditionallySelectable
-        + Copy,
-    FirstGroupElement: Scale<V>,
-    SecondGroupElement: Scale<V>,
-{
-    fn scale_randomized_accelerated(
-        &self,
-        scalar: &V,
         public_parameters: &Self::PublicParameters,
     ) -> Self {
         Self(
             self.0
-                .scale_randomized_accelerated(scalar, &public_parameters.0),
+                .scale_bounded_vartime(scalar, scalar_bits, &public_parameters.0),
             self.1
-                .scale_randomized_accelerated(scalar, &public_parameters.1),
+                .scale_bounded_vartime(scalar, scalar_bits, &public_parameters.1),
         )
     }
 
-    fn scale_vartime_accelerated(
+    fn scale_integer_bounded<const LIMBS: usize>(
         &self,
-        scalar: &V,
-        public_parameters: &Self::PublicParameters,
-    ) -> Self {
-        Self(
-            self.0
-                .scale_vartime_accelerated(scalar, &public_parameters.0),
-            self.1
-                .scale_vartime_accelerated(scalar, &public_parameters.1),
-        )
-    }
-
-    fn scale_randomized_bounded_accelerated(
-        &self,
-        scalar: &V,
-        public_parameters: &Self::PublicParameters,
+        integer: &Int<LIMBS>,
         scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
     ) -> Self {
         Self(
             self.0
-                .scale_randomized_bounded_accelerated(scalar, &public_parameters.0, scalar_bits),
+                .scale_integer_bounded(integer, scalar_bits, &public_parameters.0),
             self.1
-                .scale_randomized_bounded_accelerated(scalar, &public_parameters.1, scalar_bits),
+                .scale_integer_bounded(integer, scalar_bits, &public_parameters.1),
         )
     }
 
-    fn scale_bounded_vartime_accelerated(
+    fn scale_integer<const LIMBS: usize>(
         &self,
-        scalar: &V,
+        integer: &Int<LIMBS>,
         public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0.scale_integer(integer, &public_parameters.0),
+            self.1.scale_integer(integer, &public_parameters.1),
+        )
+    }
+
+    fn scale_vartime<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0.scale_vartime(scalar, &public_parameters.0),
+            self.1.scale_vartime(scalar, &public_parameters.1),
+        )
+    }
+
+    fn scale_integer_vartime<const LIMBS: usize>(
+        &self,
+        scalar: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0.scale_integer_vartime(scalar, &public_parameters.0),
+            self.1.scale_integer_vartime(scalar, &public_parameters.1),
+        )
+    }
+
+    fn scale_integer_bounded_vartime<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
         scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
     ) -> Self {
         Self(
             self.0
-                .scale_bounded_vartime_accelerated(scalar, &public_parameters.0, scalar_bits),
+                .scale_integer_bounded_vartime(integer, scalar_bits, &public_parameters.0),
             self.1
-                .scale_bounded_vartime_accelerated(scalar, &public_parameters.1, scalar_bits),
+                .scale_integer_bounded_vartime(integer, scalar_bits, &public_parameters.1),
         )
+    }
+
+    fn scale_vartime_scalar<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0.scale_vartime_scalar(scalar, &public_parameters.0),
+            self.1.scale_vartime_scalar(scalar, &public_parameters.1),
+        )
+    }
+
+    fn scale_integer_vartime_scalar<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .scale_integer_vartime_scalar(integer, &public_parameters.0),
+            self.1
+                .scale_integer_vartime_scalar(integer, &public_parameters.1),
+        )
+    }
+
+    fn scale_public_base<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0.scale_public_base(scalar, &public_parameters.0),
+            self.1.scale_public_base(scalar, &public_parameters.1),
+        )
+    }
+
+    fn scale_public_base_bounded<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .scale_public_base_bounded(scalar, scalar_bits, &public_parameters.0),
+            self.1
+                .scale_public_base_bounded(scalar, scalar_bits, &public_parameters.1),
+        )
+    }
+
+    fn scale_integer_public_base<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .scale_integer_public_base(integer, &public_parameters.0),
+            self.1
+                .scale_integer_public_base(integer, &public_parameters.1),
+        )
+    }
+
+    fn scale_integer_public_base_bounded<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .scale_integer_public_base_bounded(integer, scalar_bits, &public_parameters.0),
+            self.1
+                .scale_integer_public_base_bounded(integer, scalar_bits, &public_parameters.1),
+        )
+    }
+
+    fn scale_randomized<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0.scale_randomized(scalar, &public_parameters.0),
+            self.1.scale_randomized(scalar, &public_parameters.1),
+        )
+    }
+
+    fn scale_randomized_bounded<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .scale_randomized_bounded(scalar, scalar_bits, &public_parameters.0),
+            self.1
+                .scale_randomized_bounded(scalar, scalar_bits, &public_parameters.1),
+        )
+    }
+
+    fn scale_randomized_public_base<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .scale_randomized_public_base(scalar, &public_parameters.0),
+            self.1
+                .scale_randomized_public_base(scalar, &public_parameters.1),
+        )
+    }
+
+    fn scale_randomized_public_base_bounded<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .scale_randomized_public_base_bounded(scalar, scalar_bits, &public_parameters.0),
+            self.1
+                .scale_randomized_public_base_bounded(scalar, scalar_bits, &public_parameters.1),
+        )
+    }
+
+    fn scale_integer_randomized<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .scale_integer_randomized(integer, &public_parameters.0),
+            self.1
+                .scale_integer_randomized(integer, &public_parameters.1),
+        )
+    }
+
+    fn scale_integer_randomized_bounded<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .scale_integer_randomized_bounded(integer, scalar_bits, &public_parameters.0),
+            self.1
+                .scale_integer_randomized_bounded(integer, scalar_bits, &public_parameters.1),
+        )
+    }
+
+    fn scale_integer_randomized_public_base<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .scale_integer_randomized_public_base(integer, &public_parameters.0),
+            self.1
+                .scale_integer_randomized_public_base(integer, &public_parameters.1),
+        )
+    }
+
+    fn scale_integer_randomized_public_base_bounded<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        scalar_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0.scale_integer_randomized_public_base_bounded(
+                integer,
+                scalar_bits,
+                &public_parameters.0,
+            ),
+            self.1.scale_integer_randomized_public_base_bounded(
+                integer,
+                scalar_bits,
+                &public_parameters.1,
+            ),
+        )
+    }
+
+    fn scale_randomized_vartime_scalar<const LIMBS: usize>(
+        &self,
+        scalar: &Uint<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .scale_randomized_vartime_scalar(scalar, &public_parameters.0),
+            self.1
+                .scale_randomized_vartime_scalar(scalar, &public_parameters.1),
+        )
+    }
+
+    fn scale_integer_randomized_vartime_scalar<const LIMBS: usize>(
+        &self,
+        integer: &Int<LIMBS>,
+        public_parameters: &Self::PublicParameters,
+    ) -> Self {
+        Self(
+            self.0
+                .scale_integer_randomized_vartime_scalar(integer, &public_parameters.0),
+            self.1
+                .scale_integer_randomized_vartime_scalar(integer, &public_parameters.1),
+        )
+    }
+
+    fn add_randomized(&self, other: &Self, public_parameters: &Self::PublicParameters) -> Self {
+        Self(
+            self.0.add_randomized(&other.0, &public_parameters.0),
+            self.1.add_randomized(&other.1, &public_parameters.1),
+        )
+    }
+
+    fn add_vartime(&self, other: &Self, public_parameters: &Self::PublicParameters) -> Self {
+        Self(
+            self.0.add_vartime(&other.0, &public_parameters.0),
+            self.1.add_vartime(&other.1, &public_parameters.1),
+        )
+    }
+
+    fn sub_randomized(&self, other: &Self, public_parameters: &Self::PublicParameters) -> Self {
+        Self(
+            self.0.sub_randomized(&other.0, &public_parameters.0),
+            self.1.sub_randomized(&other.1, &public_parameters.1),
+        )
+    }
+
+    fn sub_vartime(&self, other: &Self, public_parameters: &Self::PublicParameters) -> Self {
+        Self(
+            self.0.sub_vartime(&other.0, &public_parameters.0),
+            self.1.sub_vartime(&other.1, &public_parameters.1),
+        )
+    }
+
+    fn double(&self, public_parameters: &Self::PublicParameters) -> Self {
+        Self(
+            self.0.double(&public_parameters.0),
+            self.1.double(&public_parameters.1),
+        )
+    }
+
+    fn double_vartime(&self, public_parameters: &Self::PublicParameters) -> Self {
+        Self(
+            self.0.double_vartime(&public_parameters.0),
+            self.1.double_vartime(&public_parameters.1),
+        )
+    }
+
+    fn linearly_combine_bounded<const RHS_LIMBS: usize>(
+        bases_and_multiplicands: Vec<(Self, Uint<RHS_LIMBS>)>,
+        exponent_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> crate::Result<Self> {
+        let (first_bases_and_multiplicands, second_bases_and_multiplicands): (Vec<_>, Vec<_>) =
+            bases_and_multiplicands
+                .into_iter()
+                .map(|(base, multiplicand)| ((base.0, multiplicand), (base.1, multiplicand)))
+                .unzip();
+        Ok(Self(
+            FirstGroupElement::linearly_combine_bounded(
+                first_bases_and_multiplicands,
+                exponent_bits,
+                &public_parameters.0,
+            )?,
+            SecondGroupElement::linearly_combine_bounded(
+                second_bases_and_multiplicands,
+                exponent_bits,
+                &public_parameters.1,
+            )?,
+        ))
+    }
+
+    fn linearly_combine_bounded_vartime<const RHS_LIMBS: usize>(
+        bases_and_multiplicands: Vec<(Self, Uint<RHS_LIMBS>)>,
+        exponent_bits: u32,
+        public_parameters: &Self::PublicParameters,
+    ) -> crate::Result<Self> {
+        let (first_bases_and_multiplicands, second_bases_and_multiplicands): (Vec<_>, Vec<_>) =
+            bases_and_multiplicands
+                .into_iter()
+                .map(|(base, multiplicand)| ((base.0, multiplicand), (base.1, multiplicand)))
+                .unzip();
+        Ok(Self(
+            FirstGroupElement::linearly_combine_bounded_vartime(
+                first_bases_and_multiplicands,
+                exponent_bits,
+                &public_parameters.0,
+            )?,
+            SecondGroupElement::linearly_combine_bounded_vartime(
+                second_bases_and_multiplicands,
+                exponent_bits,
+                &public_parameters.1,
+            )?,
+        ))
     }
 }
 
@@ -385,8 +642,10 @@ impl<FirstGroupElement: crate::GroupElement, SecondGroupElement: crate::GroupEle
     }
 }
 
-impl<FirstGroupElement: crate::GroupElement, SecondGroupElement: crate::GroupElement> Neg
-    for GroupElement<FirstGroupElement, SecondGroupElement>
+impl<
+        FirstGroupElement: crate::GroupElement + Neg<Output = FirstGroupElement>,
+        SecondGroupElement: crate::GroupElement + Neg<Output = SecondGroupElement>,
+    > Neg for GroupElement<FirstGroupElement, SecondGroupElement>
 {
     type Output = Self;
 
@@ -395,8 +654,12 @@ impl<FirstGroupElement: crate::GroupElement, SecondGroupElement: crate::GroupEle
     }
 }
 
-impl<FirstGroupElement: crate::GroupElement, SecondGroupElement: crate::GroupElement> Add<Self>
-    for GroupElement<FirstGroupElement, SecondGroupElement>
+impl<
+        FirstGroupElement: crate::GroupElement + for<'a> Add<&'a FirstGroupElement, Output = FirstGroupElement>,
+        SecondGroupElement: crate::GroupElement
+            + Add<SecondGroupElement, Output = SecondGroupElement>
+            + for<'a> Add<&'a SecondGroupElement, Output = SecondGroupElement>,
+    > Add<Self> for GroupElement<FirstGroupElement, SecondGroupElement>
 {
     type Output = Self;
 
@@ -405,8 +668,11 @@ impl<FirstGroupElement: crate::GroupElement, SecondGroupElement: crate::GroupEle
     }
 }
 
-impl<'r, FirstGroupElement: crate::GroupElement, SecondGroupElement: crate::GroupElement>
-    Add<&'r Self> for GroupElement<FirstGroupElement, SecondGroupElement>
+impl<
+        'r,
+        FirstGroupElement: crate::GroupElement + for<'a> Add<&'a FirstGroupElement, Output = FirstGroupElement>,
+        SecondGroupElement: crate::GroupElement + for<'a> Add<&'a SecondGroupElement, Output = SecondGroupElement>,
+    > Add<&'r Self> for GroupElement<FirstGroupElement, SecondGroupElement>
 {
     type Output = Self;
 
@@ -415,8 +681,12 @@ impl<'r, FirstGroupElement: crate::GroupElement, SecondGroupElement: crate::Grou
     }
 }
 
-impl<FirstGroupElement: crate::GroupElement, SecondGroupElement: crate::GroupElement> Sub<Self>
-    for GroupElement<FirstGroupElement, SecondGroupElement>
+impl<
+        FirstGroupElement: crate::GroupElement + for<'a> Sub<&'a FirstGroupElement, Output = FirstGroupElement>,
+        SecondGroupElement: crate::GroupElement
+            + Sub<SecondGroupElement, Output = SecondGroupElement>
+            + for<'a> Sub<&'a SecondGroupElement, Output = SecondGroupElement>,
+    > Sub<Self> for GroupElement<FirstGroupElement, SecondGroupElement>
 {
     type Output = Self;
 
@@ -425,8 +695,11 @@ impl<FirstGroupElement: crate::GroupElement, SecondGroupElement: crate::GroupEle
     }
 }
 
-impl<'r, FirstGroupElement: crate::GroupElement, SecondGroupElement: crate::GroupElement>
-    Sub<&'r Self> for GroupElement<FirstGroupElement, SecondGroupElement>
+impl<
+        'r,
+        FirstGroupElement: crate::GroupElement + for<'a> Sub<&'a FirstGroupElement, Output = FirstGroupElement>,
+        SecondGroupElement: crate::GroupElement + for<'a> Sub<&'a SecondGroupElement, Output = SecondGroupElement>,
+    > Sub<&'r Self> for GroupElement<FirstGroupElement, SecondGroupElement>
 {
     type Output = Self;
 
@@ -435,8 +708,12 @@ impl<'r, FirstGroupElement: crate::GroupElement, SecondGroupElement: crate::Grou
     }
 }
 
-impl<FirstGroupElement: crate::GroupElement, SecondGroupElement: crate::GroupElement>
-    AddAssign<Self> for GroupElement<FirstGroupElement, SecondGroupElement>
+impl<
+        FirstGroupElement: crate::GroupElement + for<'a> AddAssign<&'a FirstGroupElement>,
+        SecondGroupElement: crate::GroupElement
+            + AddAssign<SecondGroupElement>
+            + for<'a> AddAssign<&'a SecondGroupElement>,
+    > AddAssign<Self> for GroupElement<FirstGroupElement, SecondGroupElement>
 {
     fn add_assign(&mut self, rhs: Self) {
         self.0.add_assign(&rhs.0);
@@ -444,8 +721,11 @@ impl<FirstGroupElement: crate::GroupElement, SecondGroupElement: crate::GroupEle
     }
 }
 
-impl<'r, FirstGroupElement: crate::GroupElement, SecondGroupElement: crate::GroupElement>
-    AddAssign<&'r Self> for GroupElement<FirstGroupElement, SecondGroupElement>
+impl<
+        'r,
+        FirstGroupElement: crate::GroupElement + for<'a> AddAssign<&'a FirstGroupElement>,
+        SecondGroupElement: crate::GroupElement + for<'a> AddAssign<&'a SecondGroupElement>,
+    > AddAssign<&'r Self> for GroupElement<FirstGroupElement, SecondGroupElement>
 {
     fn add_assign(&mut self, rhs: &'r Self) {
         self.0.add_assign(&rhs.0);
@@ -453,8 +733,12 @@ impl<'r, FirstGroupElement: crate::GroupElement, SecondGroupElement: crate::Grou
     }
 }
 
-impl<FirstGroupElement: crate::GroupElement, SecondGroupElement: crate::GroupElement>
-    SubAssign<Self> for GroupElement<FirstGroupElement, SecondGroupElement>
+impl<
+        FirstGroupElement: crate::GroupElement + for<'a> SubAssign<&'a FirstGroupElement>,
+        SecondGroupElement: crate::GroupElement
+            + SubAssign<SecondGroupElement>
+            + for<'a> SubAssign<&'a SecondGroupElement>,
+    > SubAssign<Self> for GroupElement<FirstGroupElement, SecondGroupElement>
 {
     fn sub_assign(&mut self, rhs: Self) {
         self.0.sub_assign(&rhs.0);
@@ -462,101 +746,15 @@ impl<FirstGroupElement: crate::GroupElement, SecondGroupElement: crate::GroupEle
     }
 }
 
-impl<'r, FirstGroupElement: crate::GroupElement, SecondGroupElement: crate::GroupElement>
-    SubAssign<&'r Self> for GroupElement<FirstGroupElement, SecondGroupElement>
+impl<
+        'r,
+        FirstGroupElement: crate::GroupElement + for<'a> SubAssign<&'a FirstGroupElement>,
+        SecondGroupElement: crate::GroupElement + for<'a> SubAssign<&'a SecondGroupElement>,
+    > SubAssign<&'r Self> for GroupElement<FirstGroupElement, SecondGroupElement>
 {
     fn sub_assign(&mut self, rhs: &'r Self) {
         self.0.sub_assign(&rhs.0);
         self.1.sub_assign(&rhs.1);
-    }
-}
-
-impl<
-        const LIMBS: usize,
-        FirstGroupElement: crate::GroupElement,
-        SecondGroupElement: crate::GroupElement,
-    > Mul<Uint<LIMBS>> for GroupElement<FirstGroupElement, SecondGroupElement>
-{
-    type Output = Self;
-
-    fn mul(self, rhs: Uint<LIMBS>) -> Self::Output {
-        self.scale(&rhs)
-    }
-}
-
-impl<
-        'r,
-        const LIMBS: usize,
-        FirstGroupElement: crate::GroupElement,
-        SecondGroupElement: crate::GroupElement,
-    > Mul<&'r GroupElement<FirstGroupElement, SecondGroupElement>>
-    for bounded_natural_numbers_group::GroupElement<LIMBS>
-where
-    Uint<LIMBS>: Encoding,
-{
-    type Output = GroupElement<FirstGroupElement, SecondGroupElement>;
-
-    fn mul(self, rhs: &'r GroupElement<FirstGroupElement, SecondGroupElement>) -> Self::Output {
-        rhs.scale_bounded(&self.value(), self.upper_bound_bits)
-    }
-}
-
-impl<
-        'r,
-        const LIMBS: usize,
-        FirstGroupElement: crate::GroupElement,
-        SecondGroupElement: crate::GroupElement,
-    > Mul<&'r GroupElement<FirstGroupElement, SecondGroupElement>>
-    for bounded_integers_group::GroupElement<LIMBS>
-where
-    Uint<LIMBS>: Encoding,
-    Int<LIMBS>: Encoding,
-{
-    type Output = GroupElement<FirstGroupElement, SecondGroupElement>;
-
-    fn mul(self, rhs: &'r GroupElement<FirstGroupElement, SecondGroupElement>) -> Self::Output {
-        rhs.scale_integer_bounded(&self.value(), self.upper_bound_bits)
-    }
-}
-
-impl<
-        'r,
-        const LIMBS: usize,
-        FirstGroupElement: crate::GroupElement,
-        SecondGroupElement: crate::GroupElement,
-    > Mul<&'r Uint<LIMBS>> for GroupElement<FirstGroupElement, SecondGroupElement>
-{
-    type Output = Self;
-
-    fn mul(self, rhs: &'r Uint<LIMBS>) -> Self::Output {
-        self.scale(rhs)
-    }
-}
-
-impl<
-        const LIMBS: usize,
-        FirstGroupElement: crate::GroupElement,
-        SecondGroupElement: crate::GroupElement,
-    > Mul<Uint<LIMBS>> for &GroupElement<FirstGroupElement, SecondGroupElement>
-{
-    type Output = GroupElement<FirstGroupElement, SecondGroupElement>;
-
-    fn mul(self, rhs: Uint<LIMBS>) -> Self::Output {
-        self.scale(&rhs)
-    }
-}
-
-impl<
-        'r,
-        const LIMBS: usize,
-        FirstGroupElement: crate::GroupElement,
-        SecondGroupElement: crate::GroupElement,
-    > Mul<&'r Uint<LIMBS>> for &'r GroupElement<FirstGroupElement, SecondGroupElement>
-{
-    type Output = GroupElement<FirstGroupElement, SecondGroupElement>;
-
-    fn mul(self, rhs: &'r Uint<LIMBS>) -> Self::Output {
-        self.scale(rhs)
     }
 }
 

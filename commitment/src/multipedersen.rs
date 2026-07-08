@@ -30,8 +30,7 @@ where
     Scalar: BoundedGroupElement<SCALAR_LIMBS>
         + Mul<GroupElement, Output = GroupElement>
         + for<'r> Mul<&'r GroupElement, Output = GroupElement>
-        + Samplable
-        + Copy,
+        + Samplable,
     GroupElement: group::GroupElement,
 {
     type MessageSpaceGroupElement = self_product::GroupElement<BATCH_SIZE, Scalar>;
@@ -52,16 +51,20 @@ where
         &self,
         message: &Self::MessageSpaceGroupElement,
         randomness: &Self::RandomnessSpaceGroupElement,
+        public_parameters: &group::PublicParameters<Self::CommitmentSpaceGroupElement>,
     ) -> Self::CommitmentSpaceGroupElement {
         // $$\Com_\pp(m;\rho):=\Ped.\Com_{\GG,G,H,q}(\vec{m},\vec{\rho})=
         // (m_1\cdot G + \rho_1 \cdot H, \ldots, m_n\cdot G + \rho_n \cdot H)$$
-        let messages: [_; BATCH_SIZE] = (*message).into();
-        let randomnesses: [_; BATCH_SIZE] = (*randomness).into();
+        let messages: [_; BATCH_SIZE] = message.clone().into();
+        let randomnesses: [_; BATCH_SIZE] = randomness.clone().into();
 
         let commitments: [_; BATCH_SIZE] = messages
             .into_iter()
             .zip(randomnesses)
-            .map(|(message, randomness)| self.0.commit(&[message].into(), &randomness))
+            .map(|(message, randomness)| {
+                self.0
+                    .commit(&[message].into(), &randomness, &public_parameters.0)
+            })
             .collect::<Vec<_>>()
             .try_into()
             .ok()
@@ -105,7 +108,7 @@ pub struct PublicParameters<
 
 impl<
         const BATCH_SIZE: usize,
-        GroupElementValue: Copy,
+        GroupElementValue: Clone,
         ScalarPublicParameters: Clone,
         GroupPublicParameters: Clone,
     >
@@ -268,7 +271,7 @@ mod tests {
 
     use group::{ristretto, OsCsRng};
 
-    use crate::Pedersen;
+    use crate::{GroupsPublicParametersAccessors, Pedersen};
 
     use super::*;
 
@@ -313,7 +316,11 @@ mod tests {
         let expected_commitment = commitment_generators.commit(message.into(), randomness.into());
 
         let commitment: [_; 1] = commitment_scheme
-            .commit(&([message].into()), &([randomness].into()))
+            .commit(
+                &([message].into()),
+                &([randomness].into()),
+                commitment_scheme_public_parameters.commitment_space_public_parameters(),
+            )
             .into();
 
         assert_eq!(expected_commitment, commitment[0].into())

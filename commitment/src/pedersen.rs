@@ -47,8 +47,7 @@ where
     Scalar: BoundedGroupElement<SCALAR_LIMBS>
         + Mul<GroupElement, Output = GroupElement>
         + for<'r> Mul<&'r GroupElement, Output = GroupElement>
-        + Samplable
-        + Copy,
+        + Samplable,
     GroupElement: group::GroupElement,
 {
     type MessageSpaceGroupElement = self_product::GroupElement<BATCH_SIZE, Scalar>;
@@ -63,11 +62,14 @@ where
 
     fn new(public_parameters: &Self::PublicParameters) -> crate::Result<Self> {
         if BATCH_SIZE == 0 {
-            return Err(crate::Error::InvalidPublicParameters);
+            return Err(crate::Error::from(
+                crate::ErrorKind::InvalidPublicParameters,
+            ));
         }
 
         let message_generators = public_parameters
             .message_generators
+            .clone()
             .map(|value| {
                 GroupElement::new(
                     value,
@@ -77,7 +79,7 @@ where
             .flat_map_results()?;
 
         let randomness_generator = GroupElement::new(
-            public_parameters.randomness_generator,
+            public_parameters.randomness_generator.clone(),
             public_parameters.commitment_space_public_parameters(),
         )?;
 
@@ -86,7 +88,9 @@ where
             .any(|generator| bool::from(generator.is_neutral()))
             || bool::from(randomness_generator.is_neutral())
         {
-            return Err(crate::Error::InvalidPublicParameters);
+            return Err(crate::Error::from(
+                crate::ErrorKind::InvalidPublicParameters,
+            ));
         }
 
         Ok(Self {
@@ -100,17 +104,25 @@ where
         &self,
         message: &self_product::GroupElement<BATCH_SIZE, Scalar>,
         randomness: &Scalar,
+        public_parameters: &GroupElement::PublicParameters,
     ) -> GroupElement {
         // $$\Com_\pp(m;\rho):=\Ped.\Com_{\GG,G,H,q}(\vec{m},\rho)=m_1\cdot G_1 + \ldots + m_n\cdot
         // G_n + \rho \cdot H$$.
-        self.message_generators
+        let message_commitment = self
+            .message_generators
             .iter()
             .zip::<&[Scalar; BATCH_SIZE]>(message.into())
             .fold(
                 self.randomness_generator.neutral(),
-                |acc, (generator, value)| acc + (*value * generator),
-            )
-            + (*randomness * self.randomness_generator)
+                |acc, (generator, value)| {
+                    acc.add_constant_time(&(value.clone() * generator), public_parameters)
+                },
+            );
+
+        message_commitment.add_constant_time(
+            &(randomness.clone() * self.randomness_generator.clone()),
+            public_parameters,
+        )
     }
 }
 
@@ -159,7 +171,11 @@ impl<
 {
     pub fn derive_default<const SCALAR_LIMBS: usize, GroupElement>() -> crate::Result<Self>
     where
-        GroupElement::Scalar: group::GroupElement<PublicParameters = ScalarPublicParameters>,
+        GroupElement::Scalar: group::GroupElement<PublicParameters = ScalarPublicParameters>
+            + BoundedGroupElement<SCALAR_LIMBS>
+            + Mul<GroupElement, Output = GroupElement>
+            + for<'r> Mul<&'r GroupElement, Output = GroupElement>
+            + Samplable,
         GroupElement: group::GroupElement<
             Value = GroupElementValue,
             PublicParameters = GroupPublicParameters,
@@ -179,7 +195,11 @@ impl<
         group_public_parameters: group::PublicParameters<GroupElement>,
     ) -> crate::Result<Self>
     where
-        GroupElement::Scalar: group::GroupElement<PublicParameters = ScalarPublicParameters>,
+        GroupElement::Scalar: group::GroupElement<PublicParameters = ScalarPublicParameters>
+            + BoundedGroupElement<SCALAR_LIMBS>
+            + Mul<GroupElement, Output = GroupElement>
+            + for<'r> Mul<&'r GroupElement, Output = GroupElement>
+            + Samplable,
         GroupElement: group::GroupElement<Value = GroupElementValue, PublicParameters = GroupPublicParameters>
             + PrimeGroupElement<SCALAR_LIMBS>
             + HashToGroup,
@@ -233,8 +253,7 @@ impl<
             + BoundedGroupElement<SCALAR_LIMBS>
             + Mul<GroupElement, Output = GroupElement>
             + for<'r> Mul<&'r GroupElement, Output = GroupElement>
-            + Samplable
-            + Copy,
+            + Samplable,
         GroupElement: group::GroupElement<Value = GroupElementValue, PublicParameters = GroupPublicParameters>
             + group::GroupElement,
         Scalar: group::GroupElement,
@@ -429,7 +448,11 @@ mod tests {
         let expected_commitment = commitment_generators.commit(message.into(), randomness.into());
 
         let commitment = commitment_scheme
-            .commit(&([message].into()), &randomness)
+            .commit(
+                &([message].into()),
+                &randomness,
+                commitment_scheme_public_parameters.commitment_space_public_parameters(),
+            )
             .into();
 
         assert_eq!(expected_commitment, commitment)

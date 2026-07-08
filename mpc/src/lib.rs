@@ -5,23 +5,24 @@ pub use access_structure::weighted::Threshold as WeightedThresholdAccessStructur
 pub use access_structure::weighted::Weight;
 use commitment::CommitmentSizedNumber;
 use group::helpers::DeduplicateAndSort;
-use group::CsRng;
 pub use group::PartyID;
 use merlin::Transcript;
-pub use party::{
-    guaranteed_output_delivery, AsynchronousRoundResult, AsynchronouslyAdvanceable,
-    GuaranteedOutputDeliveryRoundResult, GuaranteesOutputDelivery, Message, Party, PublicInput,
-    PublicOutput, PublicOutputValue,
-};
-use rand::Rng;
-use rand_chacha::rand_core::SeedableRng;
-use rand_chacha::{ChaCha20Core, ChaCha20Rng};
+
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fmt::Debug;
 use std::hash::Hash;
 
+pub use blending::ContributionBlending;
+pub use party::{
+    guaranteed_output_delivery, AsynchronousRoundResult, AsynchronouslyAdvanceable,
+    GuaranteedOutputDeliveryRoundResult, GuaranteesOutputDelivery, Message, Party, PublicInput,
+    PublicOutput, PublicOutputValue,
+};
+
 mod access_structure;
+mod blending;
+pub mod hybrid_public_key_encryption;
 mod party;
 pub mod secret_sharing;
 pub mod two_party;
@@ -33,11 +34,45 @@ pub mod test_helpers {
     pub use crate::secret_sharing::shamir::over_the_integers::test_helpers::*;
 }
 
-/// MPC error.
+/// MPC error wrapper that carries a backtrace captured at construction.
+///
+/// See `group::Error` for details.
+#[derive(thiserror::Error, Clone, Debug)]
+#[error("{kind}\n{backtrace}")]
+pub struct Error {
+    pub kind: ErrorKind,
+    pub backtrace: std::sync::Arc<std::backtrace::Backtrace>,
+}
+
+impl PartialEq for Error {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+    }
+}
+
+impl<E> From<E> for Error
+where
+    ErrorKind: From<E>,
+{
+    fn from(value: E) -> Self {
+        Self {
+            kind: ErrorKind::from(value),
+            backtrace: std::sync::Arc::new(std::backtrace::Backtrace::capture()),
+        }
+    }
+}
+
+/// MPC error kind.
 #[derive(thiserror::Error, Clone, Debug, PartialEq)]
-pub enum Error {
+pub enum ErrorKind {
     #[error("invalid parameters")]
     InvalidParameters,
+    #[error("decryption failed - wrong key provided")]
+    DecryptionFailed,
+    #[error("ephemeral key is identity point")]
+    IdentityEphemeralKey,
+    #[error("ephemeral key is not in prime subgroup (torsion)")]
+    TorsionEphemeralKey,
     #[error(
         "not enough honest parties to advance the session - wait for more messages and try again"
     )]
@@ -54,6 +89,10 @@ pub enum Error {
     InvalidMessage(Vec<PartyID>),
     #[error("parties {:?} sent a malicious message", .0)]
     MaliciousMessage(Vec<PartyID>),
+    #[error("a party sent a malicious message")]
+    MaliciousMessageAsync,
+    #[error("at least one party sent a malicious message which cannot properly be handled by this party at this round")]
+    MaliciousMessagePreventsAdvance,
     #[error("cannot advance an inactive session that has been previously terminated")]
     InactiveSession,
     #[error("group error")]
@@ -62,12 +101,20 @@ pub enum Error {
     InternalError,
     #[error("bcs serialization error")]
     Bcs(#[from] bcs::Error),
+    #[error("serialization/deserialization error: {0:?}")]
+    Serialization(String),
     #[error("consumer crate error {:?}", .0)]
     Consumer(String),
 }
 
 /// MPC result.
 pub type Result<T> = std::result::Result<T, Error>;
+
+impl From<serde_json::Error> for Error {
+    fn from(e: serde_json::Error) -> Self {
+        Error::from(ErrorKind::Serialization(e.to_string()))
+    }
+}
 
 /// Derive a seed deterministically for advancing an MPC round.
 ///
@@ -77,7 +124,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// This guarantees that every time we derive this seed, for this session and round, we get the same output.
 /// Using this seed with a cryptographically secure PRNG (like `ChaCha20`) will generate the exact-same messages and outputs for a given round.
 ///
-/// We add the attempt number to distinguish between attempts when encountering an [`Error::ThresholdNotReached`]. It is safe to do so,
+/// We add the attempt number to distinguish between attempts when encountering an [`ErrorKind::ThresholdNotReached`]. It is safe to do so,
 /// since when this error is generated no message or output is returned and thus never sent or broadcast.
 pub fn derive_seed_for_round<const SEED_LENGTH: usize>(
     root_seed: &[u8; SEED_LENGTH],
@@ -124,7 +171,7 @@ impl<T, E: fmt::Debug, I: IntoIterator<Item = (PartyID, std::result::Result<T, E
         let (malicious_parties, map) = self.handle_invalid_messages_async();
 
         if !malicious_parties.is_empty() {
-            return Err(Error::InvalidMessage(malicious_parties))?;
+            return Err(Error::from(ErrorKind::InvalidMessage(malicious_parties)))?;
         }
 
         Ok(map)
@@ -169,10 +216,8 @@ impl<T: Eq + Hash + Clone> MajorityVote<T> for HashMap<PartyID, T> {
         let mut candidates: HashMap<T, HashSet<PartyID>> = HashMap::new();
 
         self.into_iter().for_each(|(party_id, candidate)| {
-            let mut parties_voting_candidate = candidates
-                .get(&candidate)
-                .cloned()
-                .unwrap_or(HashSet::new());
+            let mut parties_voting_candidate =
+                candidates.get(&candidate).cloned().unwrap_or_default();
 
             parties_voting_candidate.insert(party_id);
 
@@ -190,7 +235,7 @@ impl<T: Eq + Hash + Clone> MajorityVote<T> for HashMap<PartyID, T> {
                         .cmp(&second_parties_verifying_candidate.len())
                 },
             )
-            .ok_or(Error::InvalidParameters)?;
+            .ok_or_else(|| Error::from(ErrorKind::InvalidParameters))?;
 
         let malicious_voters: Vec<PartyID> = voters
             .symmetric_difference(&majority_voters)
@@ -241,27 +286,5 @@ impl<T: Eq + Hash + Clone> MajorityVote<T> for HashMap<PartyID, T> {
             malicious_tangible_voters.deduplicate_and_sort(),
             majority_vote,
         ))
-    }
-}
-
-/// A seedable collection.
-pub trait SeedableCollection<T>: IntoIterator<Item = T> {
-    /// Seed a collection with a unique `ChaCha20Rng` per-item.
-    /// Useful for working with `rayon` and parallelism, where `rng` cannot be shared between threads,
-    /// but each individual rng can be used for that thread normally.
-    fn seed(self, rng: &mut impl CsRng) -> Vec<(T, ChaCha20Rng)>;
-}
-
-impl<T, I: IntoIterator<Item = T>> SeedableCollection<T> for I {
-    fn seed(self, rng: &mut impl CsRng) -> Vec<(T, ChaCha20Rng)> {
-        self.into_iter()
-            .map(|item| {
-                let seed = rng.random();
-
-                let seeded_rng = ChaCha20Rng::from(ChaCha20Core::from_seed(seed));
-
-                (item, seeded_rng)
-            })
-            .collect()
     }
 }

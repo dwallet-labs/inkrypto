@@ -6,14 +6,13 @@ use std::fmt::Debug;
 
 use serde::Serialize;
 
-use group::helpers::DeduplicateAndSort;
-use group::{CsRng, PartyID, Samplable};
-use proof::{aggregation, range, AggregatableRangeProof};
-
 use crate::{
     aggregation::Output, language::EnhancedLanguageStatementAccessors, EnhanceableLanguage,
     EnhancedLanguage, Error, Proof,
 };
+use group::helpers::DeduplicateAndSort;
+use group::{CsRng, PartyID, Samplable};
+use proof_aggregation::AggregatableRangeProof;
 
 pub struct Party<
     const REPETITIONS: usize,
@@ -30,7 +29,7 @@ pub struct Party<
     ProtocolContext: Clone + Serialize + Debug + PartialEq + Eq + Send + Sync + Send + Sync,
 > {
     pub(super) party_id: PartyID,
-    pub maurer_proof_aggregation_round_party: maurer::aggregation::proof_aggregation_round::Party<
+    pub maurer_proof_aggregation_round_party: maurer_aggregation::proof_aggregation_round::Party<
         REPETITIONS,
         EnhancedLanguage<
             REPETITIONS,
@@ -42,11 +41,12 @@ pub struct Party<
         >,
         ProtocolContext,
     >,
-    pub(super) range_proof_proof_aggregation_round_party: range::ProofAggregationRoundParty<
-        NUM_RANGE_CLAIMS,
-        COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
-        RangeProof,
-    >,
+    pub(super) range_proof_proof_aggregation_round_party:
+        proof_aggregation::range::ProofAggregationRoundParty<
+            NUM_RANGE_CLAIMS,
+            COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
+            RangeProof,
+        >,
 }
 
 impl<
@@ -63,7 +63,7 @@ impl<
         >,
         ProtocolContext: Clone + Serialize + Debug + PartialEq + Eq + Send + Sync + Send + Sync,
     >
-    proof::aggregation::ProofAggregationRoundParty<
+    proof_aggregation::synchronous::ProofAggregationRoundParty<
         Output<
             REPETITIONS,
             NUM_RANGE_CLAIMS,
@@ -85,7 +85,7 @@ impl<
     >
 where
     Error: From<
-        range::AggregationError<
+        proof_aggregation::range::AggregationError<
             NUM_RANGE_CLAIMS,
             COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
             RangeProof,
@@ -95,7 +95,7 @@ where
     type Error = Error;
 
     type ProofShare = (
-        maurer::aggregation::ProofShare<
+        maurer_aggregation::ProofShare<
             REPETITIONS,
             EnhancedLanguage<
                 REPETITIONS,
@@ -106,7 +106,7 @@ where
                 Language,
             >,
         >,
-        range::ProofShare<
+        proof_aggregation::range::ProofShare<
             NUM_RANGE_CLAIMS,
             COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
             RangeProof,
@@ -152,7 +152,7 @@ where
                     party_id,
                     statements
                         .into_iter()
-                        .map(|statement| *statement.range_proof_commitment())
+                        .map(|statement| statement.range_proof_commitment().clone())
                         .collect(),
                 )
             })
@@ -173,7 +173,7 @@ where
 
         let maurer_range_proof_commitments: Vec<_> = maurer_statements
             .iter()
-            .map(|statement| *statement.range_proof_commitment())
+            .map(|statement| statement.range_proof_commitment().clone())
             .collect();
 
         if range_proof_commitments != maurer_range_proof_commitments {
@@ -197,9 +197,10 @@ where
                 malicious_parties
             };
 
-            return Err(Error::MismatchingRangeProofMaurerCommitments(
-                malicious_parties,
-            ));
+            return Err(crate::Error {
+                kind: crate::ErrorKind::MismatchingRangeProofMaurerCommitments(malicious_parties),
+                backtrace: std::sync::Arc::new(std::backtrace::Backtrace::capture()),
+            });
         }
 
         // Range check:
@@ -210,7 +211,7 @@ where
             COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
         >(true, RangeProof::RANGE_CLAIM_BITS)?;
 
-        if !maurer_proof.responses.into_iter().all(|response| {
+        if !maurer_proof.responses.clone().into_iter().all(|response| {
             let (commitment_message, ..): (_, _) = response.into();
             let (commitment_message, _) = commitment_message.into();
 
@@ -240,8 +241,14 @@ where
                 .map(|(party_id, _)| party_id)
                 .collect();
 
-            return Err(proof::Error::Aggregation(
-                aggregation::Error::ProofShareVerification(malicious_parties),
+            return Err(proof_aggregation::Error::from(
+                proof_aggregation::ErrorKind::SynchronousAggregation(
+                    proof_aggregation::synchronous::Error::from(
+                        proof_aggregation::synchronous::ErrorKind::ProofShareVerification(
+                            malicious_parties,
+                        ),
+                    ),
+                ),
             ))?;
         }
 
@@ -279,7 +286,7 @@ impl<
         ProtocolContext,
     >
 where
-    range::ProofAggregationRoundParty<
+    proof_aggregation::range::ProofAggregationRoundParty<
         NUM_RANGE_CLAIMS,
         COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS,
         RangeProof,
