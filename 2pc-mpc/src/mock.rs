@@ -10,7 +10,9 @@
 //! Under the `unsafe_mock` feature the exported protocol party/`Protocol` aliases are redirected to
 //! the mock party types defined here (see `crate::mock::{dkg, ecdsa, schnorr, vss, network_dkg}`);
 //! the real protocol `advance`/method bodies are left completely untouched. Each mock party
-//! finalizes in a single round, deterministically, from the common public inputs alone.
+//! simulates its real protocol's round structure — trivial [`MOCK_HONEST_MESSAGE`] rounds with
+//! malicious-sender detection and threshold enforcement (see [`mock_advance_result`]) — and
+//! finalizes on the last round, deterministically, from the common public inputs alone.
 //!
 //! ## What it gives up
 //! **All security.** Every dWallet uses the SAME constant signing key `x = 42`
