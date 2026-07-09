@@ -271,7 +271,7 @@ where
         Self::Error,
     > {
         // Schnorr-VSS presign decentralized party is a 3-round protocol.
-        crate::mock::mock_advance_result(&messages, 3, || {
+        crate::mock::mock_advance_result(access_structure, &messages, 3, || {
             let protocol_public_parameters = &*public_input.protocol_public_parameters;
             let identity_point = GroupElement::neutral_from_public_parameters(
                 &protocol_public_parameters.group_public_parameters,
@@ -569,7 +569,7 @@ where
     fn advance(
         _session_id: CommitmentSizedNumber,
         _party_id: PartyID,
-        _access_structure: &WeightedThresholdAccessStructure,
+        access_structure: &WeightedThresholdAccessStructure,
         messages: Vec<HashMap<PartyID, Self::Message>>,
         _private_input: Option<Self::PrivateInput>,
         public_input: &Self::PublicInput,
@@ -579,7 +579,7 @@ where
         Self::Error,
     > {
         // Schnorr-VSS sign decentralized party is a 2-round protocol (happy-flow).
-        crate::mock::mock_advance_result(&messages, 2, || {
+        crate::mock::mock_advance_result(access_structure, &messages, 2, || {
             let protocol_public_parameters = &*public_input.protocol_public_parameters;
             let signature = mock_sign::<SCALAR_LIMBS, GroupElement>(
                 &public_input.message,
@@ -871,7 +871,7 @@ where
     fn advance(
         _session_id: CommitmentSizedNumber,
         _party_id: PartyID,
-        _access_structure: &WeightedThresholdAccessStructure,
+        access_structure: &WeightedThresholdAccessStructure,
         messages: Vec<HashMap<PartyID, Self::Message>>,
         _private_input: Option<Self::PrivateInput>,
         public_input: &Self::PublicInput,
@@ -882,7 +882,7 @@ where
     > {
         // The fused Schnorr-VSS DKG+sign decentralized party shares the sign protocol's 2-round
         // (happy-flow) structure.
-        crate::mock::mock_advance_result(&messages, 2, || {
+        crate::mock::mock_advance_result(access_structure, &messages, 2, || {
             let protocol_public_parameters = &*public_input.protocol_public_parameters;
             let dkg_output = crate::mock::dkg::mock_dkg_output::<SCALAR_LIMBS, GroupElement, _, _>(
                 protocol_public_parameters,

@@ -117,9 +117,10 @@ type RealPresignAsyncSchnorrParty<
     GroupElement,
 >;
 
-/// INSECURE mock of the Schnorr-AHE presign party — finalizes round 1 with a single dummy presign
-/// (identity nonce points, reused ciphertexts, dummy commitment); the mocked constant-nonce sign
-/// ignores the presign entirely.
+/// INSECURE mock of the Schnorr-AHE presign party — simulates the real 2-round structure and
+/// finalizes with a single dummy presign (identity nonce points, reused ciphertexts, and the
+/// pp-derived global-output commitment, which the real centralized sign party validates); the
+/// mocked constant-nonce sign ignores the presign entirely.
 pub struct MockPresignAsyncSchnorrParty<
     const SCALAR_LIMBS: usize,
     const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
@@ -343,7 +344,7 @@ where
     fn advance(
         session_id: CommitmentSizedNumber,
         _party_id: PartyID,
-        _access_structure: &WeightedThresholdAccessStructure,
+        access_structure: &WeightedThresholdAccessStructure,
         messages: Vec<HashMap<PartyID, Self::Message>>,
         _private_input: Option<Self::PrivateInput>,
         public_input: &Self::PublicInput,
@@ -353,7 +354,7 @@ where
         Self::Error,
     > {
         // Schnorr-AHE presign decentralized party is a 2-round protocol.
-        crate::mock::mock_advance_result(&messages, 2, || {
+        crate::mock::mock_advance_result(access_structure, &messages, 2, || {
             let protocol_public_parameters = &*public_input.protocol_public_parameters;
             let identity_point = GroupElement::neutral_from_public_parameters(
                 &protocol_public_parameters.group_public_parameters,
@@ -367,7 +368,13 @@ where
                 encryption_of_decentralized_party_nonce_share_second_part: dummy_ciphertext,
                 decentralized_party_nonce_public_share_first_part: identity_point.clone(),
                 decentralized_party_nonce_public_share_second_part: identity_point,
-                global_decentralized_party_output_commitment: CommitmentSizedNumber::ZERO,
+                // Must be the real pp-derived commitment, not a dummy: the Schnorr-AHE
+                // `Presign` is unversioned, so `Presign == pp` always compares this field
+                // (see `schnorr::ahe::presign`), and the *real* centralized sign party —
+                // which the mock protocols deliberately keep — rejects the presign with
+                // `InvalidParameters` on mismatch.
+                global_decentralized_party_output_commitment: protocol_public_parameters
+                    .global_decentralized_party_output_commitment()?,
             };
             Ok(((), vec![presign]))
         })
@@ -696,7 +703,7 @@ where
     fn advance(
         _session_id: CommitmentSizedNumber,
         _party_id: PartyID,
-        _access_structure: &WeightedThresholdAccessStructure,
+        access_structure: &WeightedThresholdAccessStructure,
         messages: Vec<HashMap<PartyID, Self::Message>>,
         _private_input: Option<Self::PrivateInput>,
         public_input: &Self::PublicInput,
@@ -706,7 +713,7 @@ where
         Self::Error,
     > {
         // Schnorr-AHE sign decentralized party is a 2-round protocol (happy-flow).
-        crate::mock::mock_advance_result(&messages, 2, || {
+        crate::mock::mock_advance_result(access_structure, &messages, 2, || {
             let protocol_public_parameters = &*public_input.protocol_public_parameters;
             let signature = mock_sign::<SCALAR_LIMBS, GroupElement>(
                 &public_input.message,
@@ -1017,7 +1024,7 @@ where
     fn advance(
         _session_id: CommitmentSizedNumber,
         _party_id: PartyID,
-        _access_structure: &WeightedThresholdAccessStructure,
+        access_structure: &WeightedThresholdAccessStructure,
         messages: Vec<HashMap<PartyID, Self::Message>>,
         _private_input: Option<Self::PrivateInput>,
         public_input: &Self::PublicInput,
@@ -1028,7 +1035,7 @@ where
     > {
         // The fused Schnorr DKG+sign decentralized party shares the sign protocol's 2-round
         // (happy-flow) structure.
-        crate::mock::mock_advance_result(&messages, 2, || {
+        crate::mock::mock_advance_result(access_structure, &messages, 2, || {
             let protocol_public_parameters = &*public_input.protocol_public_parameters;
             let dkg_output = crate::mock::dkg::mock_dkg_output::<SCALAR_LIMBS, GroupElement, _, _>(
                 protocol_public_parameters,

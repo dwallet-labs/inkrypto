@@ -26,13 +26,13 @@ pub(crate) mod schnorr;
 mod timings;
 pub(crate) mod vss;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crypto_bigint::Uint;
 
 use group::helpers::DeduplicateAndSort;
 use group::{GroupElement as _, PartyID, PrimeGroupElement};
-use mpc::AsynchronousRoundResult;
+use mpc::{AsynchronousRoundResult, WeightedThresholdAccessStructure};
 
 /// The magic value every honest party's mock protocol message carries. The mock
 /// parties simulate the real round structure (advancing round-by-round, finalizing
@@ -74,12 +74,31 @@ pub(crate) fn mock_round_bookkeeping(
 /// [`AsynchronousRoundResult::Finalize`] with the outputs from `finalize` (called
 /// only on the final round; its error is propagated). Threads the detected
 /// `malicious_parties` through either arm.
-pub(crate) fn mock_advance_result<PrivateOutput, PublicOutput, Error>(
+///
+/// Mimics the real protocols' threshold-not-reached behavior: an advance first
+/// filters protocol-invalid (malicious) contributions, then requires the remaining
+/// senders of the latest completed round to form an authorized subset — otherwise it
+/// aborts with [`mpc::ErrorKind::ThresholdNotReached`], which the
+/// guaranteed-output-delivery layer converts into a `ThresholdNotReached` message and
+/// a retried advance (attributed to the previous round, see
+/// [`mock_round_causing_threshold_not_reached`]).
+pub(crate) fn mock_advance_result<PrivateOutput, PublicOutput, Error: From<mpc::Error>>(
+    access_structure: &WeightedThresholdAccessStructure,
     messages: &[HashMap<PartyID, u64>],
     total_rounds: usize,
     finalize: impl FnOnce() -> Result<(PrivateOutput, PublicOutput), Error>,
 ) -> Result<AsynchronousRoundResult<u64, PrivateOutput, PublicOutput>, Error> {
     let (malicious_parties, is_final_round) = mock_round_bookkeeping(messages, total_rounds);
+    if let Some(latest_round_messages) = messages.last() {
+        let honest_senders = latest_round_messages
+            .keys()
+            .filter(|party_id| !malicious_parties.contains(party_id))
+            .copied()
+            .collect::<HashSet<_>>();
+        access_structure
+            .is_authorized_subset(&honest_senders)
+            .map_err(Error::from)?;
+    }
     if is_final_round {
         let (private_output, public_output) = finalize()?;
         Ok(AsynchronousRoundResult::Finalize {

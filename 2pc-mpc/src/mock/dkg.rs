@@ -387,7 +387,7 @@ where
     fn advance(
         _session_id: CommitmentSizedNumber,
         _party_id: PartyID,
-        _access_structure: &WeightedThresholdAccessStructure,
+        access_structure: &WeightedThresholdAccessStructure,
         messages: Vec<std::collections::HashMap<PartyID, Self::Message>>,
         _private_input: Option<Self::PrivateInput>,
         public_input: &Self::PublicInput,
@@ -397,7 +397,7 @@ where
         Self::Error,
     > {
         // dwallet DKG decentralized party is a 2-round protocol.
-        crate::mock::mock_advance_result(&messages, 2, || {
+        crate::mock::mock_advance_result(access_structure, &messages, 2, || {
             Ok((
                 (),
                 mock_dkg_output::<SCALAR_LIMBS, GroupElement, _, _>(
