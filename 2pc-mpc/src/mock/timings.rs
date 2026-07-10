@@ -154,9 +154,13 @@ fn mock_protocol_timings_report() {
         dkg_output: None,
         protocol_public_parameters: Arc::new(protocol_public_parameters.clone()),
     };
-    // ECDSA presign is a 4-round protocol; drive the final round (three empty prior-round message
-    // maps) so the timed `advance` performs the presign output construction rather than the
-    // round-simulation bookkeeping of an intermediate round.
+    // ECDSA presign is a 4-round protocol; drive the final round (three prior rounds of
+    // all-honest message maps — the mock advance enforces the threshold over the latest
+    // round's honest senders) so the timed `advance` performs the presign output
+    // construction rather than the round-simulation bookkeeping of an intermediate round.
+    let honest_round: HashMap<PartyID, u64> = (1..=4)
+        .map(|party_id| (party_id as PartyID, crate::mock::MOCK_HONEST_MESSAGE))
+        .collect();
     report(
         "ECDSA presign (secp256k1): full party advance (finalize final round)",
         200,
@@ -165,7 +169,11 @@ fn mock_protocol_timings_report() {
                 session_id,
                 1 as PartyID,
                 &access_structure,
-                vec![HashMap::new(), HashMap::new(), HashMap::new()],
+                vec![
+                    honest_round.clone(),
+                    honest_round.clone(),
+                    honest_round.clone(),
+                ],
                 Some(()),
                 &presign_public_input,
                 &mut OsCsRng,

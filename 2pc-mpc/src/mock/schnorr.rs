@@ -117,9 +117,10 @@ type RealPresignAsyncSchnorrParty<
     GroupElement,
 >;
 
-/// INSECURE mock of the Schnorr-AHE presign party — finalizes round 1 with a single dummy presign
-/// (identity nonce points, reused ciphertexts, dummy commitment); the mocked constant-nonce sign
-/// ignores the presign entirely.
+/// INSECURE mock of the Schnorr-AHE presign party — simulates the real 2-round structure and
+/// finalizes with a single dummy presign (identity nonce points, reused ciphertexts, and the
+/// pp-derived global-output commitment, which the real centralized sign party validates); the
+/// mocked constant-nonce sign ignores the presign entirely.
 pub struct MockPresignAsyncSchnorrParty<
     const SCALAR_LIMBS: usize,
     const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
@@ -343,7 +344,7 @@ where
     fn advance(
         session_id: CommitmentSizedNumber,
         _party_id: PartyID,
-        _access_structure: &WeightedThresholdAccessStructure,
+        access_structure: &WeightedThresholdAccessStructure,
         messages: Vec<HashMap<PartyID, Self::Message>>,
         _private_input: Option<Self::PrivateInput>,
         public_input: &Self::PublicInput,
@@ -353,7 +354,7 @@ where
         Self::Error,
     > {
         // Schnorr-AHE presign decentralized party is a 2-round protocol.
-        crate::mock::mock_advance_result(&messages, 2, || {
+        crate::mock::mock_advance_result(access_structure, &messages, 2, || {
             let protocol_public_parameters = &*public_input.protocol_public_parameters;
             let identity_point = GroupElement::neutral_from_public_parameters(
                 &protocol_public_parameters.group_public_parameters,
@@ -367,6 +368,10 @@ where
                 encryption_of_decentralized_party_nonce_share_second_part: dummy_ciphertext,
                 decentralized_party_nonce_public_share_first_part: identity_point.clone(),
                 decentralized_party_nonce_public_share_second_part: identity_point,
+                // A dummy is fine: the only consumer that validates this field against the
+                // pp is the real centralized sign party, and under the mock the
+                // centralized sign party is mocked too (see
+                // [`MockSignCentralizedSchnorrParty`]).
                 global_decentralized_party_output_commitment: CommitmentSizedNumber::ZERO,
             };
             Ok(((), vec![presign]))
@@ -375,6 +380,143 @@ where
 
     fn round_causing_threshold_not_reached(current_round: u64) -> Option<u64> {
         crate::mock::mock_round_causing_threshold_not_reached(current_round)
+    }
+}
+
+// ===================================================================================================
+// Schnorr-AHE centralized (user-side) sign
+// ===================================================================================================
+
+/// INSECURE mock of the Schnorr-AHE centralized (user-side) sign party — returns a
+/// deterministic, structurally-valid partial signature (neutral nonce point, zero
+/// response) and performs no cryptography at all: no AHE evaluation, no proof
+/// generation, and no input-consistency checks. The real user side is expensive
+/// (class-group homomorphic evaluation over the presign ciphertexts), which is exactly
+/// the cost the mock exists to eliminate. The mocked decentralized sign ignores the
+/// partial signature (it emits the constant-nonce signature), and the mocked
+/// `verify_centralized_party_partial_signature` accepts it unchanged.
+pub struct MockSignCentralizedSchnorrParty<
+    const SCALAR_LIMBS: usize,
+    const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    GroupElement,
+>(PhantomData<GroupElement>);
+
+impl<
+        const SCALAR_LIMBS: usize,
+        const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+        const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+        GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
+    > mpc::two_party::Round
+    for MockSignCentralizedSchnorrParty<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        GroupElement,
+    >
+where
+    Int<SCALAR_LIMBS>: Encoding,
+    Uint<SCALAR_LIMBS>: Encoding,
+    Int<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
+    EncryptionKey<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        GroupElement,
+    >: AdditivelyHomomorphicEncryptionKey<
+        SCALAR_LIMBS,
+        PublicParameters = encryption_key::PublicParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >,
+        PlaintextSpaceGroupElement = GroupElement::Scalar,
+        RandomnessSpaceGroupElement = RandomnessSpaceGroupElement<FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+        CiphertextSpaceGroupElement = CiphertextSpaceGroupElement<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        >,
+    >,
+    encryption_key::PublicParameters<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<GroupElement::Scalar>,
+    >: AsRef<
+        homomorphic_encryption::GroupsPublicParameters<
+            group::PublicParameters<GroupElement::Scalar>,
+            RandomnessSpacePublicParameters<FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            CiphertextSpacePublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+        >,
+    >,
+{
+    type Error = crate::Error;
+    type PrivateInput =
+        crate::dkg::centralized_party::SecretKeyShare<group::Value<GroupElement::Scalar>>;
+    type PublicInput = crate::schnorr::ahe::sign::centralized_party::PublicInput<
+        crate::dkg::centralized_party::VersionedOutput<SCALAR_LIMBS, GroupElement::Value>,
+        crate::schnorr::ahe::presign::Presign<
+            GroupElement::Value,
+            group::Value<CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+        >,
+        ProtocolPublicParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >,
+    >;
+    type PrivateOutput = ();
+    type PublicOutputValue = ();
+    type PublicOutput = ();
+    type IncomingMessage = ();
+    type OutgoingMessage =
+        PartialSignature<GroupElement::Value, group::Value<GroupElement::Scalar>>;
+
+    fn advance(
+        _message: Self::IncomingMessage,
+        _secret_key_share: &Self::PrivateInput,
+        public_input: &Self::PublicInput,
+        _rng: &mut impl CsRng,
+    ) -> std::result::Result<
+        mpc::two_party::RoundResult<Self::OutgoingMessage, Self::PrivateOutput, Self::PublicOutput>,
+        Self::Error,
+    > {
+        let public_nonce_share_prenormalization = GroupElement::neutral_from_public_parameters(
+            &public_input
+                .protocol_public_parameters
+                .group_public_parameters,
+        )?
+        .value();
+        let partial_response = GroupElement::Scalar::neutral_from_public_parameters(
+            &public_input
+                .protocol_public_parameters
+                .scalar_group_public_parameters,
+        )?
+        .value();
+
+        Ok(mpc::two_party::RoundResult {
+            outgoing_message: PartialSignature {
+                public_nonce_share_prenormalization,
+                partial_response,
+            },
+            private_output: (),
+            public_output: (),
+        })
     }
 }
 
@@ -696,7 +838,7 @@ where
     fn advance(
         _session_id: CommitmentSizedNumber,
         _party_id: PartyID,
-        _access_structure: &WeightedThresholdAccessStructure,
+        access_structure: &WeightedThresholdAccessStructure,
         messages: Vec<HashMap<PartyID, Self::Message>>,
         _private_input: Option<Self::PrivateInput>,
         public_input: &Self::PublicInput,
@@ -706,7 +848,7 @@ where
         Self::Error,
     > {
         // Schnorr-AHE sign decentralized party is a 2-round protocol (happy-flow).
-        crate::mock::mock_advance_result(&messages, 2, || {
+        crate::mock::mock_advance_result(access_structure, &messages, 2, || {
             let protocol_public_parameters = &*public_input.protocol_public_parameters;
             let signature = mock_sign::<SCALAR_LIMBS, GroupElement>(
                 &public_input.message,
@@ -1017,7 +1159,7 @@ where
     fn advance(
         _session_id: CommitmentSizedNumber,
         _party_id: PartyID,
-        _access_structure: &WeightedThresholdAccessStructure,
+        access_structure: &WeightedThresholdAccessStructure,
         messages: Vec<HashMap<PartyID, Self::Message>>,
         _private_input: Option<Self::PrivateInput>,
         public_input: &Self::PublicInput,
@@ -1028,7 +1170,7 @@ where
     > {
         // The fused Schnorr DKG+sign decentralized party shares the sign protocol's 2-round
         // (happy-flow) structure.
-        crate::mock::mock_advance_result(&messages, 2, || {
+        crate::mock::mock_advance_result(access_structure, &messages, 2, || {
             let protocol_public_parameters = &*public_input.protocol_public_parameters;
             let dkg_output = crate::mock::dkg::mock_dkg_output::<SCALAR_LIMBS, GroupElement, _, _>(
                 protocol_public_parameters,
@@ -1431,13 +1573,12 @@ where
         MESSAGE_LIMBS,
         GroupElement,
     > as crate::sign::Protocol>::SignMessage;
-    type SignCentralizedParty = <RealSchnorrProtocol<
+    type SignCentralizedParty = MockSignCentralizedSchnorrParty<
         SCALAR_LIMBS,
         FUNDAMENTAL_DISCRIMINANT_LIMBS,
         NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-        MESSAGE_LIMBS,
         GroupElement,
-    > as crate::sign::Protocol>::SignCentralizedParty;
+    >;
 
     /// INSECURE: skip the centralized partial-signature verification and return it unchanged. The
     /// mocked decentralized sign ignores this entirely (and under `ToBeEmulated` it is not called).
