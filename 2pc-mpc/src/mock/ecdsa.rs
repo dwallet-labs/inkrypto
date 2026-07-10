@@ -36,8 +36,18 @@ use ::class_groups::{
     RandomnessSpaceGroupElement, RandomnessSpacePublicParameters, SecretKeyShareSizedInteger,
 };
 
+use commitment::pedersen;
+use proof::GroupsPublicParametersAccessors;
+
 use crate::class_groups::ecdsa::{DKGSignPartyPublicInput, SignPartyPublicInput};
+use crate::class_groups::ProtocolPublicParameters;
+use crate::ecdsa::sign::centralized_party::message::class_groups::Message as CentralizedSignMessage;
 use crate::ecdsa::VerifyingKey;
+use crate::languages::{
+    self, CommitmentOfDiscreteLogProof,
+    EqualityBetweenCommitmentsWithDifferentPublicParametersProof, KnowledgeOfDecommitmentProof,
+    KnowledgeOfDecommitmentUCProof, VectorCommitmentOfDiscreteLogProof,
+};
 
 /// Produce an INSECURE but valid ECDSA signature over `message` under the constant mock key `42·G`.
 ///
@@ -348,7 +358,7 @@ where
     fn advance(
         session_id: CommitmentSizedNumber,
         _party_id: PartyID,
-        _access_structure: &WeightedThresholdAccessStructure,
+        access_structure: &WeightedThresholdAccessStructure,
         messages: Vec<HashMap<PartyID, Self::Message>>,
         _private_input: Option<Self::PrivateInput>,
         public_input: &Self::PublicInput,
@@ -358,7 +368,7 @@ where
         Self::Error,
     > {
         // ECDSA presign decentralized party is a 4-round protocol.
-        crate::mock::mock_advance_result(&messages, 4, || {
+        crate::mock::mock_advance_result(access_structure, &messages, 4, || {
             let protocol_public_parameters = &*public_input.protocol_public_parameters;
             let identity_point = GroupElement::neutral_from_public_parameters(
                 &protocol_public_parameters.group_public_parameters,
@@ -389,6 +399,292 @@ where
 
     fn round_causing_threshold_not_reached(current_round: u64) -> Option<u64> {
         crate::mock::mock_round_causing_threshold_not_reached(current_round)
+    }
+}
+
+// ===================================================================================================
+// ECDSA centralized (user-side) sign
+// ===================================================================================================
+
+/// INSECURE mock of the ECDSA centralized (user-side) sign party — returns a
+/// deterministic, structurally-valid sign message (neutral commitment/nonce points,
+/// ciphertexts reused from the pp, `new_default` neutral proofs) and performs none of
+/// the real work: no class-group homomorphic evaluation, no proof generation, and no
+/// input-consistency checks. The real user side is expensive (the homomorphic partial
+/// signature evaluation over the presign ciphertexts), which is exactly the cost the
+/// mock exists to eliminate. The mocked decentralized sign ignores the sign message (it
+/// emits the constant-nonce signature), and the mocked
+/// `verify_centralized_party_partial_signature` accepts it without proof verification.
+pub struct MockSignCentralizedECDSAParty<
+    const SCALAR_LIMBS: usize,
+    const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    const MESSAGE_LIMBS: usize,
+    GroupElement,
+>(PhantomData<GroupElement>);
+
+impl<
+        const SCALAR_LIMBS: usize,
+        const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+        const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+        const MESSAGE_LIMBS: usize,
+        GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
+    > mpc::two_party::Round
+    for MockSignCentralizedECDSAParty<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        MESSAGE_LIMBS,
+        GroupElement,
+    >
+where
+    Int<SCALAR_LIMBS>: Encoding,
+    Uint<SCALAR_LIMBS>: Encoding,
+    Int<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Uint<MESSAGE_LIMBS>: Encoding,
+    EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
+    EncryptionKey<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        GroupElement,
+    >: AdditivelyHomomorphicEncryptionKey<
+        SCALAR_LIMBS,
+        PublicParameters = encryption_key::PublicParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >,
+        PlaintextSpaceGroupElement = GroupElement::Scalar,
+        RandomnessSpaceGroupElement = RandomnessSpaceGroupElement<FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+        CiphertextSpaceGroupElement = CiphertextSpaceGroupElement<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        >,
+    >,
+    encryption_key::PublicParameters<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<GroupElement::Scalar>,
+    >: AsRef<
+        homomorphic_encryption::GroupsPublicParameters<
+            group::PublicParameters<GroupElement::Scalar>,
+            RandomnessSpacePublicParameters<FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            CiphertextSpacePublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+        >,
+    >,
+{
+    type Error = crate::Error;
+    type PrivateInput =
+        crate::dkg::centralized_party::SecretKeyShare<group::Value<GroupElement::Scalar>>;
+    type PublicInput =
+        crate::ecdsa::sign::centralized_party::signature_homomorphic_evaluation_round::PublicInput<
+            crate::dkg::centralized_party::VersionedOutput<SCALAR_LIMBS, GroupElement::Value>,
+            crate::ecdsa::presign::VersionedPresign<
+                GroupElement::Value,
+                group::Value<CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+            >,
+            ProtocolPublicParameters<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+        >;
+    type PrivateOutput = ();
+    type PublicOutputValue = ();
+    type PublicOutput = ();
+    type IncomingMessage = ();
+    type OutgoingMessage = CentralizedSignMessage<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        MESSAGE_LIMBS,
+        GroupElement,
+    >;
+
+    fn advance(
+        _message: Self::IncomingMessage,
+        _secret_key_share: &Self::PrivateInput,
+        public_input: &Self::PublicInput,
+        _rng: &mut impl CsRng,
+    ) -> std::result::Result<
+        mpc::two_party::RoundResult<Self::OutgoingMessage, Self::PrivateOutput, Self::PublicOutput>,
+        Self::Error,
+    > {
+        let protocol_public_parameters = &public_input.protocol_public_parameters;
+
+        let neutral_point = GroupElement::neutral_from_public_parameters(
+            &protocol_public_parameters.group_public_parameters,
+        )?
+        .value();
+        // Reuse a stored ciphertext as the dummy ciphertext (never read — the mocked sign uses
+        // the constant nonce and ignores the sign message).
+        let dummy_ciphertext = protocol_public_parameters
+            .encryption_of_decentralized_party_secret_key_share_first_part;
+
+        // `new_default` proofs need only the languages' witness/statement space public
+        // parameters; construct each language's public parameters exactly as the real
+        // centralized party does, with neutral bases and the dummy ciphertexts.
+        let commitment_scheme_public_parameters =
+            pedersen::PublicParameters::derive::<SCALAR_LIMBS, GroupElement>(
+                protocol_public_parameters
+                    .scalar_group_public_parameters
+                    .clone(),
+                protocol_public_parameters.group_public_parameters.clone(),
+            )?;
+
+        let knowledge_of_decommitment_public_parameters =
+            languages::construct_knowledge_of_decommitment_public_parameters::<
+                SCALAR_LIMBS,
+                GroupElement,
+            >(commitment_scheme_public_parameters.clone());
+        let default_decommitment_proof =
+            KnowledgeOfDecommitmentProof::<SCALAR_LIMBS, GroupElement>::new_default(
+                knowledge_of_decommitment_public_parameters.witness_space_public_parameters(),
+                knowledge_of_decommitment_public_parameters.statement_space_public_parameters(),
+            )?;
+
+        let uc_knowledge_of_decommitment_public_parameters =
+            languages::construct_uc_knowledge_of_decommitment_public_parameters::<
+                SCALAR_LIMBS,
+                GroupElement,
+            >(commitment_scheme_public_parameters.clone());
+        let default_uc_decommitment_proof =
+            KnowledgeOfDecommitmentUCProof::<SCALAR_LIMBS, GroupElement>::new_default(
+                uc_knowledge_of_decommitment_public_parameters.witness_space_public_parameters(),
+                uc_knowledge_of_decommitment_public_parameters.statement_space_public_parameters(),
+            )?;
+
+        let equality_between_commitments_public_parameters =
+            languages::construct_equality_between_commitments_with_different_public_parameters_public_parameters::<
+                SCALAR_LIMBS,
+                GroupElement,
+            >(
+                commitment_scheme_public_parameters.clone(),
+                commitment_scheme_public_parameters.clone(),
+            );
+        let default_equality_between_commitments_proof =
+            EqualityBetweenCommitmentsWithDifferentPublicParametersProof::<
+                SCALAR_LIMBS,
+                GroupElement,
+            >::new_default(
+                equality_between_commitments_public_parameters.witness_space_public_parameters(),
+                equality_between_commitments_public_parameters.statement_space_public_parameters(),
+            )?;
+
+        let commitment_of_discrete_log_public_parameters =
+            languages::construct_commitment_of_discrete_log_public_parameters::<
+                SCALAR_LIMBS,
+                GroupElement,
+            >(
+                neutral_point.clone(),
+                commitment_scheme_public_parameters.clone(),
+                protocol_public_parameters
+                    .scalar_group_public_parameters
+                    .clone(),
+                protocol_public_parameters.group_public_parameters.clone(),
+            );
+        let default_commitment_of_discrete_log_proof =
+            CommitmentOfDiscreteLogProof::<SCALAR_LIMBS, GroupElement>::new_default(
+                commitment_of_discrete_log_public_parameters.witness_space_public_parameters(),
+                commitment_of_discrete_log_public_parameters.statement_space_public_parameters(),
+            )?;
+
+        let vector_commitment_of_discrete_log_public_parameters =
+            languages::construct_vector_commitment_of_discrete_log_public_parameters::<
+                SCALAR_LIMBS,
+                GroupElement,
+            >(
+                neutral_point.clone(),
+                commitment_scheme_public_parameters.clone().into(),
+                protocol_public_parameters
+                    .scalar_group_public_parameters
+                    .clone(),
+                protocol_public_parameters.group_public_parameters.clone(),
+            );
+        let default_vector_commitment_of_discrete_log_proof = VectorCommitmentOfDiscreteLogProof::<
+            SCALAR_LIMBS,
+            GroupElement,
+        >::new_default(
+            vector_commitment_of_discrete_log_public_parameters.witness_space_public_parameters(),
+            vector_commitment_of_discrete_log_public_parameters.statement_space_public_parameters(),
+        )?;
+
+        let committed_linear_evaluation_public_parameters =
+            languages::class_groups::construct_committed_linear_evaluation_public_parameters::<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                MESSAGE_LIMBS,
+                GroupElement,
+            >(
+                dummy_ciphertext,
+                dummy_ciphertext,
+                commitment_scheme_public_parameters.clone().into(),
+                protocol_public_parameters
+                    .scalar_group_public_parameters
+                    .clone(),
+                protocol_public_parameters.group_public_parameters.clone(),
+                protocol_public_parameters
+                    .encryption_scheme_public_parameters
+                    .clone(),
+                true,
+            )?;
+        let default_committed_linear_evaluation_proof =
+            languages::class_groups::CommittedLinearEvaluationProof::<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                MESSAGE_LIMBS,
+                GroupElement,
+            >::new_default(
+                committed_linear_evaluation_public_parameters.witness_space_public_parameters(),
+                committed_linear_evaluation_public_parameters.statement_space_public_parameters(),
+            )?;
+
+        let sign_message = CentralizedSignMessage {
+            public_signature_nonce: neutral_point.clone(),
+            decentralized_party_nonce_public_share: neutral_point.clone(),
+            signature_nonce_share_commitment: neutral_point.clone(),
+            alpha_displacer_commitment: neutral_point.clone(),
+            beta_displacer_commitment: neutral_point.clone(),
+            signature_nonce_share_by_secret_share_commitment: neutral_point,
+            encryption_of_partial_signature: dummy_ciphertext,
+            encryption_of_displaced_decentralized_party_nonce_share: dummy_ciphertext,
+            non_zero_commitment_to_signature_nonce_share_proof: default_decommitment_proof.clone(),
+            non_zero_commitment_to_alpha_displacer_share_proof: default_decommitment_proof,
+            commitment_to_beta_displacer_share_uc_proof: default_uc_decommitment_proof,
+            proof_of_equality_between_nonce_share_and_nonce_share_by_secret_key_share_commitments:
+                default_equality_between_commitments_proof,
+            public_signature_nonce_proof: default_commitment_of_discrete_log_proof,
+            decentralized_party_nonce_public_share_displacement_proof:
+                default_vector_commitment_of_discrete_log_proof,
+            encryption_of_partial_signature_proof: default_committed_linear_evaluation_proof
+                .clone(),
+            encryption_of_displaced_decentralized_party_nonce_share_proof:
+                default_committed_linear_evaluation_proof,
+        };
+
+        Ok(mpc::two_party::RoundResult {
+            outgoing_message: sign_message,
+            private_output: (),
+            public_output: (),
+        })
     }
 }
 
@@ -646,7 +942,7 @@ where
     fn advance(
         _session_id: CommitmentSizedNumber,
         _party_id: PartyID,
-        _access_structure: &WeightedThresholdAccessStructure,
+        access_structure: &WeightedThresholdAccessStructure,
         messages: Vec<HashMap<PartyID, Self::Message>>,
         _private_input: Option<Self::PrivateInput>,
         public_input: &Self::PublicInput,
@@ -656,7 +952,7 @@ where
         Self::Error,
     > {
         // ECDSA sign decentralized party is a 2-round protocol (happy-flow).
-        crate::mock::mock_advance_result(&messages, 2, || {
+        crate::mock::mock_advance_result(access_structure, &messages, 2, || {
             let protocol_public_parameters = &*public_input.protocol_public_parameters;
             let signature = mock_sign::<SCALAR_LIMBS, GroupElement>(
                 &public_input.message,
@@ -948,7 +1244,7 @@ where
     fn advance(
         _session_id: CommitmentSizedNumber,
         _party_id: PartyID,
-        _access_structure: &WeightedThresholdAccessStructure,
+        access_structure: &WeightedThresholdAccessStructure,
         messages: Vec<HashMap<PartyID, Self::Message>>,
         _private_input: Option<Self::PrivateInput>,
         public_input: &Self::PublicInput,
@@ -959,7 +1255,7 @@ where
     > {
         // The fused ECDSA DKG+sign decentralized party shares the sign protocol's 2-round
         // (happy-flow) structure.
-        crate::mock::mock_advance_result(&messages, 2, || {
+        crate::mock::mock_advance_result(access_structure, &messages, 2, || {
             let protocol_public_parameters = &*public_input.protocol_public_parameters;
             let dkg_output = crate::mock::dkg::mock_dkg_output::<SCALAR_LIMBS, GroupElement, _, _>(
                 protocol_public_parameters,
@@ -1364,13 +1660,13 @@ where
         MESSAGE_LIMBS,
         GroupElement,
     > as crate::sign::Protocol>::SignMessage;
-    type SignCentralizedParty = <RealECDSAProtocol<
+    type SignCentralizedParty = MockSignCentralizedECDSAParty<
         SCALAR_LIMBS,
         FUNDAMENTAL_DISCRIMINANT_LIMBS,
         NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
         MESSAGE_LIMBS,
         GroupElement,
-    > as crate::sign::Protocol>::SignCentralizedParty;
+    >;
 
     /// INSECURE: skip the centralized partial-signature proof verification and return the sign data.
     /// The mocked decentralized sign ignores this entirely (and under `ToBeEmulated` it is not called).
@@ -1400,6 +1696,95 @@ mod tests {
     use group::{secp256k1, CyclicGroupElement as _, GroupElement as _, HashContext, HashScheme};
 
     use crate::ecdsa::VerifyingKey as _;
+
+    /// The mock centralized sign party must produce a structurally-valid `Message` — its
+    /// `new_default` proofs and dummy fields must construct without error and the message
+    /// must round-trip through bcs (the wire format the ika layer uses).
+    #[test]
+    fn mock_secp256k1_centralized_sign_message_is_structurally_valid() {
+        use group::OsCsRng;
+        use mpc::two_party::Round as _;
+
+        use crate::dkg::centralized_party::SecretKeyShare;
+        use crate::secp256k1::{
+            class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, MESSAGE_LIMBS, SCALAR_LIMBS,
+        };
+
+        let (protocol_public_parameters, _) = crate::test_helpers::setup_class_groups_secp256k1();
+
+        type MockParty = super::MockSignCentralizedECDSAParty<
+            { SCALAR_LIMBS },
+            { FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            { NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+            { MESSAGE_LIMBS },
+            secp256k1::GroupElement,
+        >;
+
+        let neutral_point = secp256k1::GroupElement::neutral_from_public_parameters(
+            &protocol_public_parameters.group_public_parameters,
+        )
+        .unwrap()
+        .value();
+        let neutral_scalar = <secp256k1::GroupElement as group::KnownOrderGroupElement<
+            { SCALAR_LIMBS },
+        >>::Scalar::neutral_from_public_parameters(
+            &protocol_public_parameters.scalar_group_public_parameters,
+        )
+        .unwrap()
+        .value();
+        let dummy_ciphertext = protocol_public_parameters
+            .encryption_of_decentralized_party_secret_key_share_first_part;
+
+        let dkg_output = crate::dkg::centralized_party::VersionedOutput::UniversalPublicDKGOutput {
+            output: crate::dkg::centralized_party::Output {
+                public_key_share: neutral_point,
+                public_key: neutral_point,
+                decentralized_party_public_key_share: neutral_point,
+            },
+            first_key_public_randomizer: crypto_bigint::Uint::ONE,
+            second_key_public_randomizer: crypto_bigint::Uint::ONE,
+            free_coefficient_key_public_randomizer: crypto_bigint::Uint::ONE,
+            global_decentralized_party_output_commitment: protocol_public_parameters
+                .global_decentralized_party_output_commitment()
+                .unwrap(),
+        };
+        let presign = crate::ecdsa::presign::VersionedPresign::TargetedPresign(
+            crate::ecdsa::presign::Presign {
+                session_id: commitment::CommitmentSizedNumber::from(42u64),
+                encryption_of_mask: dummy_ciphertext,
+                encryption_of_masked_decentralized_party_key_share: dummy_ciphertext,
+                encryption_of_masked_decentralized_party_nonce_share_first_part: dummy_ciphertext,
+                encryption_of_masked_decentralized_party_nonce_share_second_part: dummy_ciphertext,
+                decentralized_party_nonce_public_share_first_part: neutral_point,
+                decentralized_party_nonce_public_share_second_part: neutral_point,
+                public_key: neutral_point,
+            },
+        );
+
+        let public_input =
+            crate::ecdsa::sign::centralized_party::signature_homomorphic_evaluation_round::PublicInput {
+                message: b"mock centralized sign".to_vec(),
+                hash_type: HashScheme::SHA256,
+                hash_context: HashContext::None,
+                dkg_output,
+                presign,
+                protocol_public_parameters,
+            };
+
+        let round_result = MockParty::advance(
+            (),
+            &SecretKeyShare::from(neutral_scalar),
+            &public_input,
+            &mut OsCsRng,
+        )
+        .expect("mock centralized ECDSA sign advance should succeed");
+
+        let serialized = bcs::to_bytes(&round_result.outgoing_message).unwrap();
+        let deserialized: <MockParty as mpc::two_party::Round>::OutgoingMessage =
+            bcs::from_bytes(&serialized).expect("mock sign message must bcs round-trip");
+        assert_eq!(deserialized, round_result.outgoing_message);
+    }
 
     /// The mock's deterministic ECDSA signature must verify under the constant mock public key `42·G`.
     #[test]

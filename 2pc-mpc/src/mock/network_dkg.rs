@@ -369,7 +369,7 @@ impl AsynchronouslyAdvanceable for MockNetworkDKGParty {
     fn advance(
         _session_id: CommitmentSizedNumber,
         _tangible_party_id: PartyID,
-        _access_structure: &WeightedThresholdAccessStructure,
+        access_structure: &WeightedThresholdAccessStructure,
         messages: Vec<HashMap<PartyID, Self::Message>>,
         _private_input: Option<Self::PrivateInput>,
         _public_input: &Self::PublicInput,
@@ -379,7 +379,7 @@ impl AsynchronouslyAdvanceable for MockNetworkDKGParty {
         Self::Error,
     > {
         // The network-DKG decentralized party is a 7-round protocol.
-        crate::mock::mock_advance_result(&messages, 7, || {
+        crate::mock::mock_advance_result(access_structure, &messages, 7, || {
             Ok(((), mock_network_dkg_public_output().clone()))
         })
     }
@@ -422,7 +422,7 @@ impl AsynchronouslyAdvanceable for MockNetworkReconfigurationParty {
         Self::Error,
     > {
         // The network-reconfiguration decentralized party is a 4-round protocol.
-        crate::mock::mock_advance_result(&messages, 4, || {
+        crate::mock::mock_advance_result(current_access_structure, &messages, 4, || {
             Ok((
                 (),
                 mock_network_reconfiguration_public_output(current_access_structure),
@@ -466,7 +466,7 @@ impl AsynchronouslyAdvanceable for MockNetworkDKGPartyV2 {
     fn advance(
         _session_id: CommitmentSizedNumber,
         _tangible_party_id: PartyID,
-        _access_structure: &WeightedThresholdAccessStructure,
+        access_structure: &WeightedThresholdAccessStructure,
         messages: Vec<HashMap<PartyID, Self::Message>>,
         _private_input: Option<Self::PrivateInput>,
         _public_input: &Self::PublicInput,
@@ -476,7 +476,7 @@ impl AsynchronouslyAdvanceable for MockNetworkDKGPartyV2 {
         Self::Error,
     > {
         // The backward-compatible (V2) network-DKG decentralized party is a 4-round protocol.
-        crate::mock::mock_advance_result(&messages, 4, || {
+        crate::mock::mock_advance_result(access_structure, &messages, 4, || {
             Ok(((), mock_network_dkg_public_output().core.clone()))
         })
     }
@@ -521,7 +521,7 @@ impl AsynchronouslyAdvanceable for MockNetworkReconfigurationPartyV2 {
     > {
         // The backward-compatible (V2) network-reconfiguration decentralized party is a 4-round
         // protocol.
-        crate::mock::mock_advance_result(&messages, 4, || {
+        crate::mock::mock_advance_result(current_access_structure, &messages, 4, || {
             Ok((
                 (),
                 mock_network_reconfiguration_public_output(current_access_structure).core,
