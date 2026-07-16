@@ -443,6 +443,7 @@ pub trait AdditivelyHomomorphicDecryptionKeyShare<
         &self,
         ciphertexts: Vec<EncryptionKey::CiphertextSpaceGroupElement>,
         public_parameters: &Self::PublicParameters,
+        backward_compatible: bool,
         rng: &mut impl CsRng,
     ) -> CtOption<(Vec<Self::DecryptionShare>, Self::PartialDecryptionProof)>;
 
@@ -468,6 +469,7 @@ pub trait AdditivelyHomomorphicDecryptionKeyShare<
             (Vec<Self::DecryptionShare>, Self::PartialDecryptionProof),
         >,
         public_parameters: &Self::PublicParameters,
+        backward_compatible: bool,
         rng: &mut impl CsRng,
     ) -> std::result::Result<Vec<PartyID>, Self::Error>;
 
@@ -494,6 +496,7 @@ pub trait AdditivelyHomomorphicDecryptionKeyShare<
             (Vec<Self::DecryptionShare>, Self::PartialDecryptionProof),
         >,
         public_parameters: &Self::PublicParameters,
+        backward_compatible: bool,
         rng: &mut impl CsRng,
     ) -> std::result::Result<
         (Vec<PartyID>, Vec<EncryptionKey::PlaintextSpaceGroupElement>),
@@ -503,6 +506,7 @@ pub trait AdditivelyHomomorphicDecryptionKeyShare<
             ciphertexts.clone(),
             decryption_shares_and_proofs.clone(),
             public_parameters,
+            backward_compatible,
             rng,
         )?;
 
@@ -1275,6 +1279,7 @@ pub mod test_helpers {
                 let decryption_shares = decryption_key_share.generate_decryption_shares(
                     ciphertexts.clone(),
                     public_parameters,
+                    false,
                     rng,
                 );
 
@@ -1292,6 +1297,7 @@ pub mod test_helpers {
             ciphertexts,
             decryption_shares_and_proofs,
             public_parameters,
+            false,
             rng,
         );
 
@@ -1366,6 +1372,7 @@ pub mod test_helpers {
                 black_box(decryption_key_share.generate_decryption_shares(
                     ciphertexts.clone(),
                     public_parameters,
+                    false,
                     rng,
                 ))
             });
@@ -1379,6 +1386,7 @@ pub mod test_helpers {
                 let decryption_shares = decryption_key_share.generate_decryption_shares(
                     ciphertexts.clone(),
                     public_parameters,
+                    false,
                     &mut OsCsRng,
                 );
 
@@ -1403,6 +1411,7 @@ pub mod test_helpers {
                     ciphertexts.clone(),
                     decryption_shares_and_proofs.clone(),
                     public_parameters,
+                    false,
                     rng,
                 );
 

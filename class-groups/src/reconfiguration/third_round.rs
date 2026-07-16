@@ -130,6 +130,7 @@ where
         decryption_key_shares: HashMap<PartyID, SecretKeyShareSizedInteger>,
         current_decryption_key_share_bits: u32,
         randomizer_contribution_bits: u32,
+        backward_compatible: bool,
         rng: &mut impl CsRng,
     ) -> Result<
         RoundResult<
@@ -156,6 +157,7 @@ where
             decryption_key_shares,
             current_decryption_key_share_bits,
             randomizer_contribution_bits,
+            backward_compatible,
             HashSet::new(),
             rng,
         )?;
@@ -210,6 +212,7 @@ where
         decryption_key_shares: HashMap<PartyID, SecretKeyShareSizedInteger>,
         current_decryption_key_share_bits: u32,
         randomizer_contribution_bits: u32,
+        backward_compatible: bool,
         external_malicious_parties: HashSet<PartyID>,
         rng: &mut impl CsRng,
     ) -> Result<(
@@ -316,6 +319,7 @@ where
                 public_input.setup_parameters.h,
                 randomizer_contribution_to_threshold_encryption_key_base_protocol_context,
                 randomizer_contribution_bits,
+                backward_compatible,
                 rng,
             )?;
 
@@ -378,6 +382,7 @@ where
                         Option::from(decryption_key_share.generate_decryption_shares(
                             vec![threshold_encryption_of_masked_decryption_key],
                             &decryption_key_share_public_parameters,
+                            backward_compatible,
                             rng,
                         ))
                         .ok_or_else(|| Error::from(ErrorKind::InternalError))?;
@@ -400,8 +405,9 @@ where
         // Instead, each virtual current party compute $\textsf{vk}_{Q'_{m'}}^{i_{T}}=h_{Q'_{m'}}^{[s]_{i_{T}}}$ and prove equality of discrete log between this new verification per CRT prime to the original verification key.
         // Then they use this verification key to prove correct decryption as typically happens in threshold decryption.
         let discrete_log_public_parameters =
-            bounded_integers_group::PublicParameters::new_with_randomizer_upper_bound(
+            bounded_integers_group::PublicParameters::new_with_randomizer_upper_bound_selected(
                 current_decryption_key_share_bits,
+                backward_compatible,
             )?;
 
         let prove_public_verification_keys_messages = decryption_key_shares

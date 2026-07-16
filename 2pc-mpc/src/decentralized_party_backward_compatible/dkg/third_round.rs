@@ -45,7 +45,7 @@ impl super::Party {
         equality_of_discrete_log_in_hidden_order_group_base_protocol_context: publicly_verifiable_secret_sharing::BaseProtocolContext,
         public_input: &PublicInput,
         equality_of_coefficients_commitments_language_public_parameters: EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters<
-            SECRET_KEY_SHARE_LIMBS,
+            SECRET_KEY_SHARE_WITNESS_LIMBS,
             ThreeWayGroupElement<
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
@@ -124,7 +124,7 @@ impl super::Party {
         curve25519_setup_parameters: &Curve25519SetupParameters,
         secp256r1_setup_parameters: &Secp256r1SetupParameters,
         equality_of_coefficients_commitments_language_public_parameters: EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters<
-            SECRET_KEY_SHARE_LIMBS,
+            SECRET_KEY_SHARE_WITNESS_LIMBS,
             ThreeWayGroupElement<
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
@@ -203,6 +203,7 @@ impl super::Party {
             verified_dealers_messages,
             decryption_key_per_crt_prime,
             decryption_key_share_bits,
+            true,
             malicious_coefficient_committers,
             rng,
         )?;
@@ -306,7 +307,7 @@ impl super::Party {
         access_structure: &WeightedThresholdAccessStructure,
         equality_of_coefficients_commitments_base_protocol_context: crate::BaseProtocolContext,
         equality_of_coefficients_commitments_language_public_parameters: EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters<
-            SECRET_KEY_SHARE_LIMBS,
+            SECRET_KEY_SHARE_WITNESS_LIMBS,
             ThreeWayGroupElement<
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,

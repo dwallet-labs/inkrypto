@@ -130,6 +130,7 @@ where
         >,
         decryption_key_per_crt_prime: [Uint<CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS>; MAX_PRIMES],
         decryption_key_share_bits: u32,
+        backward_compatible: bool,
         rng: &mut impl CsRng,
     ) -> Result<
         RoundResult<
@@ -154,6 +155,7 @@ where
             verified_dealers_messages,
             decryption_key_per_crt_prime,
             decryption_key_share_bits,
+            backward_compatible,
             HashSet::new(),
             rng,
         )?;
@@ -208,6 +210,7 @@ where
         >,
         decryption_key_per_crt_prime: [Uint<CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS>; MAX_PRIMES],
         decryption_key_share_bits: u32,
+        backward_compatible: bool,
         external_malicious_parties: HashSet<PartyID>,
         rng: &mut impl CsRng,
     ) -> Result<(
@@ -293,8 +296,9 @@ where
                 .collect();
 
         let discrete_log_public_parameters =
-            bounded_integers_group::PublicParameters::new_with_randomizer_upper_bound(
+            bounded_integers_group::PublicParameters::new_with_randomizer_upper_bound_selected(
                 public_input.setup_parameters.decryption_key_bits(),
+                backward_compatible,
             )?;
 
         let parties_sending_invalid_proofs = verify_equality_of_discrete_log_proofs::<
@@ -381,7 +385,10 @@ where
         );
 
         let public_parameters =
-            bounded_integers_group::PublicParameters::new_with_randomizer_upper_bound(sample_bits)?;
+            bounded_integers_group::PublicParameters::new_with_randomizer_upper_bound_selected(
+                sample_bits,
+                backward_compatible,
+            )?;
 
         // We decrypted the PVSS encryptions and got our secret key shares $[\textsf{sk}]_{i}$.
         // Now we encrypt them under the public key $\textsf{pk}_{Q'_{m'}}$
@@ -419,6 +426,7 @@ where
                         &public_input.setup_parameters_per_crt_prime,
                         encryption_of_decryption_key_base_protocol_context.clone(),
                         decryption_key_share_bits,
+                        backward_compatible,
                         rng,
                     )?;
 

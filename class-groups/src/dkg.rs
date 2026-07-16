@@ -188,6 +188,14 @@ pub struct PublicInput<
     n_factorial: FactorialSizedNumber,
     // A precomputed mapping of the party-id $j$ to the binomial coefficient ${n\choose j}$.
     binomial_coefficients: HashMap<PartyID, BinomialCoefficientSizedNumber>,
+    /// TEMPORARY — remove once the network has fully migrated off the deployed (inkrypto
+    /// `37bb549f`) wire format and backward compatibility is no longer required.
+    ///
+    /// Runtime-only mode selector: `true` reproduces the deployed network's `-10` relaxed
+    /// discrete-log bounds. Never serialized/transcribed; only the bounds it selects are. The
+    /// choice must be identical across all parties in a run.
+    #[serde(skip)]
+    pub backward_compatible: bool,
 }
 
 /// The Message of the Distributed Key Generation (DKG) protocol.
@@ -299,6 +307,7 @@ where
                 KnowledgeOfDiscreteLogUCProof,
             ); MAX_PRIMES],
         >,
+        backward_compatible: bool,
     ) -> Result<Self>
     where
         GroupElement::Scalar: group::GroupElement<PublicParameters = ScalarPublicParameters>,
@@ -339,6 +348,7 @@ where
             encryption_key_values_and_proofs_per_crt_prime,
             n_factorial,
             binomial_coefficients,
+            backward_compatible,
         })
     }
 }
@@ -613,6 +623,7 @@ pub mod test_helpers {
             plaintext_space_public_parameters.clone(),
             DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
             encryption_keys_per_crt_prime_and_proofs.clone(),
+            false,
         )
         .unwrap();
 
@@ -705,6 +716,7 @@ pub mod test_helpers {
             decryption_key_shares.clone(),
             binomial_coefficients,
             n_factorial,
+            false,
         ));
 
         let decryption_key_shares: HashMap<_, _> = decryption_key_shares
@@ -826,6 +838,7 @@ pub mod test_helpers {
         decryption_key_shares: HashMap<PartyID, SecretKeyShareSizedInteger>,
         binomial_coefficients: &HashMap<PartyID, BinomialCoefficientSizedNumber>,
         n_factorial: FactorialSizedNumber,
+        backward_compatible: bool,
     ) -> SecretKeyShareSizedNumber {
         let decryption_key_shares: HashMap<_, _> = decryption_key_shares
             .into_iter()
@@ -842,8 +855,9 @@ pub mod test_helpers {
 
         let discrete_log_group_public_parameters = bounded_integers_group::PublicParameters::<
             SECRET_KEY_SHARE_WITNESS_LIMBS,
-        >::new_with_randomizer_upper_bound(
-            secret_key_share_upper_bound_bits
+        >::new_with_randomizer_upper_bound_selected(
+            secret_key_share_upper_bound_bits,
+            backward_compatible,
         )
         .unwrap();
 
@@ -951,6 +965,7 @@ pub mod test_helpers {
             plaintext_space_public_parameters.clone(),
             DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
             encryption_keys_per_crt_prime_and_proofs.clone(),
+            false,
         )
         .unwrap();
 

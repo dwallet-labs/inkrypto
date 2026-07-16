@@ -81,6 +81,7 @@ where
     >,
     GroupElement::Scalar: Default,
 {
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::dkg) fn advance_first_round(
         tangible_party_id: PartyID,
         session_id: CommitmentSizedNumber,
@@ -92,6 +93,7 @@ where
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             group::PublicParameters<GroupElement::Scalar>,
         >,
+        backward_compatible: bool,
         pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
@@ -116,6 +118,7 @@ where
                 equality_of_discrete_log_in_hidden_order_group_base_protocol_context,
                 setup_parameters_per_crt_prime,
                 setup_parameters,
+                backward_compatible,
                 pvss_party,
                 rng,
             )?;
@@ -129,6 +132,7 @@ where
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn advance_first_round_internal(
         tangible_party_id: PartyID,
         session_id: CommitmentSizedNumber,
@@ -140,6 +144,7 @@ where
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             group::PublicParameters<GroupElement::Scalar>,
         >,
+        backward_compatible: bool,
         pvss_party: &publicly_verifiable_secret_sharing::chinese_remainder_theorem::Party<
             NUM_SECRET_SHARE_PRIMES,
             SECRET_KEY_SHARE_LIMBS,
@@ -193,8 +198,9 @@ where
         // The parties prove that the discrete log of all public key contributions are equal
         // via M' equalities of discrete log proofs $\pi_{\textsf{EncDL},Q'_{m'}}^{i}$ between $(h_{q},h_{Q'_{m'},\textsf{pk}_{q},\textsf{pk}_{Q'_{m'};s)$.
         let discrete_log_public_parameters =
-            bounded_integers_group::PublicParameters::new_with_randomizer_upper_bound(
+            bounded_integers_group::PublicParameters::new_with_randomizer_upper_bound_selected(
                 setup_parameters.decryption_key_bits(),
+                backward_compatible,
             )?;
 
         let decryption_key_contribution = bounded_integers_group::GroupElement::new(

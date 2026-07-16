@@ -27,7 +27,7 @@ use class_groups::{
     DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
     SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS as FUNDAMENTAL_DISCRIMINANT_LIMBS,
     SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS as NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-    SECRET_KEY_SHARE_LIMBS,
+    SECRET_KEY_SHARE_LIMBS, SECRET_KEY_SHARE_WITNESS_LIMBS,
 };
 use commitment::CommitmentSizedNumber;
 use crypto_bigint::Uint;
@@ -130,7 +130,7 @@ pub const EQUALITY_OF_COEFFICIENTS_COMMITMENTS_PROOF_NAME: &str =
 ///
 /// Verification keys will be computed as usual from the commitments to coefficients and the masked key.
 pub type EqualityOfCoefficientsCommitmentsProof = EqualityOfDiscreteLogsInHiddenOrderGroupProof<
-    SECRET_KEY_SHARE_LIMBS,
+    SECRET_KEY_SHARE_WITNESS_LIMBS,
     ThreeWayGroupElement<
         EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
         EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
@@ -300,6 +300,7 @@ impl PublicInput {
                 >,
             ),
         >,
+        backward_compatible: bool,
     ) -> crate::Result<Self> {
         let ristretto_setup_parameters =
             RistrettoSetupParameters::derive_from_plaintext_parameters::<ristretto::Scalar>(
@@ -325,6 +326,7 @@ impl PublicInput {
                 secp256k1::scalar::PublicParameters::default(),
                 DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
                 encryption_key_values_and_proofs_per_crt_prime,
+                backward_compatible,
             )?;
 
         Ok(Self {
@@ -431,6 +433,7 @@ impl AsynchronouslyAdvanceable for Party {
         let equality_of_coefficients_commitments_language_public_parameters =
             Self::prepare_coefficients_commitments_proof(
                 decryption_key_share_bits,
+                public_input.class_groups_public_input.backward_compatible,
                 &public_input.class_groups_public_input.setup_parameters,
                 &public_input.ristretto_setup_parameters,
                 &public_input.secp256r1_setup_parameters,
@@ -550,12 +553,13 @@ impl Party {
     /// See [`EqualityOfDiscreteLogsInHiddenOrderGroupProof`].
     pub fn prepare_coefficients_commitments_proof(
         secret_share_bits: u32,
+        backward_compatible: bool,
         secp256k1_setup_parameters: &Secp256k1SetupParameters,
         ristretto_setup_parameters: &RistrettoSetupParameters,
         secp256r1_setup_parameters: &Secp256r1SetupParameters,
     ) -> crate::Result<
         EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters<
-            SECRET_KEY_SHARE_LIMBS,
+            SECRET_KEY_SHARE_WITNESS_LIMBS,
             ThreeWayGroupElement<
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
@@ -563,9 +567,14 @@ impl Party {
             >,
         >,
     > {
+        // The bounds public parameters are transcribed whole into Fiat–Shamir. Under
+        // `backward_compatible` we select the `-10` relaxed bound the deployed network (inkrypto
+        // `37bb549f`) uses; otherwise the strict bound. A mismatch makes peers reject the proof and
+        // flag the dealer malicious.
         let discrete_log_group_public_parameters =
-            bounded_integers_group::PublicParameters::new_with_randomizer_upper_bound(
+            bounded_integers_group::PublicParameters::new_with_randomizer_upper_bound_selected(
                 secret_share_bits,
+                backward_compatible,
             )?;
 
         let hidden_order_group_public_parameters = (
@@ -592,7 +601,7 @@ impl Party {
 
         let equality_of_discrete_logs_language_public_parameters =
             construct_equality_of_discrete_log_public_parameters::<
-                SECRET_KEY_SHARE_LIMBS,
+                SECRET_KEY_SHARE_WITNESS_LIMBS,
                 ThreeWayGroupElement<
                     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
                     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
@@ -660,6 +669,8 @@ pub mod tests {
     use class_groups::publicly_verifiable_secret_sharing::chinese_remainder_theorem::construct_setup_parameters_per_crt_prime;
     #[cfg(test)]
     use class_groups::publicly_verifiable_secret_sharing::small_prime::encryption::generate_and_prove_encryption_keypair;
+    #[cfg(test)]
+    use class_groups::test_helpers::get_setup_parameters_secp256k1_112_bits_deterministic;
     use class_groups::test_helpers::{
         get_setup_parameters_curve25519_112_bits_deterministic,
         get_setup_parameters_ristretto_112_bits_deterministic,
@@ -667,13 +678,19 @@ pub mod tests {
     };
     use class_groups::DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER;
     #[cfg(test)]
+    use class_groups::SECRET_KEY_SHARE_SIZE_UPPER_BOUND;
+    #[cfg(test)]
+    use group::bounded_natural_numbers_group::MAURER_PROOFS_DIFF_UPPER_BOUND_BITS;
+    #[cfg(test)]
     use group::OsCsRng;
     #[cfg(test)]
     use itertools::multiunzip;
     use mpc::test_helpers::asynchronous_session_terminates_successfully_internal;
+    #[cfg(test)]
+    use proof::GroupsPublicParametersAccessors;
 
-    #[test]
-    fn generates_universal_distributed_key() {
+    #[cfg(test)]
+    fn generates_universal_distributed_key_with_mode(backward_compatible: bool) {
         let threshold = 3;
         let number_of_parties = 5;
 
@@ -772,7 +789,23 @@ pub mod tests {
             secp256k1_pvss_encryption_keys_and_proofs,
             ristretto_pvss_encryption_keys_and_proofs,
             secp256r1_pvss_encryption_keys_and_proofs,
+            backward_compatible,
         );
+    }
+
+    #[test]
+    fn generates_universal_distributed_key() {
+        generates_universal_distributed_key_with_mode(false);
+    }
+
+    /// TEMPORARY (remove with the rest of the `backward_compatible` mechanism, once the network has
+    /// fully migrated off the inkrypto `37bb549f` wire format): the whole DKG must also complete in
+    /// `backward_compatible = true` mode, i.e. with every discrete-log bound selecting the `-10`
+    /// relaxed variant. This proves the flag is threaded consistently to every proof site — a
+    /// `false` leak at any site would desync the Fiat–Shamir transcript and flag a party malicious.
+    #[test]
+    fn generates_universal_distributed_key_backward_compatible() {
+        generates_universal_distributed_key_with_mode(true);
     }
 
     pub fn generates_universal_distributed_key_internal(
@@ -813,6 +846,7 @@ pub mod tests {
                 >,
             ),
         >,
+        backward_compatible: bool,
     ) -> PublicOutput {
         let ristretto_setup_parameters = get_setup_parameters_ristretto_112_bits_deterministic();
         let curve25519_setup_parameters = get_setup_parameters_curve25519_112_bits_deterministic();
@@ -825,7 +859,10 @@ pub mod tests {
         let (session_id, crt_private_inputs, public_inputs) =
             setup_dkg_secp256k1(&access_structure, setup_parameters_per_crt_prime, true);
 
-        let class_groups_public_input = public_inputs.values().next().unwrap().clone();
+        let mut class_groups_public_input = public_inputs.values().next().unwrap().clone();
+        // TEMPORARY (remove with the rest of the `backward_compatible` mechanism): exercise the
+        // `-10` deployed-network bound end-to-end.
+        class_groups_public_input.backward_compatible = backward_compatible;
 
         let private_inputs: HashMap<PartyID, PrivateInput> = crt_private_inputs
             .into_iter()
@@ -874,5 +911,76 @@ pub mod tests {
         );
 
         public_output
+    }
+
+    /// Regression: the equality-of-coefficients proof must be constructible over
+    /// `SECRET_KEY_SHARE_WITNESS_LIMBS` (48) at the largest supported committee, where
+    /// `sample_bits = SECRET_KEY_SHARE_SIZE_UPPER_BOUND`. This mirrors the live-network bound used
+    /// by `prepare_coefficients_commitments_proof` (`new_with_randomizer_upper_bound_backward_compatible`,
+    /// i.e. `sample_bits + MAURER_PROOFS_DIFF_UPPER_BOUND_BITS - 10`). The 32-limb witness group
+    /// cannot hold that upper bound at this size and fails with `InvalidPublicParameters` — the bug
+    /// the 48-limb widening fixes.
+    #[cfg(test)]
+    #[test]
+    fn equality_of_coefficients_bound_holds_for_largest_committee() {
+        let sample_bits = SECRET_KEY_SHARE_SIZE_UPPER_BOUND;
+
+        assert!(
+            bounded_integers_group::PublicParameters::<SECRET_KEY_SHARE_WITNESS_LIMBS>::new_with_randomizer_upper_bound_backward_compatible(
+                sample_bits,
+            )
+            .is_ok(),
+            "the 48-limb witness group must accommodate the live-network bound at the largest committee"
+        );
+
+        assert!(
+            bounded_integers_group::PublicParameters::<SECRET_KEY_SHARE_LIMBS>::new_with_randomizer_upper_bound_backward_compatible(
+                sample_bits,
+            )
+            .is_err(),
+            "the 32-limb witness group cannot hold the live-network bound at the largest committee (the regression)"
+        );
+    }
+
+    /// Path-level pin: `prepare_coefficients_commitments_proof` must transcribe the `-10` relaxed
+    /// upper bound under `backward_compatible = true` (matching the deployed network, inkrypto
+    /// `37bb549f`) and the strict bound under `false`. The integration tests are self-consistent
+    /// (prover and verifier share parameters) so they pass under *any* matched bound; this asserts
+    /// the actual value produced per mode, catching a silent drift of the selector — exactly the
+    /// kind of drift that flagged upgraded nodes as malicious in reconfiguration round 1.
+    #[cfg(test)]
+    #[test]
+    fn live_path_equality_of_coefficients_bound_pinned() {
+        let sample_bits = 1000u32;
+
+        let language_public_parameters = |backward_compatible| {
+            Party::prepare_coefficients_commitments_proof(
+                sample_bits,
+                backward_compatible,
+                &get_setup_parameters_secp256k1_112_bits_deterministic(),
+                &get_setup_parameters_ristretto_112_bits_deterministic(),
+                &get_setup_parameters_secp256r1_112_bits_deterministic(),
+            )
+            .unwrap()
+        };
+
+        assert_eq!(
+            language_public_parameters(true)
+                .witness_space_public_parameters()
+                .upper_bound_bits,
+            sample_bits + MAURER_PROOFS_DIFF_UPPER_BOUND_BITS - 10
+        );
+        assert_eq!(
+            language_public_parameters(false)
+                .witness_space_public_parameters()
+                .upper_bound_bits,
+            sample_bits + MAURER_PROOFS_DIFF_UPPER_BOUND_BITS
+        );
+        assert_eq!(
+            language_public_parameters(true)
+                .witness_space_public_parameters()
+                .sample_bits,
+            sample_bits
+        );
     }
 }

@@ -23,7 +23,7 @@ use class_groups::{
     DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
     SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS as FUNDAMENTAL_DISCRIMINANT_LIMBS,
     SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS as NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-    SECRET_KEY_SHARE_LIMBS,
+    SECRET_KEY_SHARE_WITNESS_LIMBS,
 };
 use commitment::CommitmentSizedNumber;
 use group::direct_product::ThreeWayGroupElement;
@@ -136,6 +136,7 @@ impl PublicInput {
                 DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
                 current_tangible_party_id_to_upcoming,
                 dkg_output,
+                true,
             )?;
 
         Ok(Self {
@@ -230,6 +231,7 @@ impl PublicInput {
                 DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
                 current_tangible_party_id_to_upcoming,
                 universal_public_output.clone().into(),
+                true,
             )?;
 
         Ok(Self {
@@ -405,7 +407,7 @@ impl AsynchronouslyAdvanceable for Party {
 
         let equality_of_coefficients_commitments_language_public_parameters =
             construct_equality_of_discrete_log_public_parameters::<
-                SECRET_KEY_SHARE_LIMBS,
+                SECRET_KEY_SHARE_WITNESS_LIMBS,
                 ThreeWayGroupElement<
                     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
                     EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,

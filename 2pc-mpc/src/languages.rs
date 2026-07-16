@@ -8,7 +8,8 @@ use commitment::{MultiPedersen, Pedersen};
 use crypto_bigint::subtle::ConditionallySelectable;
 use crypto_bigint::{Encoding, Int, Uint};
 use group::{
-    bounded_integers_group, self_product, CsRng, KnownOrderGroupElement, PrimeGroupElement, Scale,
+    bounded_integers_group, self_product, CsRng, GroupElement, KnownOrderGroupElement,
+    PrimeGroupElement, Scale,
 };
 use maurer::{
     commitment_of_discrete_log, encryption_of_discrete_log, encryption_of_tuple,
@@ -18,6 +19,7 @@ use maurer::{
     SOUND_PROOFS_REPETITIONS,
 };
 use maurer::{extended_encryption_of_tuple, UC_PROOFS_REPETITIONS};
+use proof::GroupsPublicParametersAccessors;
 
 pub mod class_groups;
 
@@ -1071,6 +1073,7 @@ where
 /// Prove equality between the discrete logs $(g_1,g_1^x_i), (g_2,g_2^x_i), ..., (g_n,g_n^x_i)$
 /// under different hidden order groups $g_1\in G_1, g_2 \in G_2,...,g_n \in G_n$ for a batch $ {x_i}_i $.
 pub fn prove_equality_of_discrete_log<
+    const DISCRETE_LOG_LIMBS: usize,
     const DISCRETE_LOG_WITNESS_LIMBS: usize,
     HiddenOrderGroupElement,
 >(
@@ -1078,7 +1081,7 @@ pub fn prove_equality_of_discrete_log<
         DISCRETE_LOG_WITNESS_LIMBS,
         HiddenOrderGroupElement,
     >,
-    discrete_logs: Vec<bounded_integers_group::GroupElement<DISCRETE_LOG_WITNESS_LIMBS>>,
+    discrete_logs: Vec<bounded_integers_group::GroupElement<DISCRETE_LOG_LIMBS>>,
     protocol_context: &ProtocolContext,
     rng: &mut impl CsRng,
 ) -> Result<(
@@ -1089,6 +1092,8 @@ pub fn prove_equality_of_discrete_log<
     Vec<HiddenOrderGroupElement>,
 )>
 where
+    Int<DISCRETE_LOG_LIMBS>: Encoding,
+    Uint<DISCRETE_LOG_LIMBS>: Encoding,
     Int<DISCRETE_LOG_WITNESS_LIMBS>: Encoding,
     Uint<DISCRETE_LOG_WITNESS_LIMBS>: Encoding,
     HiddenOrderGroupElement: group::GroupElement
@@ -1096,6 +1101,24 @@ where
         + ConditionallySelectable
         + Scale<Int<DISCRETE_LOG_WITNESS_LIMBS>>,
 {
+    if DISCRETE_LOG_WITNESS_LIMBS < DISCRETE_LOG_LIMBS {
+        return Err(Error::from(ErrorKind::InvalidParameters));
+    }
+
+    // The witnesses are produced at their natural width (`DISCRETE_LOG_LIMBS`), but the proof is
+    // conducted over the wider witness group (`DISCRETE_LOG_WITNESS_LIMBS`) to leave room for the
+    // Maurer over-the-integers response growth. Re-encode each witness into the wider group.
+    let discrete_logs = discrete_logs
+        .into_iter()
+        .map(|discrete_log| {
+            let discrete_log = discrete_log.value();
+            bounded_integers_group::GroupElement::new(
+                Int::from(&discrete_log),
+                language_public_parameters.witness_space_public_parameters(),
+            )
+        })
+        .collect::<group::Result<_>>()?;
+
     let (proof, base_by_discrete_logs) = EqualityOfDiscreteLogsInHiddenOrderGroupProof::<
         DISCRETE_LOG_WITNESS_LIMBS,
         HiddenOrderGroupElement,

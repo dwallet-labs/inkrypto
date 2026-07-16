@@ -113,6 +113,7 @@ where
             GroupElement,
         >,
         randomizer_contribution_bits: u32,
+        backward_compatible: bool,
         rng: &mut impl CsRng,
     ) -> Result<
         RoundResult<
@@ -134,6 +135,7 @@ where
             setup_parameters,
             randomizer_contribution_to_upcoming_pvss_party,
             randomizer_contribution_bits,
+            backward_compatible,
             rng,
         )?;
 
@@ -173,6 +175,7 @@ where
             GroupElement,
         >,
         randomizer_contribution_bits: u32,
+        backward_compatible: bool,
         rng: &mut impl CsRng,
     ) -> Result<(
         Vec<PartyID>,
@@ -219,8 +222,11 @@ where
         // Prepare to encrypt & prove the randomizer contribution under the threshold encryption key.
         let public_parameters = bounded_integers_group::PublicParameters::<
             RANDOMIZER_WITNESS_LIMBS,
-        >::new_with_randomizer_upper_bound(randomizer_contribution_bits)
-            .map_err(|_| Error::from(ErrorKind::InvalidPublicParameters))?;
+        >::new_with_randomizer_upper_bound_selected(
+            randomizer_contribution_bits,
+            backward_compatible,
+        )
+        .map_err(|_| Error::from(ErrorKind::InvalidPublicParameters))?;
 
         let randomizer_contribution = bounded_integers_group::GroupElement::new(
             Int::from(&randomizer_contribution),
@@ -256,6 +262,7 @@ where
                 &public_input.setup_parameters_per_crt_prime,
                 randomizer_contribution_to_threshold_encryption_key_base_protocol_context,
                 randomizer_contribution_bits,
+                backward_compatible,
                 rng,
             )?;
 

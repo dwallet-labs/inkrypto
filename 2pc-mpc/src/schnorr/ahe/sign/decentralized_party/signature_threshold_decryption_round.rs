@@ -229,6 +229,7 @@ where
                 vec![encryption_of_signature_response],
                 decryption_shares_and_proofs.clone(),
                 decryption_key_share_public_parameters,
+                false,
                 rng,
             )?;
 

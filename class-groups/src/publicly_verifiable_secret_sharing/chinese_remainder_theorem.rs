@@ -871,6 +871,7 @@ mod tests {
             setup_parameters.decryption_key_bits(),
             secret_key_share_upper_bound_bits,
             true,
+            false,
         )
         .unwrap();
 

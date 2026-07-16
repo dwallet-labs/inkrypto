@@ -100,6 +100,12 @@ pub struct Party<
     pub(in crate::publicly_verifiable_secret_sharing) parties_without_valid_encryption_keys:
         Vec<PartyID>,
     pub(in crate::publicly_verifiable_secret_sharing) participating_and_dealers_match: bool,
+    /// TEMPORARY — remove once the network has fully migrated off the deployed (inkrypto
+    /// `37bb549f`) wire format and backward compatibility is no longer required.
+    ///
+    /// Runtime-only: selects the `-10` relaxed discrete-log bound to match the deployed network.
+    /// Never serialized/transcribed; the bound it produces is.
+    pub(in crate::publicly_verifiable_secret_sharing) backward_compatible: bool,
     _group_choice: PhantomData<GroupElement>,
     _protocol_context_choice: PhantomData<ProtocolContext>,
 }
@@ -175,6 +181,7 @@ where
         secret_bits: u32,
         discrete_log_sampling_bits: u32,
         participating_and_dealers_match: bool,
+        backward_compatible: bool,
     ) -> Result<Self> {
         if u32::from(dealer_access_structure.threshold) > MAX_THRESHOLD
             || u32::from(participating_parties_access_structure.threshold) > MAX_THRESHOLD
@@ -194,8 +201,8 @@ where
 
         let discrete_log_witness_group_public_parameters = bounded_integers_group::PublicParameters::<
             DISCRETE_LOG_WITNESS_LIMBS,
-        >::new_with_randomizer_upper_bound(
-            discrete_log_sampling_bits
+        >::new_with_randomizer_upper_bound_selected(
+            discrete_log_sampling_bits, backward_compatible,
         )?;
 
         let public_verification_key_base = EquivalenceClass::new(
@@ -260,6 +267,7 @@ where
             secret_bits,
             parties_without_valid_encryption_keys,
             participating_and_dealers_match,
+            backward_compatible,
             _group_choice: PhantomData,
             _protocol_context_choice: PhantomData,
         };
@@ -317,6 +325,7 @@ where
             self.base_protocol_context.clone(),
             self.discrete_log_witness_group_public_parameters
                 .sample_bits,
+            self.backward_compatible,
             rng,
         )
     }

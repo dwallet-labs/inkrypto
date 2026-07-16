@@ -182,6 +182,7 @@ mod tests {
             epoch1_secp256k1_pvss_encryption_keys_and_proofs.clone(),
             epoch1_ristretto_pvss_encryption_keys_and_proofs.clone(),
             epoch1_secp256r1_pvss_encryption_keys_and_proofs.clone(),
+            false,
         );
 
         let epoch1_tangible_party_id_to_virtual_party_id_to_decryption_key_share: HashMap<_, _> =
@@ -588,6 +589,7 @@ mod tests {
                 epoch1_secp256k1_pvss_encryption_keys_and_proofs.clone(),
                 epoch1_ristretto_pvss_encryption_keys_and_proofs.clone(),
                 epoch1_secp256r1_pvss_encryption_keys_and_proofs.clone(),
+                false,
             )
             .unwrap();
 
@@ -859,6 +861,7 @@ mod tests {
             secp256k1_pvss_encryption_keys_and_proofs.clone(),
             ristretto_pvss_encryption_keys_and_proofs.clone(),
             secp256r1_pvss_encryption_keys_and_proofs.clone(),
+            false,
         )
         .unwrap();
 

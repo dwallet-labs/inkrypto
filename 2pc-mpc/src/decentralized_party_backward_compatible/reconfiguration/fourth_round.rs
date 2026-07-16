@@ -187,6 +187,7 @@ impl super::Party {
                 randomizer_contribution_to_upcoming_pvss_party,
                 threshold_decrypt_messages,
                 current_decryption_key_share_bits,
+                true,
                 rng,
             )?;
 

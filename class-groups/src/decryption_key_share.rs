@@ -266,6 +266,7 @@ where
         &self,
         ciphertexts: Vec<CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
         public_parameters: &Self::PublicParameters,
+        backward_compatible: bool,
         rng: &mut impl CsRng,
     ) -> CtOption<(Vec<Self::DecryptionShare>, Self::PartialDecryptionProof)> {
         let decryption_key_share_upper_bound_bits = secret_key_share_size_upper_bound(
@@ -279,8 +280,9 @@ where
 
         let witness_group_public_parameters = group::bounded_integers_group::PublicParameters::<
             SECRET_KEY_SHARE_WITNESS_LIMBS,
-        >::new_with_randomizer_upper_bound(
-            decryption_key_share_upper_bound_bits
+        >::new_with_randomizer_upper_bound_selected(
+            decryption_key_share_upper_bound_bits,
+            backward_compatible,
         );
 
         if witness_group_public_parameters.is_err()
@@ -522,6 +524,7 @@ where
             (Vec<Self::DecryptionShare>, Self::PartialDecryptionProof),
         >,
         public_parameters: &Self::PublicParameters,
+        backward_compatible: bool,
         _rng: &mut impl CsRng,
     ) -> std::result::Result<Vec<PartyID>, Self::Error> {
         let batch_size = ciphertexts.len();
@@ -574,8 +577,9 @@ where
 
         let witness_group_public_parameters = group::bounded_integers_group::PublicParameters::<
             SECRET_KEY_SHARE_WITNESS_LIMBS,
-        >::new_with_randomizer_upper_bound(
-            decryption_key_share_upper_bound_bits
+        >::new_with_randomizer_upper_bound_selected(
+            decryption_key_share_upper_bound_bits,
+            backward_compatible,
         )?;
 
         let (parties_sending_invalid_statements, proofs_and_statements) = decrypters

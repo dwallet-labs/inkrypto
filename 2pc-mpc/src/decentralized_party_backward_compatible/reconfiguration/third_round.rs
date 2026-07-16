@@ -35,7 +35,7 @@ impl super::Party {
         equality_of_discrete_log_in_hidden_order_group_base_protocol_context: publicly_verifiable_secret_sharing::BaseProtocolContext,
         public_input: &PublicInput,
         equality_of_coefficients_commitments_language_public_parameters: EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters<
-            SECRET_KEY_SHARE_LIMBS,
+            SECRET_KEY_SHARE_WITNESS_LIMBS,
             ThreeWayGroupElement<
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
@@ -101,7 +101,7 @@ impl super::Party {
         ristretto_setup_parameters: &RistrettoSetupParameters,
         secp256r1_setup_parameters: &Secp256r1SetupParameters,
         equality_of_coefficients_commitments_language_public_parameters: EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters<
-            SECRET_KEY_SHARE_LIMBS,
+            SECRET_KEY_SHARE_WITNESS_LIMBS,
             ThreeWayGroupElement<
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
                 EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
@@ -177,6 +177,7 @@ impl super::Party {
             decryption_key_shares,
             current_decryption_key_share_bits,
             randomizer_contribution_bits,
+            true,
             malicious_coefficient_committers,
             rng,
         )?;
