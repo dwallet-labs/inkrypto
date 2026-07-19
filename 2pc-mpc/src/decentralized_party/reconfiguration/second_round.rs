@@ -16,7 +16,7 @@ use group::secp256k1::{GroupElement, SCALAR_LIMBS};
 use group::{CsRng, PartyID};
 use mpc::{AsynchronousRoundResult, HandleInvalidMessages};
 
-use crate::decentralized_party::reconfiguration::{Message, PublicOutput};
+use crate::decentralized_party::reconfiguration::{Message, NonAggregatedPublicOutput};
 use crate::decentralized_party::threshold_encryption_of_secret_key_share_parts_to_sharing::{
     AccusationRoundMessage, DealingRoundMessage,
 };
@@ -40,7 +40,7 @@ impl super::Party {
         >,
         deal_randomizer_and_prove_coefficient_commitments_messages: HashMap<PartyID, Message>,
         rng: &mut impl CsRng,
-    ) -> Result<AsynchronousRoundResult<Message, (), PublicOutput>> {
+    ) -> Result<AsynchronousRoundResult<Message, (), NonAggregatedPublicOutput>> {
         Self::advance_second_round_internal(
             tangible_party_id,
             session_id,

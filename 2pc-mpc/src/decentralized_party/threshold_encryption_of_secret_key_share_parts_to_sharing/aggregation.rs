@@ -20,7 +20,8 @@ use itertools::multiunzip;
 use mpc::MajorityVote;
 
 use super::{
-    DealingRoundMessage, PublicInput, PublicOutput, Result, ThresholdDecryptionRoundMessage,
+    DealingRoundMessage, NonAggregatedPublicOutput, PublicInput, Result,
+    ThresholdDecryptionRoundMessage,
 };
 
 /// Per-curve recovered masked secret key share parts (first_secret, second_secret).
@@ -48,7 +49,7 @@ pub fn advance(
     dealing_messages: &HashMap<PartyID, DealingRoundMessage>,
     decryption_messages: &HashMap<PartyID, ThresholdDecryptionRoundMessage>,
     rng: &mut impl CsRng,
-) -> Result<(Vec<PartyID>, PublicOutput)> {
+) -> Result<(Vec<PartyID>, NonAggregatedPublicOutput)> {
     // Step 1: Determine consensus malicious dealers via weighted majority vote.
     // Each party reported their malicious_dealers in the ThresholdDecryptionRoundMessage.
     let malicious_dealers_votes: HashMap<PartyID, Vec<PartyID>> = decryption_messages
@@ -460,7 +461,7 @@ where
         .collect()
 }
 
-/// Computes the full PublicOutput including:
+/// Computes the full NonAggregatedPublicOutput including:
 /// - Public key share commitments (from secret key polynomial commitments at x=0)
 /// - Secret key polynomial commitments (already transformed from randomizer commitments
 ///   by `combine_decryption_shares_of_masked_secret`)
@@ -481,7 +482,7 @@ fn compute_public_output(
     ristretto_randomizer_dealings: HashMap<PartyID, super::RistrettoCurveDealing>,
     curve25519_randomizer_dealings: HashMap<PartyID, super::Curve25519CurveDealing>,
     secp256r1_randomizer_dealings: HashMap<PartyID, super::Secp256r1CurveDealing>,
-) -> Result<PublicOutput> {
+) -> Result<NonAggregatedPublicOutput> {
     // Extract public key shares from secret key polynomial commitments.
     // Public key share = constant term (s_0 = x * G is the public key share commitment).
     let secp256k1_first_public_key_share = secp256k1_first_secret_polynomial_commitments
@@ -517,7 +518,7 @@ fn compute_public_output(
         .copied()
         .ok_or_else(|| crate::Error::from(crate::ErrorKind::InternalError))?;
 
-    Ok(PublicOutput {
+    Ok(NonAggregatedPublicOutput {
         secp256k1_first_public_key_share,
         secp256k1_second_public_key_share,
         secp256k1_first_secret_polynomial_commitments,

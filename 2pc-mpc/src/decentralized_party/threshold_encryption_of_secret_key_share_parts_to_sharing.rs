@@ -34,9 +34,12 @@
 //! - secp256r1: first_part, second_part
 
 pub mod accusation;
+pub mod aggregated_public_output;
 pub mod aggregation;
 pub mod dealing;
 pub mod decryption;
+
+pub use aggregated_public_output::PublicOutput;
 
 use std::collections::HashMap;
 
@@ -204,14 +207,19 @@ pub struct PublicInput {
         class_groups::Secp256r1DecryptionKeySharePublicParameters,
 }
 
-/// Public output from the threshold encryption to sharing protocol.
+/// BACKWARD COMPATIBILITY ONLY — the pre-aggregation sharing sub-output
+/// (every dealer's full PVSS dealing). The primary form is the aggregated
+/// [`PublicOutput`] (re-exported from [`aggregated_public_output`]), reached
+/// via `upgrade()`; this shape survives as the reconfiguration Party's wire
+/// output (deployed byte-identical-quorum format) and for decoding
+/// previously-persisted bytes.
 ///
 /// Contains all public data needed for parties to compute their Shamir shares.
 /// The design stores encrypted dealings (PVSS shares) and masked secrets (x + r),
 /// allowing parties to decrypt their shares individually later via the
 /// `compute_*_shamir_shares_of_secret_key_share_parts()` methods.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PublicOutput {
+pub struct NonAggregatedPublicOutput {
     /// Public key share commitment for secp256k1 (first secret).
     pub secp256k1_first_public_key_share: secp256k1::group_element::Value,
     /// Public key share commitment for secp256k1 (second secret).
@@ -514,7 +522,7 @@ pub struct AggregationRoundMessage;
 /// extracting per-secret dealings from the curve dealings.
 ///
 /// Callers parameterize by curve via const generics and pass the curve-specific
-/// fields (dealings, masked secrets) from `PublicOutput`.
+/// fields (dealings, masked secrets) from `NonAggregatedPublicOutput`.
 pub fn derive_shamir_shares_of_secret_key_share_parts<
     const SCALAR_LIMBS: usize,
     const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,

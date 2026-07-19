@@ -5,7 +5,7 @@ use itertools::multiunzip;
 
 use super::{EqualityOfCoefficientsCommitmentsProof, PublicInput};
 use crate::decentralized_party::reconfiguration::Message;
-use crate::decentralized_party::reconfiguration::PublicOutput;
+use crate::decentralized_party::reconfiguration::NonAggregatedPublicOutput;
 use crate::languages::EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters;
 use crate::{decentralized_party::dkg, Error, ErrorKind, Result};
 use class_groups::publicly_verifiable_secret_sharing::chinese_remainder_theorem::NUM_SECRET_SHARE_PRIMES;
@@ -50,7 +50,7 @@ impl super::Party {
         equality_of_coefficients_commitments_base_protocol_context: crate::BaseProtocolContext,
         randomizer_contribution_bits: u32,
         rng: &mut impl CsRng,
-    ) -> Result<AsynchronousRoundResult<Message, (), PublicOutput>> {
+    ) -> Result<AsynchronousRoundResult<Message, (), NonAggregatedPublicOutput>> {
         Self::advance_first_round_internal(
             tangible_party_id,
             session_id,

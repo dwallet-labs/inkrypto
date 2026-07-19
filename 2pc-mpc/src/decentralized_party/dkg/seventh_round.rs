@@ -84,9 +84,14 @@ impl super::Party {
             fourth_round_output.secp256r1_public_verification_keys,
         )?;
 
+        // The DKG's output is the primary (aggregated) form: unlike
+        // reconfiguration — whose wire output must stay byte-identical to
+        // deployed binaries through the gated rollout — no deployed network
+        // ever persisted a pre-aggregation DKG output, so the per-receiver
+        // aggregation happens right here at output formation.
         let public_output = PublicOutput {
             core,
-            threshold_encryption_to_sharing_output: threshold_enc_public_output,
+            threshold_encryption_to_sharing_output: threshold_enc_public_output.upgrade()?,
         };
 
         Ok(AsynchronousRoundResult::Finalize {

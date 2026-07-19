@@ -1761,3 +1761,282 @@ where
 
     Ok(secret_key_share.value())
 }
+// =============================================================================
+// Aggregation of Encrypted Randomizer Shares
+// =============================================================================
+
+/// Homomorphically aggregates, per receiving party, the encrypted randomizer shares dealt by the
+/// honest dealers: $\textsf{ct}_i = \sum_j \textsf{ct}_{j,i}$, where $\textsf{ct}_{j,i}$ encrypts
+/// dealer $j$'s dealt share $[r_j]_i$ under party $i$'s PVSS encryption key.
+///
+/// Since Shamir sharings add coefficient-wise, $\textsf{ct}_i$ encrypts party $i$'s share
+/// $[r]_i = \sum_j [r_j]_i$ of the aggregated randomizer $r = \sum_j r_j$ — all under the same
+/// (per-receiver) encryption key, so a single decryption recovers $[r]_i$.
+///
+/// The input dealings must ALL be honest: publicly verified (post the accusation round) with
+/// malicious dealers already excluded — which holds for every persisted public output, formed
+/// after the in-protocol majority vote. Once aggregated, the per-dealer structure and the EncDL
+/// proofs are no longer needed, which is what lets the persisted public output store one
+/// ciphertext per receiver instead of the full $O(n^2)$ dealing transcript. (When output
+/// formation later aggregates eagerly, the caller filters malicious dealers before calling.)
+pub fn aggregate_encryptions_of_randomizer_shares<
+    const SCALAR_LIMBS: usize,
+    const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
+>(
+    dealings: &HashMap<
+        PartyID,
+        Dealing<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >,
+    >,
+    ciphertext_space_public_parameters: &crate::CiphertextSpacePublicParameters<
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    >,
+) -> Result<HashMap<PartyID, CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>>
+where
+    Int<SCALAR_LIMBS>: Encoding,
+    Uint<SCALAR_LIMBS>: Encoding,
+    Int<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = crate::equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
+    EncryptionKey<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        GroupElement,
+    >: AdditivelyHomomorphicEncryptionKey<
+        SCALAR_LIMBS,
+        PublicParameters = encryption_key::PublicParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >,
+        PlaintextSpaceGroupElement = GroupElement::Scalar,
+        RandomnessSpaceGroupElement = RandomnessSpaceGroupElement<FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+        CiphertextSpaceGroupElement = CiphertextSpaceGroupElement<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        >,
+    >,
+    encryption_key::PublicParameters<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<GroupElement::Scalar>,
+    >: AsRef<
+            homomorphic_encryption::GroupsPublicParameters<
+                group::PublicParameters<GroupElement::Scalar>,
+                RandomnessSpacePublicParameters<FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+                crate::CiphertextSpacePublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            >,
+        > + Instantiate<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >,
+{
+    let honest_dealings: Vec<_> = dealings.values().collect();
+
+    let receiving_parties: HashSet<PartyID> = honest_dealings
+        .iter()
+        .flat_map(|dealing| {
+            dealing
+                .randomizer_contribution_dealing_message
+                .encryptions_of_secret_shares_and_proofs
+                .keys()
+                .copied()
+        })
+        .collect();
+
+    receiving_parties
+        .into_iter()
+        .map(|receiving_party_id| {
+            let encryptions_of_dealt_shares = honest_dealings
+                .iter()
+                .map(|dealing| {
+                    // Every verified dealing covers every receiving party, so a missing entry
+                    // means the dealing set passed in was not uniformly verified.
+                    dealing
+                        .randomizer_contribution_dealing_message
+                        .encryptions_of_secret_shares_and_proofs
+                        .get(&receiving_party_id)
+                        .ok_or_else(|| Error::from(ErrorKind::InvalidParameters))
+                        .and_then(|dealt_secret_share_message| {
+                            CiphertextSpaceGroupElement::new(
+                                dealt_secret_share_message.encryption_of_secret_share,
+                                ciphertext_space_public_parameters,
+                            )
+                            .map_err(Error::from)
+                        })
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            encryptions_of_dealt_shares
+                .into_iter()
+                .reduce(|acc, encryption_of_dealt_share| {
+                    acc.add_vartime(
+                        &encryption_of_dealt_share,
+                        ciphertext_space_public_parameters,
+                    )
+                })
+                .map(|encryption_of_randomizer_share| {
+                    (receiving_party_id, encryption_of_randomizer_share.value())
+                })
+                .ok_or_else(|| Error::from(ErrorKind::InvalidParameters))
+        })
+        .collect()
+}
+
+// =============================================================================
+// Share Derivation from an Aggregated Encryption: Decrypt + Unmask
+// =============================================================================
+
+/// Derives a party's Shamir share of a secret from its aggregated encrypted randomizer share and
+/// the masked secret.
+///
+/// Same derivation as [`derive_shamir_share_of_secret`], but starting from the single
+/// per-receiver aggregated ciphertext instead of the per-dealer dealings:
+/// 1. Decrypts the aggregated randomizer share: `[r]_i = Σ [r_j]_i`
+///    (aggregated homomorphically by [`aggregate_encryptions_of_randomizer_shares`])
+/// 2. Unmasks: `[x]_i = (x + r) - [r]_i`
+///
+/// # Arguments
+/// * `encryption_scheme_public_parameters` - Encryption scheme parameters
+/// * `decryption_key` - This party's PVSS decryption key
+/// * `encryption_of_randomizer_share` - The aggregated encryption of this party's randomizer share
+/// * `masked_secret_value` - The masked secret `(x + r)` recovered via threshold decryption
+///
+/// # Returns
+/// The Shamir share `[x]_i` as a `Value`
+pub fn derive_shamir_share_of_secret_from_aggregated_encryption<
+    const SCALAR_LIMBS: usize,
+    const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    GroupElement: PrimeGroupElement<SCALAR_LIMBS> + Copy,
+>(
+    encryption_scheme_public_parameters: &encryption_key::PublicParameters<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<GroupElement::Scalar>,
+    >,
+    decryption_key: Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+    encryption_of_randomizer_share: CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+    masked_secret_value: group::Value<GroupElement::Scalar>,
+) -> Result<group::Value<GroupElement::Scalar>>
+where
+    Int<SCALAR_LIMBS>: Encoding,
+    Uint<SCALAR_LIMBS>: Encoding,
+    Int<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = crate::equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
+    EncryptionKey<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        GroupElement,
+    >: AdditivelyHomomorphicEncryptionKey<
+        SCALAR_LIMBS,
+        PublicParameters = encryption_key::PublicParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >,
+        PlaintextSpaceGroupElement = GroupElement::Scalar,
+        RandomnessSpaceGroupElement = RandomnessSpaceGroupElement<FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+        CiphertextSpaceGroupElement = CiphertextSpaceGroupElement<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        >,
+    >,
+    encryption_key::PublicParameters<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<GroupElement::Scalar>,
+    >: AsRef<
+            homomorphic_encryption::GroupsPublicParameters<
+                group::PublicParameters<GroupElement::Scalar>,
+                RandomnessSpacePublicParameters<FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+                crate::CiphertextSpacePublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            >,
+        > + Instantiate<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >,
+    DecryptionKey<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        GroupElement,
+    >: AdditivelyHomomorphicDecryptionKey<
+        SCALAR_LIMBS,
+        EncryptionKey<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >,
+        SecretKey = Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+    >,
+{
+    let scalar_public_parameters =
+        encryption_scheme_public_parameters.plaintext_space_public_parameters();
+
+    // Step 1: Decrypt the aggregated randomizer share $[r]_i = \sum_j [r_j]_i$.
+    let encryption_of_randomizer_share =
+        CiphertextSpaceGroupElement::<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>::new(
+            encryption_of_randomizer_share,
+            encryption_scheme_public_parameters.ciphertext_space_public_parameters(),
+        )?;
+
+    let randomizer_share = decrypt_share::<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        GroupElement,
+    >(
+        encryption_scheme_public_parameters,
+        decryption_key,
+        &encryption_of_randomizer_share,
+    )?;
+
+    // Step 2: Unmask: [x]_i = (x + r) - [r]_i
+    let masked_secret = GroupElement::Scalar::new(masked_secret_value, scalar_public_parameters)?;
+    let secret_key_share =
+        masked_secret.sub_constant_time(&randomizer_share, scalar_public_parameters);
+
+    Ok(secret_key_share.value())
+}
