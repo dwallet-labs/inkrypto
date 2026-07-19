@@ -460,7 +460,14 @@ pub(crate) mod tests {
         let (session_id, private_inputs, public_inputs) =
             setup_dkg_secp256k1(&access_structure, setup_parameters_per_crt_prime, true);
 
-        let class_groups_public_input = public_inputs.values().next().unwrap().clone();
+        let mut class_groups_public_input = public_inputs.values().next().unwrap().clone();
+        // TEMPORARY (remove with the rest of the `backward_compatible` mechanism):
+        // this module reproduces the deployed v1.1.8 format, whose inner class-groups
+        // proofs run the `-10` relaxed bound (the module's rounds thread `true`
+        // unconditionally); the class-groups test helper builds inputs with the strict
+        // bound, so select the deployed bound explicitly — exactly as the main
+        // `decentralized_party` test helper does.
+        class_groups_public_input.backward_compatible = true;
 
         let public_input = PublicInput {
             class_groups_public_input,
