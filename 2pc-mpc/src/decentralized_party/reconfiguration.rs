@@ -36,7 +36,7 @@ use group::{
     GroupElement as _, PartyID,
 };
 use mpc::{AsynchronousRoundResult, AsynchronouslyAdvanceable, WeightedThresholdAccessStructure};
-pub use public_output::{PublicOutput, PublicOutputCore};
+pub use public_output::{NonAggregatedPublicOutput, PublicOutput, PublicOutputCore};
 
 #[cfg(feature = "unsafe_mock")]
 pub use crate::mock::network_dkg::MockNetworkReconfigurationParty as Party;
@@ -836,7 +836,11 @@ impl mpc::Party for Party {
     type Error = Error;
     type PublicInput = PublicInput;
     type PrivateOutput = ();
-    type PublicOutputValue = PublicOutput;
+    // The Party's wire output stays the NON-aggregated shape: it is the deployed
+    // v4 quorum format the gated reconfiguration rollout must keep emitting
+    // byte-identically. Consumers upgrade() to the primary (aggregated)
+    // `PublicOutput` on demand.
+    type PublicOutputValue = NonAggregatedPublicOutput;
     type PublicOutput = Self::PublicOutputValue;
     type Message = Message;
 }
@@ -1102,7 +1106,7 @@ pub(crate) mod tests {
         current_tangible_party_id_to_upcoming: HashMap<PartyID, Option<PartyID>>,
         backward_compatible: bool,
         bench: bool,
-    ) -> PublicOutput {
+    ) -> NonAggregatedPublicOutput {
         let secp256k1_setup_parameters = get_setup_parameters_secp256k1_112_bits_deterministic();
         let (secp256k1_encryption_scheme_public_parameters, secp256k1_decryption_key) =
             Secp256k1DecryptionKey::generate_with_setup_parameters(
@@ -1517,7 +1521,7 @@ pub(crate) mod tests {
         private_inputs: HashMap<PartyID, HashMap<PartyID, SecretKeyShareSizedInteger>>,
         public_input: PublicInput,
         bench: bool,
-    ) -> PublicOutput {
+    ) -> NonAggregatedPublicOutput {
         let public_inputs = current_access_structure
             .party_to_weight
             .keys()

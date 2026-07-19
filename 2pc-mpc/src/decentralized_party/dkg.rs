@@ -41,7 +41,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 use crate::BaseProtocolContext;
-pub use public_output::{PublicOutput, PublicOutputCore};
+pub use public_output::{NonAggregatedPublicOutput, PublicOutput, PublicOutputCore};
 
 #[cfg(not(feature = "unsafe_mock"))]
 pub struct Party {}

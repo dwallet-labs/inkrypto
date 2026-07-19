@@ -43,9 +43,9 @@ use ::class_groups::{
 
 use crate::decentralized_party::dkg::{PublicOutput, PublicOutputCore};
 use crate::decentralized_party::reconfiguration::{
-    PublicOutput as ReconfigPublicOutput, PublicOutputCore as ReconfigPublicOutputCore,
+    NonAggregatedPublicOutput as ReconfigPublicOutput, PublicOutputCore as ReconfigPublicOutputCore,
 };
-use crate::decentralized_party::threshold_encryption_of_secret_key_share_parts_to_sharing::PublicOutput as SharingPublicOutput;
+use crate::decentralized_party::threshold_encryption_of_secret_key_share_parts_to_sharing::NonAggregatedPublicOutput as SharingNonAggregatedPublicOutput;
 
 /// The deterministically-derived equivalence-class public parameters and the neutral values used
 /// for every class-group field of the mock outputs. The setup parameters are derived EXACTLY as
@@ -160,7 +160,9 @@ pub(crate) fn build_mock_network_dkg_public_output() -> PublicOutput {
 
     PublicOutput {
         core,
-        threshold_encryption_to_sharing_output: neutral_sharing_output(),
+        threshold_encryption_to_sharing_output: neutral_sharing_output()
+            .upgrade()
+            .expect("upgrading the empty neutral sharing output must succeed"),
     }
 }
 
@@ -249,7 +251,7 @@ pub(crate) fn mock_network_reconfiguration_public_output(
 
 /// A structurally-valid all-neutral/empty sharing sub-output. Only `derive_shamir_*` and
 /// `*_polynomial_commitments` read it, and the mock signing path calls neither.
-fn neutral_sharing_output() -> SharingPublicOutput {
+fn neutral_sharing_output() -> SharingNonAggregatedPublicOutput {
     let secp256k1_point = secp256k1::GroupElement::neutral_from_public_parameters(
         &secp256k1::group_element::PublicParameters::default(),
     )
@@ -292,7 +294,7 @@ fn neutral_sharing_output() -> SharingPublicOutput {
     .unwrap()
     .value();
 
-    SharingPublicOutput {
+    SharingNonAggregatedPublicOutput {
         secp256k1_first_public_key_share: secp256k1_point,
         secp256k1_second_public_key_share: secp256k1_point,
         secp256k1_first_secret_polynomial_commitments: vec![],

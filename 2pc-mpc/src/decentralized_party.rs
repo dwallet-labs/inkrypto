@@ -633,6 +633,32 @@ mod tests {
                 })
                 .collect();
 
+        // Same equivalence for the reconfiguration output's aggregated form.
+        let aggregated_epoch1_self_reconfiguration_output = epoch1_self_reconfiguration_output
+            .clone()
+            .upgrade()
+            .expect("upgrading the reconfiguration public output should succeed");
+        for (&party_id, expected_shares) in &epoch1_secp256k1_secret_key_shares {
+            let aggregated_shares = aggregated_epoch1_self_reconfiguration_output
+                .compute_secp256k1_shamir_shares_of_secret_key_share_parts(
+                    party_id,
+                    *epoch1_secp256k1_pvss_decryption_keys
+                        .get(&party_id)
+                        .unwrap(),
+                    epoch1_secp256k1_pvss_encryption_keys_and_proofs
+                        .get(&party_id)
+                        .unwrap()
+                        .0,
+                )
+                .expect(
+                    "compute secp256k1 shamir shares from the aggregated output should succeed",
+                );
+            assert_eq!(
+                aggregated_shares, *expected_shares,
+                "aggregated-output secp256k1 share computation must match the pre-aggregation output"
+            );
+        }
+
         let (
             epoch1_secp256k1_first_polynomial_commitments,
             epoch1_secp256k1_second_polynomial_commitments,
@@ -895,7 +921,10 @@ mod tests {
         let reconstructed_dkg_output =
             crate::decentralized_party::dkg::PublicOutput::new_from_reconfiguration_output(
                 universal_class_group_dkg_output.clone(),
-                reconfiguration_public_output.clone(),
+                reconfiguration_public_output
+                    .clone()
+                    .upgrade()
+                    .expect("upgrading the reconfiguration output must succeed"),
             )
             .unwrap();
         assert_eq!(
