@@ -303,7 +303,6 @@ where
                     Option::from(decryption_key_share.generate_decryption_shares(
                         vec![encryption_of_signature_response],
                         decryption_key_share_public_parameters,
-                        false,
                         rng,
                     ))
                     .ok_or_else(|| crate::Error::from_kind(crate::ErrorKind::InternalError))?;

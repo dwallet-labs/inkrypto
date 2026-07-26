@@ -202,7 +202,6 @@ impl super::Party {
             verified_dealers_messages,
             decryption_key_per_crt_prime,
             decryption_key_share_bits,
-            class_groups_public_input.backward_compatible,
             malicious_coefficient_committers,
             rng,
         )?;

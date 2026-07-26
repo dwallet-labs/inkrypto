@@ -223,7 +223,6 @@ where
                 &public_input.setup_parameters,
                 &randomizer_contribution_to_upcoming_pvss_party,
                 randomizer_contribution_bits,
-                public_input.backward_compatible,
                 rng,
             ),
             [deal_randomizer_messages] => Self::advance_second_round(
@@ -246,7 +245,6 @@ where
                 decryption_key_shares,
                 current_decryption_key_share_bits,
                 randomizer_contribution_bits,
-                public_input.backward_compatible,
                 rng,
             ),
             [deal_randomizer_messages, _, deal_masked_decryption_key_share_messages] => {
@@ -430,7 +428,6 @@ where
                 randomizer_contribution_bits,
                 randomizer_share_bits,
                 false,
-                public_input.backward_compatible,
             )?;
 
         let randomizer_contribution_to_threshold_encryption_key_base_protocol_context =

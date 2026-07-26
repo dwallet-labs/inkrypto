@@ -11,17 +11,19 @@
 use std::collections::{HashMap, HashSet};
 
 use class_groups::{
-    RistrettoDecryptionKeyShare, RistrettoEncryptionKey, Secp256k1DecryptionKeyShare,
-    Secp256k1EncryptionKey, Secp256r1DecryptionKeyShare, Secp256r1EncryptionKey,
+    CiphertextSpaceValue, RistrettoDecryptionKeyShare, RistrettoEncryptionKey,
+    Secp256k1DecryptionKeyShare, Secp256k1EncryptionKey, Secp256r1DecryptionKeyShare,
+    Secp256r1EncryptionKey,
+    SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS as NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
 };
 use group::helpers::DeduplicateAndSort;
 use group::{curve25519, ristretto, secp256k1, secp256r1, CsRng, GroupElement, PartyID};
+use homomorphic_encryption::GroupsPublicParametersAccessors;
 use itertools::multiunzip;
 use mpc::MajorityVote;
 
 use super::{
-    DealingRoundMessage, NonAggregatedPublicOutput, PublicInput, Result,
-    ThresholdDecryptionRoundMessage,
+    DealingRoundMessage, PublicInput, PublicOutput, Result, ThresholdDecryptionRoundMessage,
 };
 
 /// Per-curve recovered masked secret key share parts (first_secret, second_secret).
@@ -49,7 +51,7 @@ pub fn advance(
     dealing_messages: &HashMap<PartyID, DealingRoundMessage>,
     decryption_messages: &HashMap<PartyID, ThresholdDecryptionRoundMessage>,
     rng: &mut impl CsRng,
-) -> Result<(Vec<PartyID>, NonAggregatedPublicOutput)> {
+) -> Result<(Vec<PartyID>, PublicOutput)> {
     // Step 1: Determine consensus malicious dealers via weighted majority vote.
     // Each party reported their malicious_dealers in the ThresholdDecryptionRoundMessage.
     let malicious_dealers_votes: HashMap<PartyID, Vec<PartyID>> = decryption_messages
@@ -381,34 +383,132 @@ pub fn advance(
         secp256r1_second_masked_secret_key_share_part,
     };
 
-    // Step 6: Extract randomizer dealings from honest dealers only
+    // Step 6: Aggregate, per receiving party, the encrypted randomizer shares across the honest
+    // dealers' verified dealings: $\textsf{ct}_i$ encrypts $[r]_i = \sum_j [r_j]_i$ under party
+    // $i$'s PVSS encryption key, so each party recovers its randomizer share with a single
+    // decryption. The per-dealer dealings and their proofs served public verification
+    // in-protocol and are not retained.
     let (
-        secp256k1_randomizer_dealings,
-        ristretto_randomizer_dealings,
-        curve25519_randomizer_dealings,
-        secp256r1_randomizer_dealings,
-    ): (HashMap<_, _>, HashMap<_, _>, HashMap<_, _>, HashMap<_, _>) =
-        multiunzip(honest_dealers.iter().filter_map(|&dealer_party_id| {
-            let dealing_msg = dealing_messages.get(&dealer_party_id)?;
-            Some((
-                (
-                    dealer_party_id,
-                    dealing_msg.secp256k1_dealing_message.clone(),
-                ),
-                (
-                    dealer_party_id,
-                    dealing_msg.ristretto_dealing_message.clone(),
-                ),
-                (
-                    dealer_party_id,
-                    dealing_msg.curve25519_dealing_message.clone(),
-                ),
-                (
-                    dealer_party_id,
-                    dealing_msg.secp256r1_dealing_message.clone(),
-                ),
-            ))
-        }));
+        secp256k1_first_honest_dealings,
+        secp256k1_second_honest_dealings,
+        ristretto_first_honest_dealings,
+        ristretto_second_honest_dealings,
+        curve25519_first_honest_dealings,
+        curve25519_second_honest_dealings,
+        secp256r1_first_honest_dealings,
+        secp256r1_second_honest_dealings,
+    ): (
+        HashMap<PartyID, _>,
+        HashMap<PartyID, _>,
+        HashMap<PartyID, _>,
+        HashMap<PartyID, _>,
+        HashMap<PartyID, _>,
+        HashMap<PartyID, _>,
+        HashMap<PartyID, _>,
+        HashMap<PartyID, _>,
+    ) = multiunzip(honest_dealers.iter().filter_map(|&dealer_party_id| {
+        let dealing_msg = dealing_messages.get(&dealer_party_id)?;
+        Some((
+            (
+                dealer_party_id,
+                dealing_msg
+                    .secp256k1_dealing_message
+                    .first_randomizer_contribution_dealing
+                    .clone(),
+            ),
+            (
+                dealer_party_id,
+                dealing_msg
+                    .secp256k1_dealing_message
+                    .second_randomizer_contribution_dealing
+                    .clone(),
+            ),
+            (
+                dealer_party_id,
+                dealing_msg
+                    .ristretto_dealing_message
+                    .first_randomizer_contribution_dealing
+                    .clone(),
+            ),
+            (
+                dealer_party_id,
+                dealing_msg
+                    .ristretto_dealing_message
+                    .second_randomizer_contribution_dealing
+                    .clone(),
+            ),
+            (
+                dealer_party_id,
+                dealing_msg
+                    .curve25519_dealing_message
+                    .first_randomizer_contribution_dealing
+                    .clone(),
+            ),
+            (
+                dealer_party_id,
+                dealing_msg
+                    .curve25519_dealing_message
+                    .second_randomizer_contribution_dealing
+                    .clone(),
+            ),
+            (
+                dealer_party_id,
+                dealing_msg
+                    .secp256r1_dealing_message
+                    .first_randomizer_contribution_dealing
+                    .clone(),
+            ),
+            (
+                dealer_party_id,
+                dealing_msg
+                    .secp256r1_dealing_message
+                    .second_randomizer_contribution_dealing
+                    .clone(),
+            ),
+        ))
+    }));
+
+    let secp256k1_first_encryptions_of_randomizer_shares =
+        class_groups::threshold_encryption_to_sharing::aggregate_encryptions_of_randomizer_shares(
+            &secp256k1_first_honest_dealings,
+            secp256k1_encryption_scheme_public_parameters.ciphertext_space_public_parameters(),
+        )?;
+    let secp256k1_second_encryptions_of_randomizer_shares =
+        class_groups::threshold_encryption_to_sharing::aggregate_encryptions_of_randomizer_shares(
+            &secp256k1_second_honest_dealings,
+            secp256k1_encryption_scheme_public_parameters.ciphertext_space_public_parameters(),
+        )?;
+    let ristretto_first_encryptions_of_randomizer_shares =
+        class_groups::threshold_encryption_to_sharing::aggregate_encryptions_of_randomizer_shares(
+            &ristretto_first_honest_dealings,
+            ristretto_encryption_scheme_public_parameters.ciphertext_space_public_parameters(),
+        )?;
+    let ristretto_second_encryptions_of_randomizer_shares =
+        class_groups::threshold_encryption_to_sharing::aggregate_encryptions_of_randomizer_shares(
+            &ristretto_second_honest_dealings,
+            ristretto_encryption_scheme_public_parameters.ciphertext_space_public_parameters(),
+        )?;
+    // Curve25519 uses the ristretto encryption scheme (same scalar field).
+    let curve25519_first_encryptions_of_randomizer_shares =
+        class_groups::threshold_encryption_to_sharing::aggregate_encryptions_of_randomizer_shares(
+            &curve25519_first_honest_dealings,
+            ristretto_encryption_scheme_public_parameters.ciphertext_space_public_parameters(),
+        )?;
+    let curve25519_second_encryptions_of_randomizer_shares =
+        class_groups::threshold_encryption_to_sharing::aggregate_encryptions_of_randomizer_shares(
+            &curve25519_second_honest_dealings,
+            ristretto_encryption_scheme_public_parameters.ciphertext_space_public_parameters(),
+        )?;
+    let secp256r1_first_encryptions_of_randomizer_shares =
+        class_groups::threshold_encryption_to_sharing::aggregate_encryptions_of_randomizer_shares(
+            &secp256r1_first_honest_dealings,
+            secp256r1_encryption_scheme_public_parameters.ciphertext_space_public_parameters(),
+        )?;
+    let secp256r1_second_encryptions_of_randomizer_shares =
+        class_groups::threshold_encryption_to_sharing::aggregate_encryptions_of_randomizer_shares(
+            &secp256r1_second_honest_dealings,
+            secp256r1_encryption_scheme_public_parameters.ciphertext_space_public_parameters(),
+        )?;
 
     // Step 7: Compute polynomial commitments and public key share commitments
     let public_output = compute_public_output(
@@ -421,10 +521,14 @@ pub fn advance(
         curve25519_second_secret_polynomial_commitments,
         secp256r1_first_secret_polynomial_commitments,
         secp256r1_second_secret_polynomial_commitments,
-        secp256k1_randomizer_dealings,
-        ristretto_randomizer_dealings,
-        curve25519_randomizer_dealings,
-        secp256r1_randomizer_dealings,
+        secp256k1_first_encryptions_of_randomizer_shares,
+        secp256k1_second_encryptions_of_randomizer_shares,
+        ristretto_first_encryptions_of_randomizer_shares,
+        ristretto_second_encryptions_of_randomizer_shares,
+        curve25519_first_encryptions_of_randomizer_shares,
+        curve25519_second_encryptions_of_randomizer_shares,
+        secp256r1_first_encryptions_of_randomizer_shares,
+        secp256r1_second_encryptions_of_randomizer_shares,
     )?;
 
     let malicious_parties = malicious_voters
@@ -461,11 +565,11 @@ where
         .collect()
 }
 
-/// Computes the full NonAggregatedPublicOutput including:
+/// Computes the full [`PublicOutput`] including:
 /// - Public key share commitments (from secret key polynomial commitments at x=0)
 /// - Secret key polynomial commitments (already transformed from randomizer commitments
 ///   by `combine_decryption_shares_of_masked_secret`)
-/// - PVSS dealings (for parties to decrypt their shares later)
+/// - Aggregated encryptions of randomizer shares (for parties to decrypt their shares later)
 /// - Masked secrets (x + r)
 #[allow(clippy::too_many_arguments)]
 fn compute_public_output(
@@ -478,11 +582,39 @@ fn compute_public_output(
     curve25519_second_secret_polynomial_commitments: Vec<group::Value<curve25519::GroupElement>>,
     secp256r1_first_secret_polynomial_commitments: Vec<group::Value<secp256r1::GroupElement>>,
     secp256r1_second_secret_polynomial_commitments: Vec<group::Value<secp256r1::GroupElement>>,
-    secp256k1_randomizer_dealings: HashMap<PartyID, super::Secp256k1CurveDealing>,
-    ristretto_randomizer_dealings: HashMap<PartyID, super::RistrettoCurveDealing>,
-    curve25519_randomizer_dealings: HashMap<PartyID, super::Curve25519CurveDealing>,
-    secp256r1_randomizer_dealings: HashMap<PartyID, super::Secp256r1CurveDealing>,
-) -> Result<NonAggregatedPublicOutput> {
+    secp256k1_first_encryptions_of_randomizer_shares: HashMap<
+        PartyID,
+        CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+    >,
+    secp256k1_second_encryptions_of_randomizer_shares: HashMap<
+        PartyID,
+        CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+    >,
+    ristretto_first_encryptions_of_randomizer_shares: HashMap<
+        PartyID,
+        CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+    >,
+    ristretto_second_encryptions_of_randomizer_shares: HashMap<
+        PartyID,
+        CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+    >,
+    curve25519_first_encryptions_of_randomizer_shares: HashMap<
+        PartyID,
+        CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+    >,
+    curve25519_second_encryptions_of_randomizer_shares: HashMap<
+        PartyID,
+        CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+    >,
+    secp256r1_first_encryptions_of_randomizer_shares: HashMap<
+        PartyID,
+        CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+    >,
+    secp256r1_second_encryptions_of_randomizer_shares: HashMap<
+        PartyID,
+        CiphertextSpaceValue<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+    >,
+) -> Result<PublicOutput> {
     // Extract public key shares from secret key polynomial commitments.
     // Public key share = constant term (s_0 = x * G is the public key share commitment).
     let secp256k1_first_public_key_share = secp256k1_first_secret_polynomial_commitments
@@ -518,7 +650,7 @@ fn compute_public_output(
         .copied()
         .ok_or_else(|| crate::Error::from(crate::ErrorKind::InternalError))?;
 
-    Ok(NonAggregatedPublicOutput {
+    Ok(PublicOutput {
         secp256k1_first_public_key_share,
         secp256k1_second_public_key_share,
         secp256k1_first_secret_polynomial_commitments,
@@ -535,11 +667,15 @@ fn compute_public_output(
         secp256r1_second_public_key_share,
         secp256r1_first_secret_polynomial_commitments,
         secp256r1_second_secret_polynomial_commitments,
-        // PVSS dealings for parties to decrypt their shares later
-        secp256k1_randomizer_dealings,
-        ristretto_randomizer_dealings,
-        curve25519_randomizer_dealings,
-        secp256r1_randomizer_dealings,
+        // Aggregated encryptions of randomizer shares, for parties to decrypt their shares later
+        secp256k1_first_encryptions_of_randomizer_shares,
+        secp256k1_second_encryptions_of_randomizer_shares,
+        ristretto_first_encryptions_of_randomizer_shares,
+        ristretto_second_encryptions_of_randomizer_shares,
+        curve25519_first_encryptions_of_randomizer_shares,
+        curve25519_second_encryptions_of_randomizer_shares,
+        secp256r1_first_encryptions_of_randomizer_shares,
+        secp256r1_second_encryptions_of_randomizer_shares,
         // Masked secrets (x + r) - safe to store publicly since r masks x
         secp256k1_first_masked_secret_key_share_part: masked_secret_key_share_parts
             .secp256k1_first_masked_secret_key_share_part

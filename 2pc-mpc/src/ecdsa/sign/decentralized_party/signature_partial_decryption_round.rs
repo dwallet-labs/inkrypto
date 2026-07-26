@@ -189,7 +189,6 @@ impl Party {
                     encryption_of_displaced_decentralized_party_nonce_share,
                 ],
                 decryption_key_share_public_parameters,
-                false,
                 rng,
             ))
                 .ok_or_else(|| crate::Error::from_kind(crate::ErrorKind::InternalError))?;

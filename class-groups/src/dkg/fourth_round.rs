@@ -314,7 +314,6 @@ where
             public_input.setup_parameters.h,
             encryption_of_decryption_key_base_protocol_context,
             decryption_key_share_bits,
-            public_input.backward_compatible,
             rng,
         )?;
 

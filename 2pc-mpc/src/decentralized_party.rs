@@ -182,7 +182,6 @@ mod tests {
             epoch1_secp256k1_pvss_encryption_keys_and_proofs.clone(),
             epoch1_ristretto_pvss_encryption_keys_and_proofs.clone(),
             epoch1_secp256r1_pvss_encryption_keys_and_proofs.clone(),
-            false,
         );
 
         let epoch1_tangible_party_id_to_virtual_party_id_to_decryption_key_share: HashMap<_, _> =
@@ -589,7 +588,6 @@ mod tests {
                 epoch1_secp256k1_pvss_encryption_keys_and_proofs.clone(),
                 epoch1_ristretto_pvss_encryption_keys_and_proofs.clone(),
                 epoch1_secp256r1_pvss_encryption_keys_and_proofs.clone(),
-                false,
             )
             .unwrap();
 
@@ -632,32 +630,6 @@ mod tests {
                     (party_id, (first_part, second_part))
                 })
                 .collect();
-
-        // Same equivalence for the reconfiguration output's aggregated form.
-        let aggregated_epoch1_self_reconfiguration_output = epoch1_self_reconfiguration_output
-            .clone()
-            .upgrade()
-            .expect("upgrading the reconfiguration public output should succeed");
-        for (&party_id, expected_shares) in &epoch1_secp256k1_secret_key_shares {
-            let aggregated_shares = aggregated_epoch1_self_reconfiguration_output
-                .compute_secp256k1_shamir_shares_of_secret_key_share_parts(
-                    party_id,
-                    *epoch1_secp256k1_pvss_decryption_keys
-                        .get(&party_id)
-                        .unwrap(),
-                    epoch1_secp256k1_pvss_encryption_keys_and_proofs
-                        .get(&party_id)
-                        .unwrap()
-                        .0,
-                )
-                .expect(
-                    "compute secp256k1 shamir shares from the aggregated output should succeed",
-                );
-            assert_eq!(
-                aggregated_shares, *expected_shares,
-                "aggregated-output secp256k1 share computation must match the pre-aggregation output"
-            );
-        }
 
         let (
             epoch1_secp256k1_first_polynomial_commitments,
@@ -887,7 +859,6 @@ mod tests {
             secp256k1_pvss_encryption_keys_and_proofs.clone(),
             ristretto_pvss_encryption_keys_and_proofs.clone(),
             secp256r1_pvss_encryption_keys_and_proofs.clone(),
-            false,
         )
         .unwrap();
 
@@ -921,10 +892,7 @@ mod tests {
         let reconstructed_dkg_output =
             crate::decentralized_party::dkg::PublicOutput::new_from_reconfiguration_output(
                 universal_class_group_dkg_output.clone(),
-                reconfiguration_public_output
-                    .clone()
-                    .upgrade()
-                    .expect("upgrading the reconfiguration output must succeed"),
+                reconfiguration_public_output.clone(),
             )
             .unwrap();
         assert_eq!(

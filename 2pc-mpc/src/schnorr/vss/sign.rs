@@ -422,8 +422,8 @@ pub mod tests {
             centralized_party_public_key_share,
         };
 
-        // For tests, use trivial randomizers: (1, 0, 0) so the formula becomes x_B = 1*x_0 + 0*x_1 + 0
-        // This maintains backward compatibility with the simplified test setup where x_1 = 0.
+        // For tests, use trivial randomizers: (1, 0, 0) so the formula becomes x_B = 1*x_0 + 0*x_1 + 0,
+        // matching the simplified test setup where x_1 = 0.
         let first_key_public_randomizer = Uint::<{ secp256k1::SCALAR_LIMBS }>::ONE;
         let second_key_public_randomizer = Uint::<{ secp256k1::SCALAR_LIMBS }>::ZERO;
         let free_coefficient_key_public_randomizer = Uint::<{ secp256k1::SCALAR_LIMBS }>::ZERO;
