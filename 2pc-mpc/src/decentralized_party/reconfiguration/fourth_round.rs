@@ -3,9 +3,7 @@
 
 use super::PublicInput;
 
-use crate::decentralized_party::reconfiguration::{
-    Message, NonAggregatedPublicOutput, PublicOutputCore,
-};
+use crate::decentralized_party::reconfiguration::{Message, PublicOutput, PublicOutputCore};
 use crate::decentralized_party::threshold_encryption_of_secret_key_share_parts_to_sharing::{
     self, DealingRoundMessage, ThresholdDecryptionRoundMessage,
 };
@@ -47,7 +45,7 @@ impl super::Party {
         threshold_decrypt_messages: HashMap<PartyID, Message>,
         current_decryption_key_share_bits: u32,
         rng: &mut impl CsRng,
-    ) -> Result<AsynchronousRoundResult<Message, (), NonAggregatedPublicOutput>> {
+    ) -> Result<AsynchronousRoundResult<Message, (), PublicOutput>> {
         let (
             malicious_parties,
             inner_protocol_public_output,
@@ -89,7 +87,7 @@ impl super::Party {
             rng,
         )?;
 
-        // Step 5: Construct NonAggregatedPublicOutput with the threshold_encryption_to_sharing_output
+        // Step 5: Construct the public output with the threshold_encryption_to_sharing_output
         let core = PublicOutputCore::new(
             inner_protocol_public_output,
             public_input.secp256k1_encryption_of_secret_key_share_first_part,
@@ -123,7 +121,7 @@ impl super::Party {
                 .equivalence_class_public_parameters(),
         )?;
 
-        let public_output = NonAggregatedPublicOutput {
+        let public_output = PublicOutput {
             core,
             threshold_encryption_to_sharing_output:
                 threshold_encryption_of_secret_key_share_parts_to_sharing_public_output,
@@ -228,7 +226,6 @@ impl super::Party {
                 randomizer_contribution_to_upcoming_pvss_party,
                 threshold_decrypt_messages,
                 current_decryption_key_share_bits,
-                class_groups_public_input.backward_compatible,
                 rng,
             )?;
 

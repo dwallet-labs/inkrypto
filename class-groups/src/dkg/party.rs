@@ -199,7 +199,6 @@ where
                 equality_of_discrete_log_in_hidden_order_group_base_protocol_context,
                 &public_input.setup_parameters_per_crt_prime,
                 &public_input.setup_parameters,
-                public_input.backward_compatible,
                 &pvss_party,
                 rng,
             ),
@@ -224,7 +223,6 @@ where
                     verified_dealers_messages.clone(),
                     decryption_key_per_crt_prime,
                     decryption_key_share_bits,
-                    public_input.backward_compatible,
                     rng,
                 )
             }
@@ -383,7 +381,6 @@ where
             decryption_key_bits,
             decryption_key_share_bits,
             true,
-            public_input.backward_compatible,
         )?;
 
         let encryption_of_decryption_key_base_protocol_context = BaseProtocolContext {

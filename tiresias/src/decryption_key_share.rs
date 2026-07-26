@@ -131,7 +131,6 @@ impl AdditivelyHomomorphicDecryptionKeyShare<PLAINTEXT_SPACE_SCALAR_LIMBS, Encry
         &self,
         ciphertexts: Vec<CiphertextSpaceGroupElement>,
         public_parameters: &Self::PublicParameters,
-        _backward_compatible: bool,
         rng: &mut impl CsRng,
     ) -> CtOption<(Vec<Self::DecryptionShare>, Self::PartialDecryptionProof)> {
         let n2 = *public_parameters
@@ -333,7 +332,6 @@ impl AdditivelyHomomorphicDecryptionKeyShare<PLAINTEXT_SPACE_SCALAR_LIMBS, Encry
             (Vec<Self::DecryptionShare>, Self::PartialDecryptionProof),
         >,
         public_parameters: &Self::PublicParameters,
-        _backward_compatible: bool,
         rng: &mut impl CsRng,
     ) -> std::result::Result<Vec<PartyID>, Self::Error> {
         let n2 = *public_parameters
@@ -850,7 +848,7 @@ pub mod test_helpers {
         .unwrap();
 
         let (decryption_shares, proof) = decryption_key_share
-            .generate_decryption_shares(vec![ciphertext], &public_parameters, false, &mut OsCsRng)
+            .generate_decryption_shares(vec![ciphertext], &public_parameters, &mut OsCsRng)
             .unwrap();
 
         let decryption_share_base = CIPHERTEXT
@@ -942,12 +940,7 @@ pub mod test_helpers {
             .collect();
 
         let (decryption_shares, proof) = decryption_key_share
-            .generate_decryption_shares(
-                ciphertexts.clone(),
-                &public_parameters,
-                false,
-                &mut OsCsRng,
-            )
+            .generate_decryption_shares(ciphertexts.clone(), &public_parameters, &mut OsCsRng)
             .unwrap();
 
         let decryption_share_bases: Vec<PaillierModulusSizedNumber> = ciphertexts

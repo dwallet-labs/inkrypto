@@ -112,7 +112,6 @@ impl super::Party {
             equality_of_discrete_log_in_hidden_order_group_base_protocol_context,
             &class_groups_public_input.setup_parameters_per_crt_prime,
             &class_groups_public_input.setup_parameters,
-            class_groups_public_input.backward_compatible,
             pvss_party,
             rng,
         )?;

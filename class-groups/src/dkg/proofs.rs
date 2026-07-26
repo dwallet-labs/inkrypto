@@ -540,7 +540,6 @@ pub fn prove_encryption_of_discrete_log_per_crt_prime<
     setup_parameters_per_crt_prime: &[SecretKeyShareCRTPrimeSetupParameters; MAX_PRIMES],
     base_protocol_context: BaseProtocolContext,
     discrete_log_bits: u32,
-    backward_compatible: bool,
     rng: &mut impl CsRng,
 ) -> Result<
     [(
@@ -576,8 +575,8 @@ where
 {
     let discrete_log_witness_group_public_parameters = bounded_integers_group::PublicParameters::<
         DISCRETE_LOG_WITNESS_LIMBS,
-    >::new_with_randomizer_upper_bound_selected(
-        discrete_log_bits, backward_compatible
+    >::new_with_randomizer_upper_bound(
+        discrete_log_bits
     )?;
 
     array::from_fn(|i| {
@@ -676,7 +675,6 @@ pub fn verify_encryptions_of_secrets_per_crt_prime<
     public_verification_key_base: EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
     base_protocol_context: BaseProtocolContext,
     discrete_log_bits: u32,
-    backward_compatible: bool,
     rng: &mut impl CsRng,
 ) -> Result<HashSet<PartyID>>
 where
@@ -703,8 +701,8 @@ where
 {
     let discrete_log_witness_group_public_parameters = bounded_integers_group::PublicParameters::<
         DISCRETE_LOG_WITNESS_LIMBS,
-    >::new_with_randomizer_upper_bound_selected(
-        discrete_log_bits, backward_compatible
+    >::new_with_randomizer_upper_bound(
+        discrete_log_bits
     )?;
 
     let proofs_and_protocol_contexts_and_statements: Vec<(PartyID, [_; NUM_PRIMES])> =

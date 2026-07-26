@@ -1034,44 +1034,6 @@ where
 
 /// Prove equality between the discrete logs $(g_1,g_1^x_i), (g_2,g_2^x_i), ..., (g_n,g_n^x_i)$
 /// under different hidden order groups $g_1\in G_1, g_2 \in G_2,...,g_n \in G_n$ for a batch $ {x_i}_i $.
-pub fn prove_equality_of_discrete_log_backward_compatible<
-    const DISCRETE_LOG_WITNESS_LIMBS: usize,
-    HiddenOrderGroupElement,
->(
-    language_public_parameters: EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters<
-        DISCRETE_LOG_WITNESS_LIMBS,
-        HiddenOrderGroupElement,
-    >,
-    discrete_logs: Vec<bounded_integers_group::GroupElement<DISCRETE_LOG_WITNESS_LIMBS>>,
-    protocol_context: &ProtocolContext,
-    rng: &mut impl CsRng,
-) -> Result<(
-    EqualityOfDiscreteLogsInHiddenOrderGroupProof<
-        DISCRETE_LOG_WITNESS_LIMBS,
-        HiddenOrderGroupElement,
-    >,
-    Vec<HiddenOrderGroupElement>,
-)>
-where
-    Int<DISCRETE_LOG_WITNESS_LIMBS>: Encoding,
-    Uint<DISCRETE_LOG_WITNESS_LIMBS>: Encoding,
-    HiddenOrderGroupElement: group::GroupElement + Scale<Int<DISCRETE_LOG_WITNESS_LIMBS>>,
-{
-    let (proof, base_by_discrete_logs) = EqualityOfDiscreteLogsInHiddenOrderGroupProof::<
-        DISCRETE_LOG_WITNESS_LIMBS,
-        HiddenOrderGroupElement,
-    >::prove(
-        protocol_context,
-        &language_public_parameters,
-        discrete_logs,
-        rng,
-    )?;
-
-    Ok((proof, base_by_discrete_logs))
-}
-
-/// Prove equality between the discrete logs $(g_1,g_1^x_i), (g_2,g_2^x_i), ..., (g_n,g_n^x_i)$
-/// under different hidden order groups $g_1\in G_1, g_2 \in G_2,...,g_n \in G_n$ for a batch $ {x_i}_i $.
 pub fn prove_equality_of_discrete_log<
     const DISCRETE_LOG_LIMBS: usize,
     const DISCRETE_LOG_WITNESS_LIMBS: usize,

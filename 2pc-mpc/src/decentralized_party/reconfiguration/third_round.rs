@@ -20,7 +20,7 @@ use mpc::{
     AsynchronousRoundResult, HandleInvalidMessages, MajorityVote, WeightedThresholdAccessStructure,
 };
 
-use crate::decentralized_party::reconfiguration::{Message, NonAggregatedPublicOutput};
+use crate::decentralized_party::reconfiguration::{Message, PublicOutput};
 use crate::decentralized_party::threshold_encryption_of_secret_key_share_parts_to_sharing::ThresholdDecryptionRoundMessage;
 use crate::languages::EqualityOfDiscreteLogsInHiddenOrderGroupPublicParameters;
 use crate::{decentralized_party::dkg, Error, ErrorKind, Result};
@@ -59,7 +59,7 @@ impl super::Party {
         current_decryption_key_share_bits: u32,
         randomizer_contribution_bits: u32,
         rng: &mut impl CsRng,
-    ) -> Result<AsynchronousRoundResult<Message, (), NonAggregatedPublicOutput>> {
+    ) -> Result<AsynchronousRoundResult<Message, (), PublicOutput>> {
         Self::advance_third_round_internal(
             tangible_party_id,
             session_id,
@@ -188,7 +188,6 @@ impl super::Party {
             decryption_key_shares,
             current_decryption_key_share_bits,
             randomizer_contribution_bits,
-            class_groups_public_input.backward_compatible,
             malicious_coefficient_committers,
             rng,
         )?;

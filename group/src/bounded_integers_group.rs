@@ -71,42 +71,6 @@ where
 
         Self::new(sample_bits, upper_bound_bits)
     }
-
-    /// Relaxes the upper bound by 10 bits (`sample_bits + MAURER_PROOFS_DIFF_UPPER_BOUND_BITS - 10`)
-    /// to match the bound the deployed network (inkrypto `37bb549f`) transcribes into Fiat–Shamir.
-    /// Used by the live `decentralized_party` DKG/Reconfiguration path and by the
-    /// `decentralized_party_backward_compatible` module; both must reproduce this `-10` exactly, or
-    /// peers derive a different challenge and reject the proof. The strict
-    /// `new_with_randomizer_upper_bound` (no `-10`) is reserved for future, not-yet-deployed formats.
-    pub fn new_with_randomizer_upper_bound_backward_compatible(sample_bits: u32) -> Result<Self> {
-        let upper_bound_bits = sample_bits
-            .checked_add(MAURER_PROOFS_DIFF_UPPER_BOUND_BITS)
-            .ok_or_else(|| Error::from(ErrorKind::InvalidPublicParameters))?
-            .checked_sub(10)
-            .ok_or_else(|| Error::from(ErrorKind::InvalidPublicParameters))?;
-
-        Self::new(sample_bits, upper_bound_bits)
-    }
-
-    /// TEMPORARY — remove once the network has fully migrated off the deployed (inkrypto
-    /// `37bb549f`) wire format and backward compatibility is no longer required; callers should
-    /// then use [`Self::new_with_randomizer_upper_bound`] directly and the `backward_compatible`
-    /// flag threaded to reach this call should be deleted.
-    ///
-    /// Selects the upper-bound constructor by protocol mode: `backward_compatible` picks the `-10`
-    /// relaxed bound that the deployed network transcribes, otherwise the strict bound. The choice
-    /// must be identical across all parties in a run, since the bound enters the Fiat–Shamir
-    /// transcript.
-    pub fn new_with_randomizer_upper_bound_selected(
-        sample_bits: u32,
-        backward_compatible: bool,
-    ) -> Result<Self> {
-        if backward_compatible {
-            Self::new_with_randomizer_upper_bound_backward_compatible(sample_bits)
-        } else {
-            Self::new_with_randomizer_upper_bound(sample_bits)
-        }
-    }
 }
 
 impl<const LIMBS: usize> Samplable for GroupElement<LIMBS>

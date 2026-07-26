@@ -1370,7 +1370,6 @@ where
         .generate_decryption_shares(
             vec![encryption_of_masked_secret],
             decryption_key_share_public_parameters,
-            false,
             rng,
         )
         .into_option()
@@ -1570,7 +1569,6 @@ where
         vec![encryption_of_masked_secret],
         decryption_shares_and_proofs,
         decryption_key_share_public_parameters,
-        false,
         rng,
     )
     .map_err(|_| crate::Error::from(crate::ErrorKind::InternalError))?;

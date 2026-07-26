@@ -140,7 +140,6 @@ where
             randomizer_contribution_to_upcoming_pvss_party,
             threshold_decrypt_messages,
             current_decryption_key_share_bits,
-            public_input.backward_compatible,
             rng,
         )?;
 
@@ -188,7 +187,6 @@ where
             >,
         >,
         current_decryption_key_share_bits: u32,
-        backward_compatible: bool,
         rng: &mut impl CsRng,
     ) -> Result<(
         Vec<PartyID>,
@@ -283,9 +281,8 @@ where
                 .collect();
 
         let discrete_log_public_parameters =
-            bounded_integers_group::PublicParameters::new_with_randomizer_upper_bound_selected(
+            bounded_integers_group::PublicParameters::new_with_randomizer_upper_bound(
                 current_decryption_key_share_bits,
-                backward_compatible,
             )?;
 
         let parties_sending_invalid_threshold_public_verification_keys_proofs =
@@ -370,7 +367,6 @@ where
                     vec![threshold_encryption_of_masked_decryption_key],
                     decryption_shares_and_proofs,
                     &threshold_decryption_key_share_public_parameters_per_crt_prime[i],
-                    backward_compatible,
                     rng,
                 )?;
 

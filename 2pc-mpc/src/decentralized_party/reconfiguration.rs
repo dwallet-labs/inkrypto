@@ -36,7 +36,7 @@ use group::{
     GroupElement as _, PartyID,
 };
 use mpc::{AsynchronousRoundResult, AsynchronouslyAdvanceable, WeightedThresholdAccessStructure};
-pub use public_output::{NonAggregatedPublicOutput, PublicOutput, PublicOutputCore};
+pub use public_output::{PublicOutput, PublicOutputCore};
 
 #[cfg(feature = "unsafe_mock")]
 pub use crate::mock::network_dkg::MockNetworkReconfigurationParty as Party;
@@ -239,7 +239,6 @@ impl PublicInput {
                 >,
             ),
         >,
-        backward_compatible: bool,
     ) -> crate::Result<Self> {
         let ristretto_setup_parameters =
             RistrettoSetupParameters::derive_from_plaintext_parameters::<ristretto::Scalar>(
@@ -273,7 +272,6 @@ impl PublicInput {
                 DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
                 current_tangible_party_id_to_upcoming,
                 dkg_output,
-                backward_compatible,
             )?;
 
         let secp256k1_setup_parameters =
@@ -529,7 +527,6 @@ impl PublicInput {
                 >,
             ),
         >,
-        backward_compatible: bool,
     ) -> crate::Result<Self> {
         let ristretto_setup_parameters =
             RistrettoSetupParameters::derive_from_plaintext_parameters::<ristretto::Scalar>(
@@ -563,7 +560,6 @@ impl PublicInput {
                 DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
                 current_tangible_party_id_to_upcoming,
                 universal_public_output.clone().into(),
-                backward_compatible,
             )?;
 
         let secp256k1_setup_parameters =
@@ -836,11 +832,7 @@ impl mpc::Party for Party {
     type Error = Error;
     type PublicInput = PublicInput;
     type PrivateOutput = ();
-    // The Party's wire output stays the NON-aggregated shape: it is the deployed
-    // v4 quorum format the gated reconfiguration rollout must keep emitting
-    // byte-identically. Consumers upgrade() to the primary (aggregated)
-    // `PublicOutput` on demand.
-    type PublicOutputValue = NonAggregatedPublicOutput;
+    type PublicOutputValue = PublicOutput;
     type PublicOutput = Self::PublicOutputValue;
     type Message = Message;
 }
@@ -887,14 +879,11 @@ impl AsynchronouslyAdvanceable for Party {
         // In order for us to maintain the structure of the code we do not use $h_{q}$ as a verification key to the threshold encryptions defined by the different CRT primes.
         // Instead, each virtual current party compute $\textsf{vk}_{Q'_{m'}}^{i_{T}}=h_{Q'_{m'}}^{[s]_{i_{T}}}$ and prove equality of discrete log between this new verification per CRT prime to the original verification key.
         // Then they use this verification key to prove correct decryption as typically happens in threshold decryption.
-        // The bounds public parameters are transcribed whole into Fiat–Shamir. Under
-        // `backward_compatible` we select the `-10` relaxed bound the deployed network (inkrypto
-        // `37bb549f`) uses; otherwise the strict bound. A mismatch makes peers reject the proof and
-        // flag the dealer malicious.
+        // The bounds public parameters are transcribed whole into Fiat–Shamir; a mismatch makes
+        // peers reject the proof and flag the dealer malicious.
         let discrete_log_group_public_parameters =
-            bounded_integers_group::PublicParameters::new_with_randomizer_upper_bound_selected(
+            bounded_integers_group::PublicParameters::new_with_randomizer_upper_bound(
                 randomizer_share_bits,
-                public_input.class_groups_public_input.backward_compatible,
             )?;
 
         let secp256k1_setup_parameters = &public_input.class_groups_public_input.setup_parameters;
@@ -1040,7 +1029,8 @@ pub(crate) mod tests {
     use mpc::test_helpers::asynchronous_session_terminates_successfully_internal;
 
     #[cfg(test)]
-    fn reconfigures_with_mode(backward_compatible: bool) {
+    #[test]
+    fn reconfigures() {
         let current_threshold = 3;
         let current_number_of_parties = 5;
         let upcoming_threshold = 2;
@@ -1079,24 +1069,8 @@ pub(crate) mod tests {
             current_access_structure,
             upcoming_access_structure,
             current_tangible_party_id_to_upcoming,
-            backward_compatible,
             false,
         );
-    }
-
-    #[test]
-    fn reconfigures() {
-        reconfigures_with_mode(false);
-    }
-
-    /// TEMPORARY (remove with the rest of the `backward_compatible` mechanism, once the network has
-    /// fully migrated off the inkrypto `37bb549f` wire format): Reconfiguration must also complete
-    /// in `backward_compatible = true` mode. This is the protocol whose round-1 equality-of-
-    /// coefficients proof broke against the deployed network; the test proves the `-10` bound is
-    /// threaded consistently to every reconfiguration proof site.
-    #[test]
-    fn reconfigures_backward_compatible() {
-        reconfigures_with_mode(true);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1104,9 +1078,8 @@ pub(crate) mod tests {
         current_access_structure: WeightedThresholdAccessStructure,
         upcoming_access_structure: WeightedThresholdAccessStructure,
         current_tangible_party_id_to_upcoming: HashMap<PartyID, Option<PartyID>>,
-        backward_compatible: bool,
         bench: bool,
-    ) -> NonAggregatedPublicOutput {
+    ) -> PublicOutput {
         let secp256k1_setup_parameters = get_setup_parameters_secp256k1_112_bits_deterministic();
         let (secp256k1_encryption_scheme_public_parameters, secp256k1_decryption_key) =
             Secp256k1DecryptionKey::generate_with_setup_parameters(
@@ -1302,10 +1275,7 @@ pub(crate) mod tests {
             true,
         );
 
-        let mut class_groups_public_input = public_inputs.values().next().unwrap().clone();
-        // TEMPORARY (remove with the rest of the `backward_compatible` mechanism): exercise the
-        // `-10` deployed-network bound end-to-end through Reconfiguration.
-        class_groups_public_input.backward_compatible = backward_compatible;
+        let class_groups_public_input = public_inputs.values().next().unwrap().clone();
 
         // Generate PVSS encryption keys for Protocol 0.1 randomizer dealing
         use class_groups::publicly_verifiable_secret_sharing::small_prime::encryption::generate_and_prove_encryption_keypair;
@@ -1521,7 +1491,7 @@ pub(crate) mod tests {
         private_inputs: HashMap<PartyID, HashMap<PartyID, SecretKeyShareSizedInteger>>,
         public_input: PublicInput,
         bench: bool,
-    ) -> NonAggregatedPublicOutput {
+    ) -> PublicOutput {
         let public_inputs = current_access_structure
             .party_to_weight
             .keys()

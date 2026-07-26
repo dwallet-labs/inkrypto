@@ -23,11 +23,6 @@ use proof::TranscriptProtocol;
 pub mod languages;
 
 pub mod decentralized_party;
-pub mod decentralized_party_backward_compatible;
-
-/// Regression pins locking the backward-compatible DKG/Reconfiguration wire format.
-#[cfg(test)]
-mod backward_compatible_wire_format_pins;
 pub mod dkg;
 pub mod ecdsa;
 pub mod presign;

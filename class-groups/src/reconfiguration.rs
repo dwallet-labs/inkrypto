@@ -158,14 +158,6 @@ pub struct PublicInput<
         FUNDAMENTAL_DISCRIMINANT_LIMBS,
         NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
     >,
-    /// TEMPORARY — remove once the network has fully migrated off the deployed (inkrypto
-    /// `37bb549f`) wire format and backward compatibility is no longer required.
-    ///
-    /// Runtime-only mode selector: `true` reproduces the deployed network's `-10` relaxed
-    /// discrete-log bounds. Never serialized/transcribed; only the bounds it selects are. The
-    /// choice must be identical across all parties in a run.
-    #[serde(skip)]
-    pub backward_compatible: bool,
 }
 
 /// The Message of the Reconfiguration protocol.
@@ -325,7 +317,6 @@ where
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
         >,
-        backward_compatible: bool,
     ) -> Result<Self>
     where
         GroupElement::Scalar: group::GroupElement<PublicParameters = ScalarPublicParameters>,
@@ -398,7 +389,6 @@ where
             decryption_key_share_public_parameters,
             upcoming_access_structure,
             dkg_output,
-            backward_compatible,
         })
     }
 }
@@ -738,7 +728,6 @@ pub(crate) mod test_helpers {
             DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
             current_tangible_party_id_to_upcoming.clone(),
             dkg_output.clone(),
-            false,
         )
         .unwrap();
 
@@ -1225,7 +1214,6 @@ pub(crate) mod test_helpers {
             DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
             current_tangible_party_id_to_upcoming.clone(),
             dkg_output.clone(),
-            false,
         )
         .unwrap();
 

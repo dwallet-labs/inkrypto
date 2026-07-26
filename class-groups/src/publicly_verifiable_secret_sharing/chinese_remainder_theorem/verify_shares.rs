@@ -209,7 +209,6 @@ where
                         self.public_verification_key_base,
                         self.base_protocol_context.clone(),
                         self.discrete_log_witness_group_public_parameters.sample_bits,
-                        self.backward_compatible,
                         &mut unique_rng
                     )
                 },

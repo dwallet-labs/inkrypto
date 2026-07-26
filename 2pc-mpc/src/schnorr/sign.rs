@@ -60,7 +60,11 @@ where
             &'a <Uint<SCALAR_LIMBS> as ConcatMixed<StatisticalSecuritySizedNumber>>::MixedOutput,
         >,
 {
-    // Note: this domain separator is wrong, the result of a copy-paste error; however, it has no significance in practice over security, so for backward compatibility it is kept as-is.
+    // NEVER CHANGE OR "FIX" THIS DOMAIN SEPARATOR. It is wrong — the result of a copy-paste
+    // error — but it has no significance over security, and it is deployed in production:
+    // values derived from this exact transcript have already been sent on the live network, so
+    // every party must keep deriving the identical presign public randomizer from it forever.
+    // There is no known migration off it. Do not revert, rename, or "correct" it.
     let mut transcript = Transcript::new(
         b"DKG randomize decentralized party public key share and encryption of secret key share",
     );

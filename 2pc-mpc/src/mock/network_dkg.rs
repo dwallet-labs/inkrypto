@@ -43,9 +43,9 @@ use ::class_groups::{
 
 use crate::decentralized_party::dkg::{PublicOutput, PublicOutputCore};
 use crate::decentralized_party::reconfiguration::{
-    NonAggregatedPublicOutput as ReconfigPublicOutput, PublicOutputCore as ReconfigPublicOutputCore,
+    PublicOutput as ReconfigPublicOutput, PublicOutputCore as ReconfigPublicOutputCore,
 };
-use crate::decentralized_party::threshold_encryption_of_secret_key_share_parts_to_sharing::NonAggregatedPublicOutput as SharingNonAggregatedPublicOutput;
+use crate::decentralized_party::threshold_encryption_of_secret_key_share_parts_to_sharing::PublicOutput as SharingPublicOutput;
 
 /// The deterministically-derived equivalence-class public parameters and the neutral values used
 /// for every class-group field of the mock outputs. The setup parameters are derived EXACTLY as
@@ -160,9 +160,7 @@ pub(crate) fn build_mock_network_dkg_public_output() -> PublicOutput {
 
     PublicOutput {
         core,
-        threshold_encryption_to_sharing_output: neutral_sharing_output()
-            .upgrade()
-            .expect("upgrading the empty neutral sharing output must succeed"),
+        threshold_encryption_to_sharing_output: neutral_sharing_output(),
     }
 }
 
@@ -251,7 +249,7 @@ pub(crate) fn mock_network_reconfiguration_public_output(
 
 /// A structurally-valid all-neutral/empty sharing sub-output. Only `derive_shamir_*` and
 /// `*_polynomial_commitments` read it, and the mock signing path calls neither.
-fn neutral_sharing_output() -> SharingNonAggregatedPublicOutput {
+fn neutral_sharing_output() -> SharingPublicOutput {
     let secp256k1_point = secp256k1::GroupElement::neutral_from_public_parameters(
         &secp256k1::group_element::PublicParameters::default(),
     )
@@ -294,7 +292,7 @@ fn neutral_sharing_output() -> SharingNonAggregatedPublicOutput {
     .unwrap()
     .value();
 
-    SharingNonAggregatedPublicOutput {
+    SharingPublicOutput {
         secp256k1_first_public_key_share: secp256k1_point,
         secp256k1_second_public_key_share: secp256k1_point,
         secp256k1_first_secret_polynomial_commitments: vec![],
@@ -311,10 +309,14 @@ fn neutral_sharing_output() -> SharingNonAggregatedPublicOutput {
         secp256r1_second_public_key_share: secp256r1_point,
         secp256r1_first_secret_polynomial_commitments: vec![],
         secp256r1_second_secret_polynomial_commitments: vec![],
-        secp256k1_randomizer_dealings: HashMap::new(),
-        ristretto_randomizer_dealings: HashMap::new(),
-        curve25519_randomizer_dealings: HashMap::new(),
-        secp256r1_randomizer_dealings: HashMap::new(),
+        secp256k1_first_encryptions_of_randomizer_shares: HashMap::new(),
+        secp256k1_second_encryptions_of_randomizer_shares: HashMap::new(),
+        ristretto_first_encryptions_of_randomizer_shares: HashMap::new(),
+        ristretto_second_encryptions_of_randomizer_shares: HashMap::new(),
+        curve25519_first_encryptions_of_randomizer_shares: HashMap::new(),
+        curve25519_second_encryptions_of_randomizer_shares: HashMap::new(),
+        secp256r1_first_encryptions_of_randomizer_shares: HashMap::new(),
+        secp256r1_second_encryptions_of_randomizer_shares: HashMap::new(),
         secp256k1_first_masked_secret_key_share_part: secp256k1_scalar,
         secp256k1_second_masked_secret_key_share_part: secp256k1_scalar,
         ristretto_first_masked_secret_key_share_part: ristretto_scalar,
@@ -428,105 +430,6 @@ impl AsynchronouslyAdvanceable for MockNetworkReconfigurationParty {
             Ok((
                 (),
                 mock_network_reconfiguration_public_output(current_access_structure),
-            ))
-        })
-    }
-
-    fn round_causing_threshold_not_reached(current_round: u64) -> Option<u64> {
-        crate::mock::mock_round_causing_threshold_not_reached(current_round)
-    }
-}
-
-// ===================================================================================================
-// Backward-compatible (V2) network DKG + reconfiguration twins
-// ===================================================================================================
-//
-// The pre-Protocol-0.1 (V2) network DKG / reconfiguration parties produce the *core* public output
-// (the `PublicOutputCore` shape, without the Protocol-0.1 Shamir-sharing sub-output). Their
-// `PublicOutput` re-exports the V3 core, so these mocks finalize with the `core` of the same cached
-// canonical `NETWORK_KEY_SEED` output the V3 mocks return.
-
-/// INSECURE mock of the backward-compatible (V2) network-DKG party — finalizes round 1 with the
-/// `core` of the cached deterministic mock network-DKG output.
-pub struct MockNetworkDKGPartyV2;
-
-impl mpc::Party for MockNetworkDKGPartyV2 {
-    type Error = crate::Error;
-    type PublicInput = crate::decentralized_party_backward_compatible::dkg::PublicInput;
-    type PrivateOutput = ();
-    type PublicOutputValue = crate::decentralized_party_backward_compatible::dkg::PublicOutput;
-    type PublicOutput = Self::PublicOutputValue;
-    // The mock simulates the round structure but sends only a magic `u64` each
-    // round (see `crate::mock::MOCK_HONEST_MESSAGE`); the message type need not
-    // match the real protocol's.
-    type Message = u64;
-}
-
-impl AsynchronouslyAdvanceable for MockNetworkDKGPartyV2 {
-    type PrivateInput = [Uint<CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS>; MAX_PRIMES];
-
-    fn advance(
-        _session_id: CommitmentSizedNumber,
-        _tangible_party_id: PartyID,
-        access_structure: &WeightedThresholdAccessStructure,
-        messages: Vec<HashMap<PartyID, Self::Message>>,
-        _private_input: Option<Self::PrivateInput>,
-        _public_input: &Self::PublicInput,
-        _rng: &mut impl CsRng,
-    ) -> std::result::Result<
-        AsynchronousRoundResult<Self::Message, Self::PrivateOutput, Self::PublicOutput>,
-        Self::Error,
-    > {
-        // The backward-compatible (V2) network-DKG decentralized party is a 4-round protocol.
-        crate::mock::mock_advance_result(access_structure, &messages, 4, || {
-            Ok(((), mock_network_dkg_public_output().core.clone()))
-        })
-    }
-
-    fn round_causing_threshold_not_reached(current_round: u64) -> Option<u64> {
-        crate::mock::mock_round_causing_threshold_not_reached(current_round)
-    }
-}
-
-/// INSECURE mock of the backward-compatible (V2) network-reconfiguration party — finalizes round 1
-/// with the `core` of the deterministic mock reconfiguration output (re-shares the SAME canonical
-/// `NETWORK_KEY_SEED` key).
-pub struct MockNetworkReconfigurationPartyV2;
-
-impl mpc::Party for MockNetworkReconfigurationPartyV2 {
-    type Error = crate::Error;
-    type PublicInput = crate::decentralized_party_backward_compatible::reconfiguration::PublicInput;
-    type PrivateOutput = ();
-    type PublicOutputValue =
-        crate::decentralized_party_backward_compatible::reconfiguration::PublicOutput;
-    type PublicOutput = Self::PublicOutputValue;
-    // The mock simulates the round structure but sends only a magic `u64` each
-    // round (see `crate::mock::MOCK_HONEST_MESSAGE`); the message type need not
-    // match the real protocol's.
-    type Message = u64;
-}
-
-impl AsynchronouslyAdvanceable for MockNetworkReconfigurationPartyV2 {
-    type PrivateInput = HashMap<PartyID, SecretKeyShareSizedInteger>;
-
-    fn advance(
-        _session_id: CommitmentSizedNumber,
-        _tangible_party_id: PartyID,
-        current_access_structure: &WeightedThresholdAccessStructure,
-        messages: Vec<HashMap<PartyID, Self::Message>>,
-        _private_input: Option<Self::PrivateInput>,
-        _public_input: &Self::PublicInput,
-        _rng: &mut impl CsRng,
-    ) -> std::result::Result<
-        AsynchronousRoundResult<Self::Message, Self::PrivateOutput, Self::PublicOutput>,
-        Self::Error,
-    > {
-        // The backward-compatible (V2) network-reconfiguration decentralized party is a 4-round
-        // protocol.
-        crate::mock::mock_advance_result(current_access_structure, &messages, 4, || {
-            Ok((
-                (),
-                mock_network_reconfiguration_public_output(current_access_structure).core,
             ))
         })
     }

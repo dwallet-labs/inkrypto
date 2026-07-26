@@ -34,7 +34,6 @@ impl AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS> for Encryp
     type PublicParameters = PublicParameters;
 
     /// Create a new `EncryptionKey` Object.
-    /// Parameter `public_parameters` is here for legacy reasons.
     fn new(_public_parameters: &Self::PublicParameters) -> homomorphic_encryption::Result<Self> {
         // Public Parameters are passed during each encryption operation.
         Ok(EncryptionKey {})
