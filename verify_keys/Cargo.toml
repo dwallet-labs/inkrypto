@@ -1,0 +1,11 @@
+[package]
+name = "verify_keys"
+version = "0.0.1"
+edition = "2021"
+
+[dependencies]
+class_groups = { path = "../class-groups", features = ["threshold"] }
+mpc = { path = "../mpc" }
+group = { path = "../group" }
+crypto-bigint = { workspace = true }
+bcs = { workspace = true }

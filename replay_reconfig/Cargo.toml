@@ -1,0 +1,17 @@
+[package]
+name = "replay_reconfig"
+version = "0.0.1"
+edition = "2021"
+
+[dependencies]
+twopc_mpc = { path = "../2pc-mpc", features = ["test_helpers"] }
+class_groups = { path = "../class-groups", features = ["threshold"] }
+mpc = { path = "../mpc" }
+group = { path = "../group" }
+commitment = { path = "../commitment" }
+crypto-bigint = { workspace = true }
+bcs = { workspace = true }
+hex = "0.4"
+rand_chacha = { workspace = true }
+rand_core = { workspace = true }
+serde = { workspace = true }

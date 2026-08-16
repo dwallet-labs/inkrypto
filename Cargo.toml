@@ -12,6 +12,7 @@ members = [
     "tiresias",
     "2pc-mpc",
     "class-groups",
+    "replay_reconfig",
 ]
 
 exclude = []

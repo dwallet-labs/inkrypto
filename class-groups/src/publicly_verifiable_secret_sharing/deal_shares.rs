@@ -115,7 +115,7 @@ where
             encryption_keys_per_crt_prime.keys().copied().collect();
         self.participating_parties_access_structure
             .is_authorized_subset(&participating_parties_with_valid_encryption_keys)
-            .map_err(|_| Error::InternalError)?;
+            .map_err(Error::from)?;
 
         // ($\bar{C}_{i}=\bar{g}_{q'}^{f(i)}$, $[s]_{{i}}=f(i)$)
         let (coefficients_contribution_commitments, coefficients_for_commitments, secret_shares) =
@@ -633,10 +633,46 @@ where
             },
         ).handle_invalid_messages_async();
 
+        // DEBUG (mainnet-v1.1.8-debug): dump the per-dealer recipient subset
+        // and surface the upstream weighted_majority_vote error variant rather
+        // than collapsing it to InternalError.
+        eprintln!("[debug] consensus_parties_holding_valid_encryption_keys: {} dealers reported recipient subsets", parties_with_valid_encryption_keys.len());
+        eprintln!("[debug] dealer_access_structure threshold = {}", self.dealer_access_structure.threshold);
+        let mut recipient_size_hist: std::collections::BTreeMap<usize, Vec<group::PartyID>> = std::collections::BTreeMap::new();
+        for (&dealer, recipients) in &parties_with_valid_encryption_keys {
+            recipient_size_hist.entry(recipients.len()).or_default().push(dealer);
+        }
+        for (size, dealers) in &recipient_size_hist {
+            eprintln!("[debug]   {} dealers chose recipient subset of size {}: dealers = {:?}", dealers.len(), size, dealers);
+        }
+        // Hash each recipient subset to find groupings of agreeing dealers.
+        let mut subset_to_dealers: std::collections::BTreeMap<Vec<group::PartyID>, Vec<group::PartyID>> = std::collections::BTreeMap::new();
+        for (&dealer, recipients) in &parties_with_valid_encryption_keys {
+            let mut sorted = recipients.clone();
+            sorted.sort();
+            subset_to_dealers.entry(sorted).or_default().push(dealer);
+        }
+        eprintln!("[debug] {} distinct recipient subsets found:", subset_to_dealers.len());
+        for (subset, dealers) in &subset_to_dealers {
+            eprintln!("[debug]   subset_size={} agreed_by={} dealers", subset.len(), dealers.len());
+        }
+        // Diff each smaller subset against the largest to identify missing parties.
+        if let Some((largest, _)) = subset_to_dealers.iter().max_by_key(|(s, _)| s.len()) {
+            let largest_set: std::collections::BTreeSet<group::PartyID> = largest.iter().copied().collect();
+            for (subset, dealers) in &subset_to_dealers {
+                if subset.len() < largest.len() {
+                    let s: std::collections::BTreeSet<group::PartyID> = subset.iter().copied().collect();
+                    let missing: Vec<_> = largest_set.difference(&s).copied().collect();
+                    eprintln!("[debug]   dealer(s) {:?} excluded these {} upcoming parties (vs largest set): {:?}",
+                        dealers, missing.len(), missing);
+                }
+            }
+        }
+
         let (disagreeing_parties, parties_that_were_dealt_shares) =
             parties_with_valid_encryption_keys
                 .weighted_majority_vote(&self.dealer_access_structure)
-                .map_err(|_| Error::InternalError)?;
+                .map_err(Error::from)?;
 
         let malicious_dealers: Vec<_> = parties_encrypting_inconsistently
             .into_iter()

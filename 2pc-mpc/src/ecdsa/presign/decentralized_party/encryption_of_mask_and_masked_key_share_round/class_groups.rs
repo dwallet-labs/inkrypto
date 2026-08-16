@@ -520,7 +520,7 @@ where
             encryption_of_mask_and_masked_key_share_messages
                 .clone()
                 .weighted_majority_vote(access_structure)
-                .map_err(|_| Error::InternalError)?;
+                .map_err(Error::from)?;
 
         let malicious_parties =
             parties_sending_invalid_encryption_of_mask_and_masked_key_share_messages
@@ -574,7 +574,7 @@ where
             encryption_of_mask_and_masked_key_share_parts_messages
                 .clone()
                 .weighted_majority_vote(access_structure)
-                .map_err(|_| Error::InternalError)?;
+                .map_err(Error::from)?;
 
         let malicious_parties =
             parties_sending_invalid_encryption_of_mask_and_masked_key_share_messages
