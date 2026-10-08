@@ -11,8 +11,11 @@ use std::fmt::Debug;
 /// party.
 ///
 /// - `Unverified`: The raw message from the centralized party that needs verification.
-/// - `Verified`: The message has already been verified (e.g., by a trusted coordinator);
-///   verification is skipped but computation proceeds normally.
+/// - `Verified`: The output of [`Protocol::verify_centralized_party_partial_signature`], i.e. the
+///   message has already been verified against the DKG output and the presign. Verification is
+///   skipped. For ECDSA and Schnorr AHE the verified data holds everything the presign would
+///   contribute, so their sign public inputs may omit the presign. VSS Schnorr still needs it,
+///   because each party derives its signature share from its presign nonce shares.
 /// - `ToBeEmulated`: No centralized party participated; a default (identity/zero) partial
 ///   signature is constructed and processed through the unverified path.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -396,6 +399,9 @@ pub(crate) mod tests {
         /// Run centralized party and verify the partial signature before passing to
         /// decentralized parties.
         Verified,
+        /// As `Verified`, but the decentralized parties get no presign. Only ECDSA and Schnorr
+        /// AHE support this; VSS Schnorr needs the presign to compute signature shares.
+        VerifiedWithoutPresign,
         /// Emulated mode: the centralized party runs with a zero secret key share
         /// (x_A = 0). DKG output should come from `mock_targeted_dkg_output`.
         Emulated,
@@ -410,7 +416,7 @@ pub(crate) mod tests {
     >(
         protocol_public_parameters: Arc<crate::class_groups::ProtocolPublicParameters<SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>>,
         dkg_output: crate::class_groups::DKGDecentralizedPartyVersionedOutput<SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>,
-        presign: crate::class_groups::ecdsa::VersionedPresign<SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>,
+        presign: Option<crate::class_groups::ecdsa::VersionedPresign<SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>>,
         decryption_key_share_public_parameters: Arc<crate::class_groups::DecryptionKeySharePublicParameters<SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>>,
         message: Vec<u8>,
         hash_type: HashScheme,
@@ -527,26 +533,23 @@ pub(crate) mod tests {
     >(
         protocol_public_parameters: Arc<crate::class_groups::ProtocolPublicParameters<SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>>,
         dkg_output: crate::class_groups::DKGDecentralizedPartyVersionedOutput<SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>,
-        presign: crate::class_groups::schnorr::Presign<SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>,
+        presign: Option<crate::class_groups::schnorr::Presign<SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>>,
         decryption_key_share_public_parameters: Arc<crate::class_groups::DecryptionKeySharePublicParameters<SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>>,
         message: Vec<u8>,
         hash_scheme: HashScheme,
         hash_context: HashContext,
-        sign_data: SignData<
-            schnorr::PartialSignature<
-                GroupElement::Value,
-                group::Value<GroupElement::Scalar>,
-            >,
-            schnorr::PartialSignature<
-                GroupElement::Value,
-                group::Value<GroupElement::Scalar>,
-            >,
+        sign_data: crate::class_groups::schnorr::SignData<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
         >,
         expected_decrypters: HashSet<PartyID>
     ) -> crate::schnorr::ahe::sign::decentralized_party::PublicInput<
         crate::class_groups::DKGDecentralizedPartyVersionedOutput<SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>,
         crate::class_groups::schnorr::Presign<SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>,
         schnorr::PartialSignature<GroupElement::Value, group::Value<GroupElement::Scalar>>,
+        crate::class_groups::schnorr::VerifiedSignData<SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>,
         crate::class_groups::DecryptionKeySharePublicParameters<SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>,
         crate::class_groups::ProtocolPublicParameters<SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>,
     >
@@ -643,7 +646,7 @@ pub(crate) mod tests {
     >(
         protocol_public_parameters: Arc<crate::class_groups::ProtocolPublicParameters<SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>>,
         dkg_output: crate::class_groups::DKGDecentralizedPartyVersionedOutput<SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement>,
-        presign: crate::schnorr::vss::Presign<GroupElement::Value>,
+        presign: Option<crate::schnorr::vss::Presign<GroupElement::Value>>,
         secret_key_polynomial_commitments: Arc<(Vec<GroupElement::Value>, Vec<GroupElement::Value>)>,
         message: Vec<u8>,
         hash_scheme: HashScheme,
@@ -730,6 +733,9 @@ pub(crate) mod tests {
         Clone + Serialize + for<'a> Deserialize<'a> + PartialEq + Eq,
         group::Value<GroupElement::Scalar>: Into<Uint<SCALAR_LIMBS>>,
     {
+        // VSS Schnorr derives each party's signature share from the presign, so it is never
+        // optional there.
+        let presign = presign.expect("VSS Schnorr sign requires the presign");
         let (first_secret_key_polynomial_commitments, second_secret_key_polynomial_commitments) =
             (*secret_key_polynomial_commitments).clone();
         crate::vss::schnorr::SignPartyPublicInput {
@@ -776,7 +782,7 @@ pub(crate) mod tests {
                 <P::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
             >,
             dkg_output: <P::DKGProtocol as dkg::Protocol>::DecentralizedPartyDKGOutput,
-            presign: P::Presign,
+            presign: Option<P::Presign>,
             decryption_key_share_public_parameters: Arc<PublicInputExtraData>,
             message: Vec<u8>,
             hash_type: HashScheme,
@@ -847,7 +853,7 @@ pub(crate) mod tests {
 
             match sign_data_mode {
                 SignDataMode::Unverified => SignData::Unverified(sign_message),
-                SignDataMode::Verified => {
+                SignDataMode::Verified | SignDataMode::VerifiedWithoutPresign => {
                     let verified_data = P::verify_centralized_party_partial_signature(
                         message,
                         hash_type,
@@ -933,7 +939,8 @@ pub(crate) mod tests {
                     construct_presign_public_input(
                         protocol_public_parameters.clone(),
                         decentralized_party_dkg_output.clone(),
-                        presign.clone(),
+                        (sign_data_mode != SignDataMode::VerifiedWithoutPresign)
+                            .then(|| presign.clone()),
                         Arc::new(public_input_extra_data.clone()),
                         message.to_vec(),
                         hash_type,
@@ -1041,8 +1048,10 @@ pub(crate) mod tests {
     #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, SignDataMode::Unverified)]
     #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), true, SignDataMode::Unverified)]
     #[case(2, HashMap::from([(1, 1), (2, 1)]), false, SignDataMode::Verified)]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), false, SignDataMode::VerifiedWithoutPresign)]
     #[case(2, HashMap::from([(1, 1), (2, 1)]), false, SignDataMode::Emulated)]
     #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, SignDataMode::Verified)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, SignDataMode::VerifiedWithoutPresign)]
     #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, SignDataMode::Emulated)]
     fn dkg_presign_signs_ecdsa_async_class_groups_secp256r1(
         #[case] threshold: PartyID,
@@ -1284,8 +1293,10 @@ pub(crate) mod tests {
     #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, SignDataMode::Unverified)]
     #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), true, SignDataMode::Unverified)]
     #[case(2, HashMap::from([(1, 1), (2, 1)]), false, SignDataMode::Verified)]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), false, SignDataMode::VerifiedWithoutPresign)]
     #[case(2, HashMap::from([(1, 1), (2, 1)]), false, SignDataMode::Emulated)]
     #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, SignDataMode::Verified)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, SignDataMode::VerifiedWithoutPresign)]
     #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, SignDataMode::Emulated)]
     fn dkg_presign_signs_schnorr_async_class_groups_curve25519(
         #[case] threshold: PartyID,
@@ -1339,9 +1350,11 @@ pub(crate) mod tests {
                 group::Value<curve25519::GroupElement>,
                 group::Value<curve25519::Scalar>,
             >,
-            VerifiedSignData = schnorr::PartialSignature<
-                group::Value<curve25519::GroupElement>,
-                group::Value<curve25519::Scalar>,
+            VerifiedSignData = crate::class_groups::schnorr::VerifiedSignData<
+                { curve25519::SCALAR_LIMBS },
+                { crate::curve25519::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::curve25519::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                curve25519::GroupElement,
             >,
             SignDecentralizedPartyPublicInput = crate::schnorr::ahe::sign::decentralized_party::PublicInput<
                 crate::dkg::decentralized_party::VersionedOutput<
@@ -1358,6 +1371,12 @@ pub(crate) mod tests {
                 schnorr::PartialSignature<
                     group::Value<curve25519::GroupElement>,
                     group::Value<curve25519::Scalar>,
+                >,
+                crate::class_groups::schnorr::VerifiedSignData<
+                    { curve25519::SCALAR_LIMBS },
+                    { crate::curve25519::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::curve25519::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    curve25519::GroupElement,
                 >,
                 class_groups::Curve25519DecryptionKeySharePublicParameters,
                 crate::class_groups::ProtocolPublicParameters<
@@ -1525,8 +1544,10 @@ pub(crate) mod tests {
     #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, SignDataMode::Unverified)]
     #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), true, SignDataMode::Unverified)]
     #[case(2, HashMap::from([(1, 1), (2, 1)]), false, SignDataMode::Verified)]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), false, SignDataMode::VerifiedWithoutPresign)]
     #[case(2, HashMap::from([(1, 1), (2, 1)]), false, SignDataMode::Emulated)]
     #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, SignDataMode::Verified)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, SignDataMode::VerifiedWithoutPresign)]
     #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, SignDataMode::Emulated)]
     fn dkg_presign_signs_schnorr_async_class_groups_ristretto(
         #[case] threshold: PartyID,
@@ -1582,9 +1603,11 @@ pub(crate) mod tests {
                 group::Value<ristretto::GroupElement>,
                 group::Value<ristretto::Scalar>,
             >,
-            VerifiedSignData = schnorr::PartialSignature<
-                group::Value<ristretto::GroupElement>,
-                group::Value<ristretto::Scalar>,
+            VerifiedSignData = crate::class_groups::schnorr::VerifiedSignData<
+                { ristretto::SCALAR_LIMBS },
+                { crate::ristretto::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::ristretto::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                ristretto::GroupElement,
             >,
             SignDecentralizedPartyPublicInput = crate::schnorr::ahe::sign::decentralized_party::PublicInput<
                 crate::dkg::decentralized_party::VersionedOutput<
@@ -1601,6 +1624,12 @@ pub(crate) mod tests {
                 schnorr::PartialSignature<
                     group::Value<ristretto::GroupElement>,
                     group::Value<ristretto::Scalar>,
+                >,
+                crate::class_groups::schnorr::VerifiedSignData<
+                    { ristretto::SCALAR_LIMBS },
+                    { crate::ristretto::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::ristretto::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    ristretto::GroupElement,
                 >,
                 class_groups::RistrettoDecryptionKeySharePublicParameters,
                 crate::class_groups::ProtocolPublicParameters<
@@ -1768,8 +1797,10 @@ pub(crate) mod tests {
     #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, HashScheme::SHA256, HashContext::None, SignDataMode::Unverified)]
     #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), true, HashScheme::SHA256, HashContext::None, SignDataMode::Unverified)]
     #[case(2, HashMap::from([(1, 1), (2, 1)]), false, HashScheme::SHA256, HashContext::None, SignDataMode::Verified)]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), false, HashScheme::SHA256, HashContext::None, SignDataMode::VerifiedWithoutPresign)]
     #[case(2, HashMap::from([(1, 1), (2, 1)]), false, HashScheme::SHA256, HashContext::None, SignDataMode::Emulated)]
     #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, HashScheme::SHA256, HashContext::None, SignDataMode::Verified)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, HashScheme::SHA256, HashContext::None, SignDataMode::VerifiedWithoutPresign)]
     #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, HashScheme::SHA256, HashContext::None, SignDataMode::Emulated)]
     // Zcash-style sighash: BLAKE2b-256 personalized digest, ECDSA over secp256k1.
     // `personal` is a real Zcash sighash personalization (`b"ZcashSigHash" || consensus_branch_id`,
@@ -1812,8 +1843,10 @@ pub(crate) mod tests {
     #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, SignDataMode::Unverified)]
     #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), true, SignDataMode::Unverified)]
     #[case(2, HashMap::from([(1, 1), (2, 1)]), false, SignDataMode::Verified)]
+    #[case(2, HashMap::from([(1, 1), (2, 1)]), false, SignDataMode::VerifiedWithoutPresign)]
     #[case(2, HashMap::from([(1, 1), (2, 1)]), false, SignDataMode::Emulated)]
     #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, SignDataMode::Verified)]
+    #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, SignDataMode::VerifiedWithoutPresign)]
     #[case(4, HashMap::from([(1, 2), (2, 1), (3, 3)]), false, SignDataMode::Emulated)]
     fn dkg_presign_signs_schnorr_async_class_groups_secp256k1(
         #[case] threshold: PartyID,
@@ -3050,7 +3083,7 @@ pub(crate) mod tests {
                 { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
                 secp256k1::GroupElement,
             >,
-            presign: P::Presign,
+            presign: Option<P::Presign>,
             decryption_key_share_public_parameters: Arc<
                 class_groups::Secp256k1DecryptionKeySharePublicParameters,
             >,
@@ -3557,9 +3590,11 @@ pub(crate) mod tests {
                 group::Value<curve25519::GroupElement>,
                 group::Value<curve25519::Scalar>,
             >,
-            VerifiedSignData = schnorr::PartialSignature<
-                group::Value<curve25519::GroupElement>,
-                group::Value<curve25519::Scalar>,
+            VerifiedSignData = crate::class_groups::schnorr::VerifiedSignData<
+                { curve25519::SCALAR_LIMBS },
+                { crate::curve25519::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::curve25519::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                curve25519::GroupElement,
             >,
             SignDecentralizedPartyPublicInput = crate::schnorr::ahe::sign::decentralized_party::PublicInput<
                 crate::dkg::decentralized_party::VersionedOutput<
@@ -3576,6 +3611,12 @@ pub(crate) mod tests {
                 schnorr::PartialSignature<
                     group::Value<curve25519::GroupElement>,
                     group::Value<curve25519::Scalar>,
+                >,
+                crate::class_groups::schnorr::VerifiedSignData<
+                    { curve25519::SCALAR_LIMBS },
+                    { crate::curve25519::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::curve25519::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    curve25519::GroupElement,
                 >,
                 class_groups::Curve25519DecryptionKeySharePublicParameters,
                 crate::class_groups::ProtocolPublicParameters<
@@ -3839,9 +3880,11 @@ pub(crate) mod tests {
                 group::Value<ristretto::GroupElement>,
                 group::Value<ristretto::Scalar>,
             >,
-            VerifiedSignData = schnorr::PartialSignature<
-                group::Value<ristretto::GroupElement>,
-                group::Value<ristretto::Scalar>,
+            VerifiedSignData = crate::class_groups::schnorr::VerifiedSignData<
+                { ristretto::SCALAR_LIMBS },
+                { crate::ristretto::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::ristretto::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                ristretto::GroupElement,
             >,
             SignDecentralizedPartyPublicInput = crate::schnorr::ahe::sign::decentralized_party::PublicInput<
                 crate::dkg::decentralized_party::VersionedOutput<
@@ -3858,6 +3901,12 @@ pub(crate) mod tests {
                 schnorr::PartialSignature<
                     group::Value<ristretto::GroupElement>,
                     group::Value<ristretto::Scalar>,
+                >,
+                crate::class_groups::schnorr::VerifiedSignData<
+                    { ristretto::SCALAR_LIMBS },
+                    { crate::ristretto::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::ristretto::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    ristretto::GroupElement,
                 >,
                 class_groups::RistrettoDecryptionKeySharePublicParameters,
                 crate::class_groups::ProtocolPublicParameters<
@@ -4465,9 +4514,11 @@ pub(crate) mod tests {
                 group::Value<secp256k1::GroupElement>,
                 group::Value<secp256k1::Scalar>,
             >,
-            VerifiedSignData = schnorr::PartialSignature<
-                group::Value<secp256k1::GroupElement>,
-                group::Value<secp256k1::Scalar>,
+            VerifiedSignData = crate::class_groups::schnorr::VerifiedSignData<
+                { secp256k1::SCALAR_LIMBS },
+                { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                secp256k1::GroupElement,
             >,
             SignDecentralizedPartyPublicInput = crate::schnorr::ahe::sign::decentralized_party::PublicInput<
                 crate::dkg::decentralized_party::VersionedOutput<
@@ -4484,6 +4535,12 @@ pub(crate) mod tests {
                 schnorr::PartialSignature<
                     group::Value<secp256k1::GroupElement>,
                     group::Value<secp256k1::Scalar>,
+                >,
+                crate::class_groups::schnorr::VerifiedSignData<
+                    { secp256k1::SCALAR_LIMBS },
+                    { crate::secp256k1::class_groups::FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    { crate::secp256k1::class_groups::NON_FUNDAMENTAL_DISCRIMINANT_LIMBS },
+                    secp256k1::GroupElement,
                 >,
                 class_groups::Secp256k1DecryptionKeySharePublicParameters,
                 crate::class_groups::ProtocolPublicParameters<
@@ -5718,7 +5775,7 @@ pub(crate) mod tests {
                 <P::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
             >,
             dkg_output: <P::DKGProtocol as dkg::Protocol>::DecentralizedPartyDKGOutput,
-            presign: P::Presign,
+            presign: Option<P::Presign>,
             decryption_key_share_public_parameters: Arc<SignPublicInputExtraData>,
             message: Vec<u8>,
             hash_type: HashScheme,
@@ -5921,7 +5978,7 @@ pub(crate) mod tests {
                 <P::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
             >,
             dkg_output: <P::DKGProtocol as dkg::Protocol>::DecentralizedPartyDKGOutput,
-            presign: P::Presign,
+            presign: Option<P::Presign>,
             decryption_key_share_public_parameters: Arc<SignPublicInputExtraData>,
             message: Vec<u8>,
             hash_type: HashScheme,
@@ -6113,7 +6170,7 @@ pub(crate) mod tests {
                 <P::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
             >,
             dkg_output: <P::DKGProtocol as dkg::Protocol>::DecentralizedPartyDKGOutput,
-            presign: P::Presign,
+            presign: Option<P::Presign>,
             decryption_key_share_public_parameters: Arc<SignPublicInputExtraData>,
             message: Vec<u8>,
             hash_type: HashScheme,

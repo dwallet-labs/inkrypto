@@ -816,6 +816,10 @@ where
                 group::Value<CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
             >,
             PartialSignature<GroupElement::Value, group::Value<GroupElement::Scalar>>,
+            crate::schnorr::ahe::sign::VerifiedSignData<
+                GroupElement::Value,
+                group::Value<CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+            >,
             DecryptionKeySharePublicParameters<
                 SCALAR_LIMBS,
                 FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -1129,6 +1133,12 @@ where
                 GroupElement,
             >,
             crate::schnorr::PartialSignature<GroupElement::Value, group::Value<GroupElement::Scalar>>,
+            crate::class_groups::schnorr::VerifiedSignData<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
             crate::class_groups::DecryptionKeySharePublicParameters<
                 SCALAR_LIMBS,
                 FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -1580,19 +1590,32 @@ where
         GroupElement,
     >;
 
-    /// INSECURE: skip the centralized partial-signature verification and return it unchanged. The
-    /// mocked decentralized sign ignores this entirely (and under `ToBeEmulated` it is not called).
+    /// INSECURE: skip the centralized partial-signature verification and return structurally
+    /// valid verified sign data: the neutral point for the public nonce and public key, and a
+    /// ciphertext taken from the protocol public parameters as the encrypted signature response.
+    /// The mocked decentralized sign ignores this entirely (and under `ToBeEmulated` it is not
+    /// called).
     fn verify_centralized_party_partial_signature(
         _message: &[u8],
         _hash_scheme: HashScheme,
         _hash_context: &HashContext,
         _dkg_output: <<Self as crate::presign::Protocol>::DKGProtocol as crate::dkg::Protocol>::DecentralizedPartyDKGOutput,
         _presign: Self::Presign,
-        centralized_party_partial_signature: Self::SignMessage,
-        _protocol_public_parameters: &<<Self as crate::presign::Protocol>::DKGProtocol as crate::dkg::Protocol>::ProtocolPublicParameters,
+        _centralized_party_partial_signature: Self::SignMessage,
+        protocol_public_parameters: &<<Self as crate::presign::Protocol>::DKGProtocol as crate::dkg::Protocol>::ProtocolPublicParameters,
         _rng: &mut impl CsRng,
     ) -> crate::Result<Self::VerifiedSignData> {
-        Ok(centralized_party_partial_signature)
+        let neutral_point = GroupElement::neutral_from_public_parameters(
+            &protocol_public_parameters.group_public_parameters,
+        )?
+        .value();
+
+        Ok(crate::schnorr::ahe::sign::VerifiedSignData {
+            public_nonce: neutral_point.clone(),
+            public_key: neutral_point,
+            encryption_of_signature_response: protocol_public_parameters
+                .encryption_of_decentralized_party_secret_key_share_first_part,
+        })
     }
 }
 

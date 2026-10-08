@@ -642,13 +642,112 @@ pub mod asynchronous {
         }
     }
 
-    /// Resolve `SignData` to `VerifiedSignDataRaw` without performing any verification.
+    /// Derive the targeted presign from the presign in `public_input`.
+    ///
+    /// The presign is optional in the public input because verified sign data never reads it.
+    /// The resolvers call this only for the sign data variants that do read it; a missing
+    /// presign there is an `InvalidParameters` error.
+    fn targeted_presign<
+        const SCALAR_LIMBS: usize,
+        const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+        const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+        const MESSAGE_LIMBS: usize,
+        GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
+    >(
+        public_input: &SignPartyPublicInput<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MESSAGE_LIMBS,
+            GroupElement,
+        >,
+    ) -> crate::Result<
+        crate::ecdsa::presign::Presign<
+            GroupElement::Value,
+            group::Value<CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+        >,
+    >
+    where
+        Int<SCALAR_LIMBS>: Encoding,
+        Uint<SCALAR_LIMBS>: Encoding
+            + ConcatMixed<StatisticalSecuritySizedNumber>
+            + for<'a> From<
+                &'a <Uint<SCALAR_LIMBS> as ConcatMixed<StatisticalSecuritySizedNumber>>::MixedOutput,
+            >,
+        Int<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+        Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+        Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+        Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+        EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
+                Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+                PublicParameters = equivalence_class::PublicParameters<
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                >,
+            > + EquivalenceClassOps<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                >,
+            >,
+        EncryptionKey<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >: AdditivelyHomomorphicEncryptionKey<
+            SCALAR_LIMBS,
+            PublicParameters = encryption_key::PublicParameters<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                group::PublicParameters<GroupElement::Scalar>,
+            >,
+            PlaintextSpaceGroupElement = GroupElement::Scalar,
+            RandomnessSpaceGroupElement = RandomnessSpaceGroupElement<
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+            CiphertextSpaceGroupElement = CiphertextSpaceGroupElement<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
+        encryption_key::PublicParameters<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            group::PublicParameters<GroupElement::Scalar>,
+        >: AsRef<
+            homomorphic_encryption::GroupsPublicParameters<
+                group::PublicParameters<GroupElement::Scalar>,
+                RandomnessSpacePublicParameters<FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+                CiphertextSpacePublicParameters<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            >,
+        >,
+        Uint<MESSAGE_LIMBS>: Encoding,
+        GroupElement::Scalar: Serialize + for<'a> Deserialize<'a>,
+    {
+        public_input
+            .presign
+            .as_ref()
+            .ok_or_else(|| Error::from(ErrorKind::InvalidParameters))?
+            .derive_targeted::<SCALAR_LIMBS, SCALAR_LIMBS, GroupElement, EncryptionKey<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >>(
+                public_input.protocol_public_parameters.as_ref(),
+                public_input.dkg_output.clone().into(),
+            )
+    }
+
+    /// Resolve the sign data in `public_input` to `VerifiedSignDataRaw` without performing any
+    /// verification.
     ///
     /// - `Unverified`: extracts the three ciphertext/nonce fields from the full message (caller
     ///   is responsible for having verified the proofs in a previous round).
     /// - `Verified`: returns the pre-verified data as-is.
     /// - `ToBeEmulated`: emulates the verified sign data via
-    ///   [`emulate_threshold_verified_sign_data`].
+    ///   [`emulate_threshold_verified_sign_data`], from the targeted presign.
     fn resolve_sign_data<
         const SCALAR_LIMBS: usize,
         const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
@@ -656,7 +755,7 @@ pub mod asynchronous {
         const MESSAGE_LIMBS: usize,
         GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
     >(
-        sign_data: crate::ecdsa::sign::centralized_party::message::class_groups::SignData<
+        public_input: &SignPartyPublicInput<
             SCALAR_LIMBS,
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -664,21 +763,6 @@ pub mod asynchronous {
             GroupElement,
         >,
         hashed_message: GroupElement::Scalar,
-        presign: crate::ecdsa::presign::Presign<
-            GroupElement::Value,
-            group::Value<CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
-        >,
-        protocol_public_parameters: &crate::class_groups::ProtocolPublicParameters<
-            SCALAR_LIMBS,
-            FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            GroupElement,
-        >,
-        dkg_output: &crate::dkg::decentralized_party::VersionedOutput<
-            SCALAR_LIMBS,
-            GroupElement::Value,
-            group::Value<CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
-        >,
     ) -> crate::Result<
         VerifiedSignDataRaw<
             GroupElement::Value,
@@ -743,14 +827,14 @@ pub mod asynchronous {
         Uint<MESSAGE_LIMBS>: Encoding,
         GroupElement::Scalar: Serialize + for<'a> Deserialize<'a>,
     {
-        match sign_data {
+        match &public_input.sign_message {
             SignData::Unverified(msg) => Ok(VerifiedSignDataRaw {
-                public_signature_nonce: msg.public_signature_nonce,
+                public_signature_nonce: msg.public_signature_nonce.clone(),
                 encryption_of_partial_signature: msg.encryption_of_partial_signature,
                 encryption_of_displaced_decentralized_party_nonce_share: msg
                     .encryption_of_displaced_decentralized_party_nonce_share,
             }),
-            SignData::Verified(data) => Ok(data),
+            SignData::Verified(data) => Ok(data.clone()),
             SignData::ToBeEmulated => emulate_threshold_verified_sign_data::<
                 SCALAR_LIMBS,
                 FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -759,15 +843,15 @@ pub mod asynchronous {
                 GroupElement,
             >(
                 hashed_message,
-                presign,
-                protocol_public_parameters,
-                dkg_output,
+                targeted_presign(public_input)?,
+                &public_input.protocol_public_parameters,
+                &public_input.dkg_output,
             ),
         }
     }
 
-    /// Resolve `SignData` to `VerifiedSignDataRaw`, **verifying the centralized party's proofs
-    /// for the `Unverified` variant**.
+    /// Resolve the sign data in `public_input` to `VerifiedSignDataRaw`, **verifying the
+    /// centralized party's proofs for the `Unverified` variant**.
     ///
     /// This function MUST be used instead of [`resolve_sign_data`] whenever the sign data has not
     /// yet been verified in a previous protocol round. It performs:
@@ -775,10 +859,9 @@ pub mod asynchronous {
     /// - `Unverified`: calls
     ///   [`verify_encryption_of_signature_parts_prehash_class_groups`] to validate all ZK proofs
     ///   ($\pi_k, \pi_\alpha, \pi_\beta$, commitment equality, encryption proofs), then extracts
-    ///   the three ciphertext/nonce fields.
-    /// - `Verified`: returns the pre-verified data as-is.
-    /// - `ToBeEmulated`: emulates the verified sign data via
-    ///   [`emulate_threshold_verified_sign_data`].
+    ///   the three ciphertext/nonce fields. The proofs are checked against the targeted
+    ///   presign.
+    /// - `Verified` and `ToBeEmulated`: same as [`resolve_sign_data`].
     ///
     /// After this function returns `Ok`, the caller can proceed directly with
     /// `partially_decrypt_encryption_of_signature_parts_prehash_semi_honest` — there is no need
@@ -790,7 +873,7 @@ pub mod asynchronous {
         const MESSAGE_LIMBS: usize,
         GroupElement: VerifyingKey<SCALAR_LIMBS> + Copy,
     >(
-        sign_data: crate::ecdsa::sign::centralized_party::message::class_groups::SignData<
+        public_input: &SignPartyPublicInput<
             SCALAR_LIMBS,
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -798,21 +881,6 @@ pub mod asynchronous {
             GroupElement,
         >,
         hashed_message: GroupElement::Scalar,
-        presign: crate::ecdsa::presign::Presign<
-            GroupElement::Value,
-            group::Value<CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
-        >,
-        protocol_public_parameters: &crate::class_groups::ProtocolPublicParameters<
-            SCALAR_LIMBS,
-            FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-            GroupElement,
-        >,
-        dkg_output: &crate::dkg::decentralized_party::VersionedOutput<
-            SCALAR_LIMBS,
-            GroupElement::Value,
-            group::Value<CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
-        >,
     ) -> crate::Result<
         VerifiedSignDataRaw<
             GroupElement::Value,
@@ -872,12 +940,12 @@ pub mod asynchronous {
         Uint<MESSAGE_LIMBS>: Encoding,
         GroupElement::Scalar: Serialize + for<'a> Deserialize<'a>,
     {
-        match sign_data {
+        match &public_input.sign_message {
             SignData::Unverified(sign_message) => {
                 let dkg_output_ref: crate::dkg::decentralized_party::Output<
                     GroupElement::Value,
                     group::Value<CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
-                > = dkg_output.clone().into();
+                > = public_input.dkg_output.clone().into();
 
                 signature_partial_decryption_round::Party::verify_encryption_of_signature_parts_prehash_class_groups::<
                     SCALAR_LIMBS,
@@ -886,27 +954,23 @@ pub mod asynchronous {
                     MESSAGE_LIMBS,
                     GroupElement,
                 >(
-                    protocol_public_parameters,
+                    &public_input.protocol_public_parameters,
                     dkg_output_ref,
-                    presign,
+                    targeted_presign(public_input)?,
                     sign_message.clone(),
                     hashed_message,
                 )?;
 
                 Ok(VerifiedSignDataRaw {
-                    public_signature_nonce: sign_message.public_signature_nonce,
+                    public_signature_nonce: sign_message.public_signature_nonce.clone(),
                     encryption_of_partial_signature: sign_message.encryption_of_partial_signature,
                     encryption_of_displaced_decentralized_party_nonce_share: sign_message
                         .encryption_of_displaced_decentralized_party_nonce_share,
                 })
             }
-            other => resolve_sign_data(
-                other,
-                hashed_message,
-                presign,
-                protocol_public_parameters,
-                dkg_output,
-            ),
+            SignData::Verified(_) | SignData::ToBeEmulated => {
+                resolve_sign_data(public_input, hashed_message)
+            }
         }
     }
 
@@ -1275,24 +1339,16 @@ pub mod asynchronous {
         Uint<MESSAGE_LIMBS>: Encoding,
         GroupElement::Scalar: Serialize + for<'a> Deserialize<'a>,
     {
+        // A present presign must match the protocol public parameters and the DKG output. A
+        // missing presign is only acceptable for verified sign data; see `targeted_presign`.
         if public_input.dkg_output != *public_input.protocol_public_parameters
-            || public_input.presign != *public_input.protocol_public_parameters
-            || public_input.presign != public_input.dkg_output
+            || public_input.presign.as_ref().is_some_and(|presign| {
+                *presign != *public_input.protocol_public_parameters
+                    || *presign != public_input.dkg_output
+            })
         {
             return Err(Error::from(ErrorKind::InvalidParameters));
         }
-
-        let targeted_presign = public_input
-            .presign
-            .derive_targeted::<SCALAR_LIMBS, SCALAR_LIMBS, GroupElement, EncryptionKey<
-                SCALAR_LIMBS,
-                FUNDAMENTAL_DISCRIMINANT_LIMBS,
-                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-                GroupElement,
-            >>(
-                public_input.protocol_public_parameters.as_ref(),
-                public_input.dkg_output.clone().into(),
-            )?;
 
         let virtual_party_id_to_decryption_key_share = virtual_party_id_to_decryption_key_share
             .ok_or_else(|| Error::from(ErrorKind::InvalidParameters))?;
@@ -1321,19 +1377,8 @@ pub mod asynchronous {
 
         match &messages[..] {
             [] => {
-                let verified_data = emulate_or_verify_or_unpack_sign_data::<
-                    SCALAR_LIMBS,
-                    FUNDAMENTAL_DISCRIMINANT_LIMBS,
-                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-                    MESSAGE_LIMBS,
-                    GroupElement,
-                >(
-                    public_input.sign_message.clone(),
-                    hashed_message,
-                    targeted_presign,
-                    &public_input.protocol_public_parameters,
-                    &public_input.dkg_output,
-                )?;
+                let verified_data =
+                    emulate_or_verify_or_unpack_sign_data(public_input, hashed_message)?;
 
                 signature_partial_decryption_round::Party::partially_decrypt_encryption_of_signature_parts_prehash_semi_honest::<
                     SCALAR_LIMBS,
@@ -1386,19 +1431,7 @@ pub mod asynchronous {
                 let decryption_shares = decryption_shares.into_values().flat_map(|decryption_shares| decryption_shares.into_iter().map(|(virtual_party_id, (partial_signature_decryption_share, displaced_decentralized_party_nonce_share_decryption_share))| (virtual_party_id, vec![partial_signature_decryption_share, displaced_decentralized_party_nonce_share_decryption_share])).collect::<Vec<_>>()).collect();
 
                 // Verification was already performed in the first round; just unpack/emulate.
-                let verified_data = resolve_sign_data::<
-                    SCALAR_LIMBS,
-                    FUNDAMENTAL_DISCRIMINANT_LIMBS,
-                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-                    MESSAGE_LIMBS,
-                    GroupElement,
-                >(
-                    public_input.sign_message.clone(),
-                    hashed_message,
-                    targeted_presign.clone(),
-                    &public_input.protocol_public_parameters,
-                    &public_input.dkg_output,
-                )?;
+                let verified_data = resolve_sign_data(public_input, hashed_message)?;
 
                 let (
                     public_signature_nonce,
@@ -1421,19 +1454,7 @@ pub mod asynchronous {
                     // Sad-flow (infrequent): at least one party maliciously decrypted the message and we were unable to finalize the signature in the semi-honest flow.
                     // Therefore, we must perform an additional round where we verifiably decrypt the signature reconstruct the maliciously generated decryption shares, identifying the malicious parties in retrospect.
 
-                    let verified_data = emulate_or_verify_or_unpack_sign_data::<
-                        SCALAR_LIMBS,
-                        FUNDAMENTAL_DISCRIMINANT_LIMBS,
-                        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-                        MESSAGE_LIMBS,
-                        GroupElement,
-                    >(
-                        public_input.sign_message.clone(),
-                        hashed_message,
-                        targeted_presign,
-                        &public_input.protocol_public_parameters,
-                        &public_input.dkg_output,
-                    )?;
+                    let verified_data = emulate_or_verify_or_unpack_sign_data(public_input, hashed_message)?;
 
                     signature_partial_decryption_round::Party::partially_decrypt_encryption_of_signature_parts_prehash::<
                         SCALAR_LIMBS,
@@ -1523,19 +1544,7 @@ pub mod asynchronous {
                     encryption_of_displaced_decentralized_party_nonce_share,
                     // Verification was already performed in a previous round; just unpack/emulate.
                 ) = {
-                    let verified_data = resolve_sign_data::<
-                        SCALAR_LIMBS,
-                        FUNDAMENTAL_DISCRIMINANT_LIMBS,
-                        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
-                        MESSAGE_LIMBS,
-                        GroupElement,
-                    >(
-                        public_input.sign_message.clone(),
-                        hashed_message,
-                        targeted_presign,
-                        &public_input.protocol_public_parameters,
-                        &public_input.dkg_output,
-                    )?;
+                    let verified_data = resolve_sign_data(public_input, hashed_message)?;
                     (
                         verified_data.public_signature_nonce,
                         verified_data.encryption_of_partial_signature,

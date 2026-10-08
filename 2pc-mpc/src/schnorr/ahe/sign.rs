@@ -5,6 +5,30 @@ pub mod centralized_party;
 mod class_groups;
 pub mod decentralized_party;
 
+use serde::{Deserialize, Serialize};
+
+/// The data the decentralized party needs to finish a Schnorr sign once the centralized party's
+/// partial signature has been verified against the DKG output and the presign.
+///
+/// Computed once by [`crate::sign::Protocol::verify_centralized_party_partial_signature`], which
+/// runs steps (1b), (2b) and (2f) of Protocol C.5 in
+/// <https://eprint.iacr.org/archive/2025/297/1747917268.pdf>: it derives the presign randomizer,
+/// the normalized public nonce $K$ and public key $X$, verifies $z_A$, and evaluates
+/// $\textsf{ct}_B = \textsf{ct}_k \oplus (e \odot \textsf{ct}_{\textsf{key}}) \oplus z_A$.
+///
+/// Every value a sign round would otherwise read from the presign is folded into these fields, so
+/// a sign that starts from this data needs no presign at all.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct VerifiedSignData<GroupElementValue, CiphertextValue> {
+    /// $K$, Taproot-normalized.
+    pub public_nonce: GroupElementValue,
+    /// $X$, Taproot-normalized.
+    pub public_key: GroupElementValue,
+    /// $\textsf{ct}_B$, the encryption of the signature response, with the Taproot normalizations
+    /// of $K$ and $X$ already applied to $\textsf{ct}_k$ and $\textsf{ct}_{\textsf{key}}$.
+    pub encryption_of_signature_response: CiphertextValue,
+}
+
 #[cfg(test)]
 mod tests {
     use crate::schnorr::{

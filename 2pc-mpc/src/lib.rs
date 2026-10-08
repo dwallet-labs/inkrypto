@@ -816,13 +816,44 @@ pub mod class_groups {
             group::Value<CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
         >;
 
+        /// The data a Schnorr sign needs once the centralized party's partial signature has been
+        /// verified; see [`crate::schnorr::ahe::sign::VerifiedSignData`].
+        pub type VerifiedSignData<
+            const SCALAR_LIMBS: usize,
+            const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            GroupElement,
+        > = crate::schnorr::ahe::sign::VerifiedSignData<
+            group::Value<GroupElement>,
+            group::Value<CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+        >;
+
+        /// Either the centralized party's partial signature (to be verified during the sign) or
+        /// the already-verified [`VerifiedSignData`].
+        pub type SignData<
+            const SCALAR_LIMBS: usize,
+            const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            GroupElement,
+        > = crate::sign::SignData<
+            PartialSignature<
+                <GroupElement as group::GroupElement>::Value,
+                group::ScalarValue<SCALAR_LIMBS, GroupElement>,
+            >,
+            VerifiedSignData<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+        >;
+
         pub type SignPartyPublicInput<
             const SCALAR_LIMBS: usize,
             const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
             const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
-            const MESSAGE_LIMBS: usize,
             GroupElement,
-        > = crate::ecdsa::sign::decentralized_party::PublicInput<
+        > = crate::schnorr::ahe::sign::decentralized_party::PublicInput<
             DKGDecentralizedPartyVersionedOutput<
                 SCALAR_LIMBS,
                 FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -838,6 +869,54 @@ pub mod class_groups {
             PartialSignature<
                 <GroupElement as group::GroupElement>::Value,
                 group::ScalarValue<SCALAR_LIMBS, GroupElement>,
+            >,
+            VerifiedSignData<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+            DecryptionKeySharePublicParameters<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+            ProtocolPublicParameters<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+        >;
+
+        pub type DKGSignPartyPublicInput<
+            const SCALAR_LIMBS: usize,
+            const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+            GroupElement,
+        > = crate::schnorr::ahe::sign::decentralized_party::DKGSignPublicInput<
+            DKGDecentralizedPartyPublicInput<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+            Presign<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
+            >,
+            PartialSignature<
+                <GroupElement as group::GroupElement>::Value,
+                group::ScalarValue<SCALAR_LIMBS, GroupElement>,
+            >,
+            VerifiedSignData<
+                SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                GroupElement,
             >,
             DecryptionKeySharePublicParameters<
                 SCALAR_LIMBS,

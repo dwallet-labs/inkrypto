@@ -25,10 +25,12 @@ use homomorphic_encryption::{
 };
 use mpc::secret_sharing::shamir::over_the_integers::AdjustedLagrangeCoefficientSizedNumber;
 
+use crate::class_groups::schnorr::VerifiedSignData;
 use crate::class_groups::{schnorr::asynchronous::Protocol, DecryptionKeySharePublicParameters};
-use crate::schnorr::sign::decentralized_party::verify_centralized_party_partial_signature;
 use crate::schnorr::{PartialSignature, VerifyingKey};
+use crate::sign::SignData;
 use crate::{dkg, Error, ErrorKind};
+use group::GroupElement as _;
 
 impl<
         const SCALAR_LIMBS: usize,
@@ -179,6 +181,7 @@ where
         <Self::DKGProtocol as dkg::Protocol>::DecentralizedPartyDKGOutput,
         Self::Presign,
         Self::SignMessage,
+        Self::VerifiedSignData,
         DecryptionKeySharePublicParameters<
             SCALAR_LIMBS,
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -209,6 +212,7 @@ where
         <Self::DKGProtocol as dkg::Protocol>::DKGDecentralizedPartyPublicInput,
         Self::Presign,
         Self::SignMessage,
+        Self::VerifiedSignData,
         DecryptionKeySharePublicParameters<
             SCALAR_LIMBS,
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
@@ -230,7 +234,12 @@ where
         <Self::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
     >;
     type SignMessage = PartialSignature<GroupElement::Value, group::Value<GroupElement::Scalar>>;
-    type VerifiedSignData = Self::SignMessage;
+    type VerifiedSignData = VerifiedSignData<
+        SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        GroupElement,
+    >;
     type SignCentralizedParty = super::centralized_party::Party<
         SCALAR_LIMBS,
         SCALAR_LIMBS,
@@ -258,22 +267,43 @@ where
             return Err(Error::from(ErrorKind::InvalidParameters));
         }
 
-        let dkg_output = dkg::decentralized_party::Output::from(dkg_output.clone());
+        let dkg_output = dkg::decentralized_party::Output::from(dkg_output);
 
-        verify_centralized_party_partial_signature::<SCALAR_LIMBS, GroupElement>(
-            presign.session_id,
-            message,
-            hash_scheme,
-            hash_context,
-            presign.decentralized_party_nonce_public_share_first_part,
-            presign.decentralized_party_nonce_public_share_second_part,
-            &dkg_output.centralized_party_public_key_share,
-            centralized_party_partial_signature.clone(),
-            &dkg_output.public_key,
-            &protocol_public_parameters.group_public_parameters,
-            &protocol_public_parameters.scalar_group_public_parameters,
-        )?;
+        // Runs the full unverified path once: verifies $z_A$ against the presign and the DKG
+        // output, and evaluates $\textsf{ct}_B$. The result is everything a later sign needs,
+        // so the sign may then be run without the presign.
+        let (public_nonce, public_key, encryption_of_signature_response) =
+            super::decentralized_party::Party::<
+                SCALAR_LIMBS,
+                SCALAR_LIMBS,
+                GroupElement,
+                EncryptionKey<
+                    SCALAR_LIMBS,
+                    FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    GroupElement,
+                >,
+                DecryptionKeyShare<
+                    SCALAR_LIMBS,
+                    FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                    GroupElement,
+                >,
+                <Self::DKGProtocol as dkg::Protocol>::ProtocolPublicParameters,
+            >::emulate_or_verify_or_unpack_sign_data(
+                message,
+                hash_scheme,
+                hash_context,
+                dkg_output,
+                Some(presign),
+                SignData::Unverified(centralized_party_partial_signature),
+                protocol_public_parameters,
+            )?;
 
-        Ok(centralized_party_partial_signature)
+        Ok(crate::schnorr::ahe::sign::VerifiedSignData {
+            public_nonce: public_nonce.value(),
+            public_key: public_key.value(),
+            encryption_of_signature_response: encryption_of_signature_response.value(),
+        })
     }
 }

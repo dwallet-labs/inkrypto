@@ -1,6 +1,7 @@
 // Author: dWallet Labs, Ltd.
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
+use crate::schnorr::ahe::sign::VerifiedSignData;
 use crate::schnorr::{PartialSignature, Presign, VerifyingKey};
 use crate::sign::SignData;
 use crate::{dkg, Error};
@@ -140,13 +141,15 @@ where
             GroupElement::Value,
             group::Value<EncryptionKey::CiphertextSpaceGroupElement>,
         >,
-        presign: Presign<
-            GroupElement::Value,
-            group::Value<EncryptionKey::CiphertextSpaceGroupElement>,
+        presign: Option<
+            Presign<GroupElement::Value, group::Value<EncryptionKey::CiphertextSpaceGroupElement>>,
         >,
         sign_data: SignData<
             PartialSignature<GroupElement::Value, group::Value<GroupElement::Scalar>>,
-            PartialSignature<GroupElement::Value, group::Value<GroupElement::Scalar>>,
+            VerifiedSignData<
+                GroupElement::Value,
+                group::Value<EncryptionKey::CiphertextSpaceGroupElement>,
+            >,
         >,
         protocol_public_parameters: &ProtocolPublicParameters,
         decryption_key_share_public_parameters: &DecryptionKeyShare::PublicParameters,
@@ -168,31 +171,13 @@ where
 
         let protocol_public_parameters = protocol_public_parameters.as_ref();
 
-        let (
-            centralized_party_partial_response,
-            public_key,
-            public_nonce,
-            encryption_of_secret_key_share,
-            encryption_of_nonce_share,
-        ) = Self::verify_centralized_party_partial_signature_and_taproot_normalize_internal(
+        let (_, _, encryption_of_signature_response) = Self::emulate_or_verify_or_unpack_sign_data(
             message,
             hash_scheme,
             hash_context,
             dkg_output,
             presign,
             sign_data,
-            protocol_public_parameters,
-        )?;
-
-        let encryption_of_signature_response = Self::evaluate_encryption_of_signature_response(
-            message,
-            hash_scheme,
-            hash_context,
-            public_nonce,
-            public_key,
-            centralized_party_partial_response,
-            encryption_of_nonce_share,
-            encryption_of_secret_key_share,
             protocol_public_parameters,
         )?;
 
@@ -231,13 +216,15 @@ where
             GroupElement::Value,
             group::Value<EncryptionKey::CiphertextSpaceGroupElement>,
         >,
-        presign: Presign<
-            GroupElement::Value,
-            group::Value<EncryptionKey::CiphertextSpaceGroupElement>,
+        presign: Option<
+            Presign<GroupElement::Value, group::Value<EncryptionKey::CiphertextSpaceGroupElement>>,
         >,
         sign_data: SignData<
             PartialSignature<GroupElement::Value, group::Value<GroupElement::Scalar>>,
-            PartialSignature<GroupElement::Value, group::Value<GroupElement::Scalar>>,
+            VerifiedSignData<
+                GroupElement::Value,
+                group::Value<EncryptionKey::CiphertextSpaceGroupElement>,
+            >,
         >,
         protocol_public_parameters: &ProtocolPublicParameters,
         decryption_key_share_public_parameters: &DecryptionKeyShare::PublicParameters,
@@ -268,31 +255,13 @@ where
 
         let protocol_public_parameters = protocol_public_parameters.as_ref();
 
-        let (
-            centralized_party_partial_response,
-            public_key,
-            public_nonce,
-            encryption_of_secret_key_share,
-            encryption_of_nonce_share,
-        ) = Self::verify_centralized_party_partial_signature_and_taproot_normalize_internal(
+        let (_, _, encryption_of_signature_response) = Self::emulate_or_verify_or_unpack_sign_data(
             message,
             hash_scheme,
             hash_context,
             dkg_output,
             presign,
             sign_data,
-            protocol_public_parameters,
-        )?;
-
-        let encryption_of_signature_response = Self::evaluate_encryption_of_signature_response(
-            message,
-            hash_scheme,
-            hash_context,
-            public_nonce,
-            public_key,
-            centralized_party_partial_response,
-            encryption_of_nonce_share,
-            encryption_of_secret_key_share,
             protocol_public_parameters,
         )?;
 
