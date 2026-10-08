@@ -35,7 +35,10 @@
 
 use super::centralized_party::PartialSignature;
 use crate::dkg::decentralized_party::Output;
-use crate::schnorr::sign::decentralized_party::normalize_and_optionally_verify_centralized_party_partial_signature;
+use crate::schnorr::sign::decentralized_party::{
+    derive_normalized_public_key_and_nonce, partial_signature_from_sign_data,
+    verify_centralized_party_partial_signature,
+};
 use crate::schnorr::sign::derive_normalized_public_nonce;
 use crate::schnorr::VerifyingKey;
 use crate::sign::SignData;
@@ -123,8 +126,13 @@ where
             &'a <Uint<SCALAR_LIMBS> as ConcatMixed<StatisticalSecuritySizedNumber>>::MixedOutput,
         >,
 {
-    let (centralized_party_partial_signature, should_verify) =
-        crate::schnorr::sign::decentralized_party::resolve_sign_data::<SCALAR_LIMBS, GroupElement>(
+    // This party applies its secret nonce and key shares below, so an unverified partial
+    // signature must be checked first. Verified sign data was checked by
+    // `verify_centralized_party_partial_signature`, and emulated sign data needs no check.
+    let is_unverified = matches!(sign_data, SignData::Unverified(_));
+
+    let centralized_party_partial_signature =
+        partial_signature_from_sign_data::<SCALAR_LIMBS, GroupElement>(
             sign_data,
             &dkg_output.centralized_party_public_key_share,
             group_public_parameters,
@@ -137,23 +145,29 @@ where
         scalar_group_public_parameters,
     )?;
 
-    let verification_result = normalize_and_optionally_verify_centralized_party_partial_signature::<
-        SCALAR_LIMBS,
-        GroupElement,
-    >(
+    let verification_result = derive_normalized_public_key_and_nonce::<SCALAR_LIMBS, GroupElement>(
         session_id,
         message,
         hash_scheme,
-        hash_context,
         decentralized_party_nonce_public_share_first_part,
         decentralized_party_nonce_public_share_second_part,
         &dkg_output.centralized_party_public_key_share,
-        centralized_party_partial_signature,
+        &centralized_party_partial_signature.public_nonce_share_prenormalization,
         &dkg_output.public_key,
         group_public_parameters,
-        scalar_group_public_parameters,
-        should_verify,
     )?;
+
+    if is_unverified {
+        verify_centralized_party_partial_signature::<SCALAR_LIMBS, GroupElement>(
+            &verification_result,
+            centralized_party_partial_signature,
+            message,
+            hash_scheme,
+            hash_context,
+            group_public_parameters,
+            scalar_group_public_parameters,
+        )?;
+    }
 
     let presign_public_randomizer =
         GroupElement::Scalar::from(verification_result.presign_public_randomizer);

@@ -28,7 +28,11 @@ pub struct PublicInput<
     pub hash_type: HashScheme,
     pub hash_context: HashContext,
     pub dkg_output: DKGOutput,
-    pub presign: Presign,
+    /// Required unless `sign_message` is `SignData::Verified`, in which case the verified data
+    /// already holds everything the presign would have contributed and the presign may be
+    /// omitted. When present, it is still checked against the protocol public parameters and the
+    /// DKG output.
+    pub presign: Option<Presign>,
     pub sign_message: SignMessage,
     pub decryption_key_share_public_parameters: Arc<DecryptionKeySharePublicParameters>,
     pub protocol_public_parameters: Arc<ProtocolPublicParameters>,
@@ -48,7 +52,8 @@ pub struct DKGSignPublicInput<
     pub hash_type: HashScheme,
     pub hash_context: HashContext,
     pub dkg_public_input: DKGPublicInput,
-    pub presign: Presign,
+    /// See [`PublicInput::presign`].
+    pub presign: Option<Presign>,
     pub sign_message: SignMessage,
     pub decryption_key_share_public_parameters: Arc<DecryptionKeySharePublicParameters>,
     pub protocol_public_parameters: Arc<ProtocolPublicParameters>,

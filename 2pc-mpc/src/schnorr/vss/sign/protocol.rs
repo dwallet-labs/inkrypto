@@ -16,7 +16,9 @@ use super::decentralized_party::{
     PublicInput as DecentralizedPartyPublicInput, SignParty,
 };
 use crate::dkg;
-use crate::schnorr::sign::decentralized_party::verify_centralized_party_partial_signature;
+use crate::schnorr::sign::decentralized_party::{
+    derive_normalized_public_key_and_nonce, verify_centralized_party_partial_signature,
+};
 use crate::schnorr::{PartialSignature, VerifyingKey};
 use crate::vss::schnorr::Protocol;
 use ::class_groups::{
@@ -208,16 +210,25 @@ where
     ) -> crate::Result<Self::VerifiedSignData> {
         let dkg_output = dkg::decentralized_party::Output::from(dkg_output.clone());
 
+        let normalized_public_key_and_nonce =
+            derive_normalized_public_key_and_nonce::<SCALAR_LIMBS, GroupElement>(
+                presign.session_id,
+                message,
+                hash_scheme,
+                presign.decentralized_party_nonce_public_share_first_part,
+                presign.decentralized_party_nonce_public_share_second_part,
+                &dkg_output.centralized_party_public_key_share,
+                &centralized_party_partial_signature.public_nonce_share_prenormalization,
+                &dkg_output.public_key,
+                &protocol_public_parameters.group_public_parameters,
+            )?;
+
         verify_centralized_party_partial_signature::<SCALAR_LIMBS, GroupElement>(
-            presign.session_id,
+            &normalized_public_key_and_nonce,
+            centralized_party_partial_signature.clone(),
             message,
             hash_scheme,
             hash_context,
-            presign.decentralized_party_nonce_public_share_first_part,
-            presign.decentralized_party_nonce_public_share_second_part,
-            &dkg_output.centralized_party_public_key_share,
-            centralized_party_partial_signature.clone(),
-            &dkg_output.public_key,
             &protocol_public_parameters.group_public_parameters,
             &protocol_public_parameters.scalar_group_public_parameters,
         )?;

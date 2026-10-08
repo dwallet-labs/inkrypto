@@ -181,8 +181,12 @@ where
     }
 
     // Resolve the SignData enum into a concrete PartialSignature.
-    let (centralized_party_partial_signature, _verify) =
-        crate::schnorr::sign::decentralized_party::resolve_sign_data::<SCALAR_LIMBS, GroupElement>(
+    // This round only combines the parties' signature shares, so it checks nothing.
+    let centralized_party_partial_signature =
+        crate::schnorr::sign::decentralized_party::partial_signature_from_sign_data::<
+            SCALAR_LIMBS,
+            GroupElement,
+        >(
             public_input.centralized_party_partial_signature.clone(),
             &dkg_output.centralized_party_public_key_share,
             &protocol_public_parameters.group_public_parameters,

@@ -7,7 +7,7 @@ use crypto_bigint::{ConcatMixed, Encoding, Int, Uint};
 use std::collections::HashMap;
 
 use super::DKGSignPublicInput;
-use crate::class_groups::schnorr::Presign;
+use crate::class_groups::schnorr::{Presign, VerifiedSignData};
 use crate::class_groups::{
     DKGDecentralizedParty, DKGDecentralizedPartyPublicInput, DecryptionKeySharePublicParameters,
     DecryptionShare, PartialDecryptionProof, ProtocolPublicParameters,
@@ -124,6 +124,12 @@ where
             GroupElement,
         >,
         PartialSignature<GroupElement::Value, group::Value<GroupElement::Scalar>>,
+        VerifiedSignData<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        >,
         DecryptionKeySharePublicParameters<
             SCALAR_LIMBS,
             FUNDAMENTAL_DISCRIMINANT_LIMBS,
