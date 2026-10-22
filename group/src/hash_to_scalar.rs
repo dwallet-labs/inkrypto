@@ -200,7 +200,9 @@ mod tests {
         let m = <elliptic_curve::Scalar<k256::Secp256k1> as k256::elliptic_curve::ops::Reduce<
             k256::FieldBytes,
         >>::reduce(hash);
-        U256::from(m).into()
+        // TEMPORARY (two crypto-bigint versions): k256's scalar into our `U256` through bytes;
+        // revert to `U256::from(m).into()` once both are one crate.
+        U256::from_be_slice(&m.to_bytes()).into()
     }
 
     #[test]

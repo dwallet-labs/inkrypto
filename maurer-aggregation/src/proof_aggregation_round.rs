@@ -163,7 +163,7 @@ impl<
                 .map(|(party_id, _)| party_id)
                 .deduplicate_and_sort();
 
-            return Err(proof_aggregation::synchronous::Error::from(
+            Err(proof_aggregation::synchronous::Error::from(
                 proof_aggregation::synchronous::ErrorKind::ProofShareVerification(
                     proof_share_cheating_parties,
                 ),

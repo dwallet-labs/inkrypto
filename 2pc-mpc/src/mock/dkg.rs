@@ -841,6 +841,15 @@ where
         > as crate::dkg::Protocol>::generate_decryption_key(rng)
     }
 
+    fn generate_decryption_key_legacy(seed: [u8; 32]) -> crate::Result<Self::DecryptionKey> {
+        <RealDKGProtocol<
+            SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            GroupElement,
+        > as crate::dkg::Protocol>::generate_decryption_key_legacy(seed)
+    }
+
     fn encryption_key_from_decryption_key(
         decryption_key: Self::DecryptionKey,
     ) -> crate::Result<Self::EncryptionKeyValue> {

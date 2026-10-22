@@ -278,7 +278,7 @@ impl Party {
         GroupElement,
         GroupElement,
     )> where         Uint<SCALAR_LIMBS>: Encoding + ConcatMixed<StatisticalSecuritySizedNumber> + for<'a> From<&'a <Uint<SCALAR_LIMBS> as ConcatMixed<StatisticalSecuritySizedNumber>>::MixedOutput> + for<'a> From<&'a <Uint<SCALAR_LIMBS> as ConcatMixed<StatisticalSecuritySizedNumber>>::MixedOutput>,
-    {
+{
         // $ R_B$
         let nonce_public_share = GroupElement::new(
             decentralized_party_nonce_public_share,

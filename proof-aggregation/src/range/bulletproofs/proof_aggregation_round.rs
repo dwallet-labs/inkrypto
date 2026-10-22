@@ -77,7 +77,7 @@ impl<const NUM_RANGE_CLAIMS: usize> ProofAggregationRoundParty<Output<NUM_RANGE_
             .deduplicate_and_sort();
 
         if !parties_sending_wrong_number_of_proof_shares.is_empty() {
-            return Err(crate::synchronous::Error::from(
+            Err(crate::synchronous::Error::from(
                 crate::synchronous::ErrorKind::InvalidProofShare(
                     parties_sending_wrong_number_of_proof_shares,
                 ),
@@ -165,7 +165,7 @@ impl<const NUM_RANGE_CLAIMS: usize> ProofAggregationRoundParty<Output<NUM_RANGE_
             .collect::<Result<Vec<_>>>()?;
 
         if !parties_sending_invalid_bit_commitments.is_empty() {
-            return Err(crate::synchronous::Error::from(
+            Err(crate::synchronous::Error::from(
                 crate::synchronous::ErrorKind::InvalidProofShare(
                     parties_sending_invalid_bit_commitments,
                 ),
@@ -177,9 +177,11 @@ impl<const NUM_RANGE_CLAIMS: usize> ProofAggregationRoundParty<Output<NUM_RANGE_
             .map(|(_, commitment)| commitment.unwrap())
             .collect();
 
+        // TEMPORARY (two crypto-bigint versions): `group::Rng010` presents our rand_core 0.9 RNG to the
+        // Bulletproofs fork's rand_core 0.10 API; revert to `rng`.
         let proof = self
             .dealer_awaiting_proof_shares
-            .receive_shares_with_rng(&proof_shares, rng)
+            .receive_shares_with_rng(&proof_shares, &mut group::Rng010(rng))
             .map_err(|e| match e {
                 MPCError::MalformedProofShares { bad_shares } => bad_shares
                     .into_iter()

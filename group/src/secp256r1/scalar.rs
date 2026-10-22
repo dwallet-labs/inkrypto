@@ -9,6 +9,7 @@ use p256::elliptic_curve::{scalar::FromUintUnchecked, Field};
 use serde::{Deserialize, Serialize};
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq, CtOption};
 
+use crate::csrng::Rng010;
 use crate::{
     secp256r1::ORDER, BoundedGroupElement, CsRng, CyclicGroupElement, GroupElement as _, Invert,
     KnownOrderGroupElement, KnownOrderScalar, MulByGenerator, PrimeGroupElement, Reduce, Samplable,
@@ -39,7 +40,9 @@ impl Samplable for Scalar {
         _public_parameters: &Self::PublicParameters,
         rng: &mut impl CsRng,
     ) -> crate::Result<Self> {
-        Ok(Self(p256::Scalar::random(rng)))
+        // TEMPORARY (two crypto-bigint versions): `Rng010` presents our rand_core 0.9 RNG to
+        // p256's rand_core 0.10 sampler; revert to `p256::Scalar::random(rng)` with it.
+        Ok(Self(p256::Scalar::random(&mut Rng010(rng))))
     }
 
     fn sample_randomizer(
@@ -365,7 +368,13 @@ impl<const LIMBS: usize> From<Uint<LIMBS>> for Scalar {
             value.reduce(&NonZero::new(ORDER).unwrap())
         };
 
-        Self(p256::Scalar::from_uint_unchecked(value))
+        // TEMPORARY (two crypto-bigint versions): `value` is our crypto-bigint rc.9 `U256` and
+        // p256's scalar takes p256's own crypto-bigint 0.7.5 `U256`; the two are unrelated
+        // types to the compiler, so the value crosses through its big-endian bytes. Revert to
+        // `p256::Scalar::from_uint_unchecked(value)` once both are one crate.
+        Self(p256::Scalar::from_uint_unchecked(
+            p256::U256::from_be_slice(&value.to_be_bytes()),
+        ))
     }
 }
 
@@ -377,13 +386,17 @@ impl<const LIMBS: usize> From<&Uint<LIMBS>> for Scalar {
 
 impl From<Scalar> for U256 {
     fn from(value: Scalar) -> Self {
-        value.0.into()
+        // TEMPORARY (two crypto-bigint versions): p256's scalar converts into p256's own
+        // crypto-bigint 0.7.5 `U256`, not into ours, so it crosses through its big-endian
+        // bytes. Revert to `value.0.into()` once both are one crate.
+        U256::from_be_slice(&value.0.to_bytes())
     }
 }
 
 impl From<&Scalar> for U256 {
     fn from(value: &Scalar) -> Self {
-        value.0.into()
+        // TEMPORARY (two crypto-bigint versions): as in `From<Scalar>` above; revert to `value.0.into()`.
+        U256::from_be_slice(&value.0.to_bytes())
     }
 }
 
@@ -533,9 +546,7 @@ impl MulByGenerator<U256> for Scalar {
         // In the additive scalar group, our generator is 1 and multiplying a group element by it
         // results in that same element. However, a `U256` might be bigger than the field
         // order, so we must first reduce it by the modulus to get a valid element.
-        Self(p256::Scalar::from_uint_unchecked(
-            scalar.reduce(&NonZero::new(ORDER).unwrap()),
-        ))
+        Self::from(scalar)
     }
 }
 

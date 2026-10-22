@@ -293,7 +293,7 @@ where
             .iter()
             .any(|statements| statements.len() != number_of_blended_statements)
         {
-            return Err(mpc::Error::from(mpc::ErrorKind::InternalError))?;
+            Err(mpc::Error::from(mpc::ErrorKind::InternalError))?;
         }
 
         let blended_statements = (0..number_of_blended_statements)

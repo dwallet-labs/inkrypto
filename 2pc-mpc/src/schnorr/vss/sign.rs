@@ -154,7 +154,7 @@ pub mod tests {
             + for<'a> From<
                 &'a <Uint<SCALAR_LIMBS> as ConcatMixed<StatisticalSecuritySizedNumber>>::MixedOutput,
             >,
-    {
+{
         // Get the party IDs from the secret key shares map
         let party_ids: Vec<PartyID> = party_secret_key_shares.keys().copied().collect();
 
@@ -277,7 +277,7 @@ pub mod tests {
             + for<'a> From<
                 &'a <Uint<SCALAR_LIMBS> as ConcatMixed<StatisticalSecuritySizedNumber>>::MixedOutput,
             >,
-    {
+{
         // VSS Schnorr only supports UniversalPublicDKGOutput
         let output = match dkg_output {
             VersionedOutput::UniversalPublicDKGOutput { output, .. } => output,

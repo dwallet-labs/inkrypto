@@ -27,44 +27,65 @@ repository = "https://github.com/dwallet-labs/inkrypto"
 version = "0.2.0"
 
 [workspace.dependencies]
-bulletproofs = { git = "https://github.com/ycscaly/bulletproofs.git", rev = "738c572f", default-features = false }
-crypto-bigint = { version = "0.7.0-pre.9", default-features = false, features = ["serde"] }
+bulletproofs = { git = "https://github.com/ycscaly/bulletproofs.git", rev = "095d5aa4", default-features = false }
+# TEMPORARY (two crypto-bigint versions). Our arithmetic stays on the deployed crypto-bigint
+# rc.9 (our fork at `c6a32050`), while the stable k256 and p256 0.14.0 bring their own
+# crypto-bigint 0.7.5. Cargo keeps two copies of one crate only when they come from different
+# sources, so ours is a git dependency here instead of a crates.io version replaced through
+# `[patch.crates-io]`. The `rand_core` feature is named here because elliptic-curve 0.14 no
+# longer turns it on for us. Every change made only to bridge the two copies carries this same
+# marker: `grep -r "TEMPORARY (two crypto-bigint versions)"` lists them all, in the manifests
+# and in the code. Revert all of them together when our crypto-bigint moves to the version
+# k256 and p256 use: this line becomes a plain version requirement (plus a `[patch.crates-io]`
+# entry if a fork is still needed), crypto-primes returns to crates.io, rand, rand_core and
+# rand_chacha move to 0.10, the `rand_core_010` alias and the `group::Rng010` adapter go, and
+# the byte conversions and literal order constants in `group` return to `.into()` and to the
+# curve crates' constants.
+crypto-bigint = { git = "https://github.com/ycscaly/crypto-bigint.git", rev = "c6a32050", default-features = false, features = ["serde", "rand_core"] }
 merlin = { version = "3", default-features = false }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", default-features = false }
 thiserror = "2.0"
 subtle = { version = "2.5" }
 gcd = { version = "2.3.0" }
-crypto-primes = { version = "0.7.0-pre.3", default-features = false }
+# TEMPORARY (two crypto-bigint versions): crates.io crypto-primes 0.7.0-pre.3 depends on crates.io
+# crypto-bigint, which would be a third copy; the fork changes only that one dependency to our
+# git rc.9 at the revision above. Revert to `crypto-primes = { version = "...", default-features
+# = false }` from crates.io when our crypto-bigint is a crates.io version again.
+crypto-primes = { git = "https://github.com/ycscaly/crypto-primes.git", rev = "4ff67431", default-features = false }
 rayon = { version = "1.11.0" }
+# rand, rand_core and rand_chacha stay at 0.9 because crypto-bigint rc.9 implements its RNG
+# traits for rand_core 0.9; see the TEMPORARY (two crypto-bigint versions) note on crypto-bigint.
 rand_core = { version = "0.9", default-features = false }
 rstest = "0.26"
 rand = { version = "0.9", default-features = false }
 rand_chacha = { version = "0.9", default-features = false }
-curve25519-dalek = { version = "=5.0.0-pre.1", default-features = false, features = ["rand_core"] }
+curve25519-dalek = { version = "=5.0.0", default-features = false, features = ["rand_core"] }
 criterion = { version = "0.7", default-features = false }
 getrandom = { version = "0.3" }
-k256 = { version = "0.14.0-pre.11", default-features = false }
-p256 = { version = "0.14.0-pre.11", default-features = false }
-hash2curve = { version = "0.14.0-rc.2" }
-sha2 = "0.11.0-rc.2"
-sha3 = "0.11.0-rc.3"
+k256 = { version = "=0.14.0", default-features = false }
+p256 = { version = "=0.14.0", default-features = false }
+hash2curve = { version = "=0.14.0" }
+sha2 = "=0.11.1"
+sha3 = "=0.12.0"
+shake = "0.1.0"
+# TEMPORARY (two crypto-bigint versions): rc.9 fixes our RNG traits at rand_core 0.9, and the stable
+# curve crates and the Bulletproofs fork take rand_core 0.10 RNGs. This alias exists only for
+# the `group::Rng010` adapter. Delete the alias, the adapter and every `Rng010(...)` wrap when
+# rand_core moves to 0.10 together with crypto-bigint.
+rand_core_010 = { package = "rand_core", version = "0.10", default-features = false }
 blake2b_simd = { version = "1", default-features = false }
-ecdsa = { version = "0.17.0-rc.7", default-features = false }
+ecdsa = { version = "=0.17.0", default-features = false }
 itertools = "0.14.0"
 bcs = "0.1"
-ed25519 = { version = "3.0.0-rc.1", default-features = false }
-ed25519-dalek = { version = "3.0.0-pre.1", default-features = false }
+ed25519 = { version = "=3.0.0", default-features = false }
+ed25519-dalek = { version = "=3.0.0", default-features = false }
 schnorrkel = { version = "0.11", default-features = false }
 
 hpke = { git = "https://github.com/ycscaly/rust-hpke.git", rev = "94b318c", default-features = false, features = ["alloc", "x25519"] }
 aead = "0.5"
 generic-array = "0.14"
 chacha20poly1305 = "0.10"
-
-[patch.crates-io]
-crypto-bigint = { git = 'https://github.com/ycscaly/crypto-bigint.git', rev = '8aabcee5' }
-der = { git = "https://github.com/RustCrypto/formats", tag = "der/v0.8.0-rc.8" }
 
 [workspace.lints.clippy]
 or_fun_call = "deny"

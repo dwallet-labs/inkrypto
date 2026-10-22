@@ -115,7 +115,7 @@ impl Party {
             >,
         >,
         Uint<MESSAGE_LIMBS>: Encoding,
-    {
+{
         let (
             encryption_of_masked_decentralized_party_nonce_share_before_displacing,
             first_coefficient_commitment,

@@ -6,11 +6,11 @@ use std::ops::{Add, AddAssign, Neg, Sub, SubAssign};
 use crypto_bigint::{Int, Uint, U256};
 use hash2curve::ExpandMsgXof;
 use k256::{
-    elliptic_curve::{group::prime::PrimeCurveAffine, BatchNormalize as _, Group},
+    elliptic_curve::{BatchNormalize as _, CurveAffine, Group},
     AffinePoint, ProjectivePoint, Secp256k1,
 };
 use serde::{Deserialize, Serialize};
-use sha3::Shake256;
+use shake::Shake256;
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 
 use crate::linear_combination::linearly_combine_bounded_or_scale;

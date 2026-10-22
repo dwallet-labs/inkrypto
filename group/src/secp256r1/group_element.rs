@@ -6,7 +6,7 @@ use std::ops::{Add, AddAssign, Neg, Sub, SubAssign};
 use crypto_bigint::{Int, Uint, U256};
 use hash2curve::ExpandMsgXmd;
 use p256::{
-    elliptic_curve::{group::prime::PrimeCurveAffine, BatchNormalize as _, Group},
+    elliptic_curve::{BatchNormalize as _, CurveAffine, Group},
     AffinePoint, NistP256, ProjectivePoint,
 };
 use serde::{Deserialize, Serialize};

@@ -241,7 +241,7 @@ where
                 .map(|(party_id, _)| party_id)
                 .collect();
 
-            return Err(proof_aggregation::Error::from(
+            Err(proof_aggregation::Error::from(
                 proof_aggregation::ErrorKind::SynchronousAggregation(
                     proof_aggregation::synchronous::Error::from(
                         proof_aggregation::synchronous::ErrorKind::ProofShareVerification(

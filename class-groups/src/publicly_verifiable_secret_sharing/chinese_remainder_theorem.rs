@@ -33,6 +33,7 @@ use mpc::WeightedThresholdAccessStructure;
 use crate::accelerator::MultiFoldNupowAccelerator;
 use crate::equivalence_class::EquivalenceClassOps;
 use crate::{CiphertextSpaceGroupElement, CiphertextSpaceValue};
+use group::sampling::legacy_seeded_rng;
 
 pub use consts::*;
 use group::bounded_natural_numbers_group::MAURER_PROOFS_DIFF_UPPER_BOUND_BITS;
@@ -232,6 +233,32 @@ pub fn generate_keypairs_per_crt_prime(
             SecretKeyShareCRTPrimeDecryptionKey::generate_with_setup_parameters(
                 setup_parameters,
                 rng,
+            )
+            .map(|(_, decryption_key)| decryption_key.decryption_key)
+        })
+        .flat_map_results()
+}
+
+/// Reproduce the keypairs a validator derived from `seed` with the deployed crypto-bigint
+/// revision; see [`DecryptionKey::generate_with_setup_parameters_legacy`]. The three keys are
+/// drawn one after another from one fresh ChaCha20 RNG seeded with `seed`
+/// ([`legacy_seeded_rng`]), exactly as the deployed caller did. New validators use [`generate_keypairs_per_crt_prime`].
+///
+/// Not compatible between 32-bit and 64-bit targets: the legacy sampler draws whole
+/// machine words, so the same seed gives a different key on `wasm32` than on native, and a
+/// key is reproduced only on a target with the same word width as the one that first derived
+/// it.
+pub fn generate_keypairs_per_crt_prime_legacy(
+    setup_parameters_per_crt_prime: [SecretKeyShareCRTPrimeSetupParameters; MAX_PRIMES],
+    seed: [u8; 32],
+) -> Result<[Uint<CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS>; MAX_PRIMES]> {
+    let mut rng = legacy_seeded_rng(seed);
+
+    setup_parameters_per_crt_prime
+        .map(|setup_parameters| {
+            SecretKeyShareCRTPrimeDecryptionKey::generate_with_setup_parameters_legacy(
+                setup_parameters,
+                &mut rng,
             )
             .map(|(_, decryption_key)| decryption_key.decryption_key)
         })
@@ -746,6 +773,31 @@ mod tests {
     use std::array;
     use std::collections::HashMap;
     use std::ops::Neg;
+
+    // SHA-256 of the BCS serialization of the three CRT setup parameter sets, captured from
+    // the historical seeded derivation at commit `0d5046df`. Every validator decryption key
+    // is generated over these; the sets are now built from `known_setup_samples`.
+    #[test]
+    fn snapshot_test_recorded_crt_setup_parameters_serialization() {
+        use crypto_bigint::U256;
+        use sha2::{Digest, Sha256};
+
+        let expected = [
+            "ab32ef394aee9ccc729cb573dadbfdf8355efe33f639d8efe8c50685c3bd58ad",
+            "c1d2aa2f07b581c71d08b110236eafa30cab4a124fdbb9385f1e70a850ccac76",
+            "bce5fdef5241e3a55fcf3b2a89b002907d18d6bc9f78209ff4f14e44231fc3c4",
+        ];
+        let setup_parameters_per_crt_prime = construct_setup_parameters_per_crt_prime(
+            crate::DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+        )
+        .unwrap();
+        for (setup_parameters, expected) in setup_parameters_per_crt_prime.iter().zip(expected) {
+            assert_eq!(
+                Sha256::digest(bcs::to_bytes(setup_parameters).unwrap()).as_slice(),
+                U256::from_be_hex(expected).to_be_bytes().as_slice()
+            );
+        }
+    }
 
     use crypto_bigint::Random;
 

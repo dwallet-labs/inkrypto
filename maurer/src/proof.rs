@@ -237,8 +237,8 @@ impl<
                         challenge_bit_size,
                         language_public_parameters.witness_space_public_parameters(),
                     )
-                    .map_or(
-                        randomizer.clone(),
+                    .map_or_else(
+                        |_| randomizer.clone(),
                         |witnesses_and_challenges_linear_combination| {
                             randomizer.add_constant_time(
                                 &witnesses_and_challenges_linear_combination,
@@ -347,8 +347,8 @@ impl<
                         challenge_bit_size,
                         language_public_parameters.statement_space_public_parameters(),
                     )
-                    .map_or(
-                        statement_mask.clone(),
+                    .map_or_else(
+                        |_| statement_mask.clone(),
                         |statements_and_challenges_linear_combination| {
                             statements_and_challenges_linear_combination.add_vartime(
                                 &statement_mask,

@@ -6,8 +6,6 @@ use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 
 use crypto_bigint::{Encoding, Int, Uint, U64};
-#[cfg(feature = "parallel")]
-use rayon::prelude::*;
 
 use commitment::CommitmentSizedNumber;
 use group::helpers::{DeduplicateAndSort, FlatMapResults, TryCollectHashMap};

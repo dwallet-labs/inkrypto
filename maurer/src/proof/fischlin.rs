@@ -213,7 +213,7 @@ impl<
             .map(|res| res.unwrap())
             .any(|is_target| !is_target)
         {
-            return Err(proof::Error::from(proof::ErrorKind::ProofVerification))?;
+            Err(proof::Error::from(proof::ErrorKind::ProofVerification))?;
         }
 
         self.maurer_proof.verify_inner(

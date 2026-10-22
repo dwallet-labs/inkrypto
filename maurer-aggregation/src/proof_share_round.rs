@@ -102,7 +102,8 @@ impl<
         if !miscommitting_parties.is_empty() {
             return Err(proof_aggregation::synchronous::Error::from(
                 proof_aggregation::synchronous::ErrorKind::WrongDecommitment(miscommitting_parties),
-            ))?;
+            )
+            .into());
         }
 
         let statement_masks: HashMap<PartyID, group::Result<_>> = decommitments
@@ -132,7 +133,7 @@ impl<
             .deduplicate_and_sort();
 
         if !parties_sending_invalid_statement_masks.is_empty() {
-            return Err(proof_aggregation::synchronous::Error::from(
+            Err(proof_aggregation::synchronous::Error::from(
                 proof_aggregation::synchronous::ErrorKind::InvalidDecommitment(
                     parties_sending_invalid_statement_masks,
                 ),
@@ -153,7 +154,7 @@ impl<
             .collect();
 
         if !parties_committed_on_wrong_number_of_statements.is_empty() {
-            return Err(proof_aggregation::synchronous::Error::from(
+            Err(proof_aggregation::synchronous::Error::from(
                 proof_aggregation::synchronous::ErrorKind::WrongNumberOfDecommittedStatements(
                     miscommitting_parties,
                 ),

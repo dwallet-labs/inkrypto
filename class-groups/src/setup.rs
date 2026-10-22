@@ -22,7 +22,7 @@ use crate::parameters::{minimum_discriminant_bits, Parameters};
 use crate::randomizer::ScalingRandomizer;
 use crate::{
     decryption_key_size_from_fundamental_discriminant_size, equivalence_class, helpers,
-    CompactIbqf, Error, ErrorKind, DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+    known_setup_samples, CompactIbqf, Error, ErrorKind, DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
     HIGHEST_ACCELERATOR_FOLDING_DEGREE, SECRET_KEY_SHARE_SIZE_UPPER_BOUND,
 };
 use crate::{CiphertextSpacePublicParameters, RandomnessSpacePublicParameters};
@@ -112,7 +112,7 @@ where
     /// - class group parameters,
     /// - plaintext space parameters,
     /// - `h` folding degree, and
-    /// - a source of randomness `rng`.
+    /// - a source of randomness `rng`, used to sample `h`.
     pub(crate) fn new(
         class_group_parameters: Parameters<
             PLAINTEXT_SPACE_SCALAR_LIMBS,
@@ -123,12 +123,34 @@ where
         folding_degree: u32,
         rng: &mut impl CsRng,
     ) -> Result<Self, Error> {
+        let h = class_group_parameters.h(rng)?;
+
+        Self::new_with_h(
+            class_group_parameters,
+            plaintext_space_public_parameters,
+            folding_degree,
+            h,
+        )
+    }
+
+    /// Construct new public setup parameters from an already constructed `h`.
+    /// Everything after `h` is a deterministic function of the inputs.
+    pub(crate) fn new_with_h(
+        class_group_parameters: Parameters<
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        >,
+        plaintext_space_public_parameters: ScalarPublicParameters,
+        folding_degree: u32,
+        h: EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+    ) -> Result<Self, Error> {
         let (groups_public_parameters, decryption_key_public_parameters, h) =
             Self::construct_groups_public_parameters(
                 &class_group_parameters,
                 plaintext_space_public_parameters,
                 folding_degree,
-                rng,
+                h,
             )?;
 
         let large_message_variant = Self::use_large_message_variant(&class_group_parameters);
@@ -143,8 +165,9 @@ where
     }
 
     /// Construct the groups public parameters, given the
-    /// - class-group parameters, and
-    /// - plaintext space public parameters.
+    /// - class-group parameters,
+    /// - plaintext space public parameters, and
+    /// - the generator `h`.
     #[allow(clippy::type_complexity)]
     pub(crate) fn construct_groups_public_parameters(
         class_group_parameters: &Parameters<
@@ -154,7 +177,7 @@ where
         >,
         plaintext_space_public_parameters: ScalarPublicParameters,
         folding_degree: u32,
-        rng: &mut impl CsRng,
+        h: EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
     ) -> Result<
         (
             GroupsPublicParameters<
@@ -186,8 +209,6 @@ where
                 decryption_key_sample_bits,
             )
             .map_err(|_| Error::from(ErrorKind::InvalidPublicParameters))?;
-
-        let h = class_group_parameters.h(rng)?;
 
         let h_accelerators = [
             randomness_space_public_parameters.sample_bits,
@@ -392,8 +413,10 @@ pub trait DeriveFromPlaintextPublicParameters<
     /// - plaintext element, and
     /// - computational security parameter
     ///
-    /// This function selects a `p` deterministically; the output will be identical each time
-    /// for the same input parameters.
+    /// This function selects `p` and `h` deterministically; the output will be identical each
+    /// time for the same input parameters. For the production plaintext spaces the sampled
+    /// primes are recorded constants (`known_setup_samples`) and are never re-sampled; any
+    /// other plaintext space is derived from an RNG seeded with a hash of its order.
     fn derive_from_plaintext_parameters<Scalar>(
         plaintext_space_parameters: ScalarPublicParameters,
         computational_security_parameter: u32,
@@ -471,14 +494,42 @@ where
         >,
     {
         let order = Scalar::order_from_public_parameters(&plaintext_space_parameters);
-        let seed = helpers::sha3_256_hash(order.to_be_bytes());
-        let mut rng = ChaCha20Rng::from(ChaCha20Core::from_seed(seed));
 
-        Self::derive_from_plaintext_parameters_random::<Scalar>(
-            plaintext_space_parameters,
-            computational_security_parameter,
-            &mut rng,
-        )
+        // The sampled primes of every production plaintext space are recorded constants
+        // (see `known_setup_samples`), so those parameter sets never depend on a random
+        // sampler. A plaintext space without a record is derived from the seeded RNG below.
+        if let Some((p, h_kronecker_prime)) = known_setup_samples::find::<
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            HALF_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        >(&order, computational_security_parameter)
+        {
+            let q = NonZero::new(order)
+                .into_option()
+                .ok_or_else(|| Error::from(ErrorKind::InvalidParameters))?;
+
+            // TODO(#17): quit hardcoding for k > 1
+            let class_group_parameters =
+                Parameters::new(q, 1, p, computational_security_parameter)?;
+            let h = class_group_parameters.h_from_kronecker_prime(h_kronecker_prime)?;
+
+            return Self::new_with_h(
+                class_group_parameters,
+                plaintext_space_parameters,
+                HIGHEST_ACCELERATOR_FOLDING_DEGREE,
+                h,
+            );
+        }
+
+        derive_from_plaintext_parameters_seeded::<
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            HALF_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            DOUBLE_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            ScalarPublicParameters,
+            Scalar,
+        >(plaintext_space_parameters, computational_security_parameter)
     }
 
     fn derive_from_plaintext_parameters_random<Scalar>(
@@ -508,6 +559,71 @@ where
             rng,
         )
     }
+}
+
+/// The RNG the historical derivation used: ChaCha20 seeded with SHA3-256 of the
+/// plaintext-space order. Private to this file; the recorded samples in
+/// `known_setup_samples` were captured through it.
+fn seeded_rng<const LIMBS: usize>(order: &Uint<LIMBS>) -> ChaCha20Rng
+where
+    Uint<LIMBS>: Encoding,
+{
+    let seed = helpers::sha3_256_hash(order.to_be_bytes());
+
+    ChaCha20Rng::from(ChaCha20Core::from_seed(seed))
+}
+
+/// Derive setup parameters by sampling from [`seeded_rng`], without consulting the recorded
+/// samples. Private to this file: production code reaches it only as the fallback for a
+/// plaintext space with no recorded sample, and the tests use it to check every recorded set.
+#[allow(clippy::type_complexity)]
+fn derive_from_plaintext_parameters_seeded<
+    const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
+    const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    const HALF_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    const DOUBLE_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    ScalarPublicParameters,
+    Scalar,
+>(
+    plaintext_space_parameters: ScalarPublicParameters,
+    computational_security_parameter: u32,
+) -> Result<
+    SetupParameters<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        ScalarPublicParameters,
+    >,
+    Error,
+>
+where
+    Scalar: KnownOrderGroupElement<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        PublicParameters = ScalarPublicParameters,
+    >,
+    Int<PLAINTEXT_SPACE_SCALAR_LIMBS>: Encoding,
+    Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>: Encoding,
+    Int<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Uint<HALF_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>:
+        Concat<Output = Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+    Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding
+        + Concat<Output = Uint<DOUBLE_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>
+        + Split<Output = Uint<HALF_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+    Int<DOUBLE_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Uint<DOUBLE_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>:
+        Split<Output = Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+{
+    let order = Scalar::order_from_public_parameters(&plaintext_space_parameters);
+    let mut rng = seeded_rng(&order);
+
+    SetupParameters::derive_from_plaintext_parameters_random::<Scalar>(
+        plaintext_space_parameters,
+        computational_security_parameter,
+        &mut rng,
+    )
 }
 
 impl<
@@ -823,12 +939,330 @@ mod tests {
     use crate::setup::test_helpers::get_setup_parameters_secp256k1_112_bits_deterministic;
     use crate::setup::DeriveFromPlaintextPublicParameters;
     use crate::test_helpers::get_setup_parameters_ristretto_112_bits_deterministic;
+    use crate::{
+        Curve25519SetupParameters, RistrettoSetupParameters, Secp256k1SetupParameters,
+        Secp256r1SetupParameters, DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+    };
     use crate::{SetupParameters, DECRYPTION_KEY_BITS_112BIT_SECURITY};
     use crate::{
         RISTRETTO_FUNDAMENTAL_DISCRIMINANT_LIMBS, RISTRETTO_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
         RISTRETTO_SCALAR_LIMBS, SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
         SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, SECP256K1_SCALAR_LIMBS,
     };
+    use crypto_bigint::{Concat, Encoding, Int, Split, Uint, U256};
+    use group::{curve25519, secp256r1, KnownOrderGroupElement};
+    use sha2::{Digest, Sha256};
+
+    use super::{derive_from_plaintext_parameters_seeded, seeded_rng};
+    use crate::parameters::Parameters;
+    use crate::{
+        CURVE25519_FUNDAMENTAL_DISCRIMINANT_LIMBS, CURVE25519_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        CURVE25519_SCALAR_LIMBS, SECP256R1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        SECP256R1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, SECP256R1_SCALAR_LIMBS,
+    };
+
+    // Every recorded set must equal what the seeded derivation produces today. Full
+    // structural equality of `SetupParameters`, not only of the serialized bytes.
+    #[test]
+    fn recorded_samples_reproduce_seeded_derivation_secp256k1() {
+        let recorded =
+            Secp256k1SetupParameters::derive_from_plaintext_parameters::<secp256k1::Scalar>(
+                secp256k1::scalar::PublicParameters::default(),
+                DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+            )
+            .unwrap();
+        let seeded = derive_from_plaintext_parameters_seeded::<
+            SECP256K1_SCALAR_LIMBS,
+            SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            { SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS / 2 },
+            SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            { SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS * 2 },
+            secp256k1::scalar::PublicParameters,
+            secp256k1::Scalar,
+        >(
+            secp256k1::scalar::PublicParameters::default(),
+            DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+        )
+        .unwrap();
+        assert_eq!(recorded, seeded);
+    }
+
+    #[test]
+    fn recorded_samples_reproduce_seeded_derivation_secp256r1() {
+        let recorded =
+            Secp256r1SetupParameters::derive_from_plaintext_parameters::<secp256r1::Scalar>(
+                secp256r1::scalar::PublicParameters::default(),
+                DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+            )
+            .unwrap();
+        let seeded = derive_from_plaintext_parameters_seeded::<
+            SECP256R1_SCALAR_LIMBS,
+            SECP256R1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            { SECP256R1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS / 2 },
+            SECP256R1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            { SECP256R1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS * 2 },
+            secp256r1::scalar::PublicParameters,
+            secp256r1::Scalar,
+        >(
+            secp256r1::scalar::PublicParameters::default(),
+            DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+        )
+        .unwrap();
+        assert_eq!(recorded, seeded);
+    }
+
+    #[test]
+    fn recorded_samples_reproduce_seeded_derivation_ristretto() {
+        let recorded =
+            RistrettoSetupParameters::derive_from_plaintext_parameters::<ristretto::Scalar>(
+                ristretto::scalar::PublicParameters::default(),
+                DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+            )
+            .unwrap();
+        let seeded = derive_from_plaintext_parameters_seeded::<
+            RISTRETTO_SCALAR_LIMBS,
+            RISTRETTO_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            { RISTRETTO_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS / 2 },
+            RISTRETTO_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            { RISTRETTO_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS * 2 },
+            ristretto::scalar::PublicParameters,
+            ristretto::Scalar,
+        >(
+            ristretto::scalar::PublicParameters::default(),
+            DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+        )
+        .unwrap();
+        assert_eq!(recorded, seeded);
+    }
+
+    #[test]
+    fn recorded_samples_reproduce_seeded_derivation_curve25519() {
+        let recorded =
+            Curve25519SetupParameters::derive_from_plaintext_parameters::<curve25519::Scalar>(
+                curve25519::scalar::PublicParameters::default(),
+                DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+            )
+            .unwrap();
+        let seeded = derive_from_plaintext_parameters_seeded::<
+            CURVE25519_SCALAR_LIMBS,
+            CURVE25519_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            { CURVE25519_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS / 2 },
+            CURVE25519_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            { CURVE25519_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS * 2 },
+            curve25519::scalar::PublicParameters,
+            curve25519::Scalar,
+        >(
+            curve25519::scalar::PublicParameters::default(),
+            DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+        )
+        .unwrap();
+        assert_eq!(recorded, seeded);
+    }
+
+    #[cfg(feature = "threshold")]
+    #[test]
+    fn recorded_samples_reproduce_seeded_derivation_crt_primes() {
+        use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
+            SecretKeyShareCRTPrimeGroupElement, SecretKeyShareCRTPrimePublicParameters,
+            SecretKeyShareCRTPrimeSetupParameters, CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, CRT_PRIMES, CRT_PRIME_LIMBS,
+        };
+
+        for prime in CRT_PRIMES {
+            let plaintext_space_parameters =
+                SecretKeyShareCRTPrimePublicParameters::new(prime).unwrap();
+            let recorded =
+                SecretKeyShareCRTPrimeSetupParameters::derive_from_plaintext_parameters::<
+                    SecretKeyShareCRTPrimeGroupElement,
+                >(
+                    plaintext_space_parameters.clone(),
+                    DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+                )
+                .unwrap();
+            let seeded = derive_from_plaintext_parameters_seeded::<
+                CRT_PRIME_LIMBS,
+                CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                { CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS / 2 },
+                CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                { CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS * 2 },
+                SecretKeyShareCRTPrimePublicParameters,
+                SecretKeyShareCRTPrimeGroupElement,
+            >(
+                plaintext_space_parameters,
+                DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+            )
+            .unwrap();
+            assert_eq!(recorded, seeded);
+        }
+    }
+
+    /// Full-width big-endian hex, the format of the rows in `known_setup_samples`.
+    fn be_hex<const LIMBS: usize>(value: &Uint<LIMBS>) -> String
+    where
+        Uint<LIMBS>: Encoding,
+    {
+        value
+            .to_be_bytes()
+            .as_ref()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
+    /// The historical derivation, instrumented: seed the RNG as `seeded_rng` does, sample `p`,
+    /// then sample the Kronecker prime for `h`, and print a `known_setup_samples` row.
+    fn print_historical_sample<
+        const Q_LIMBS: usize,
+        const P_LIMBS: usize,
+        const HALF_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+        const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+        const DOUBLE_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    >(
+        name: &str,
+        q: Uint<Q_LIMBS>,
+    ) where
+        Uint<Q_LIMBS>: Encoding,
+        Int<P_LIMBS>: Encoding,
+        Uint<P_LIMBS>: Encoding,
+        Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+        Uint<HALF_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>:
+            Encoding + Concat<Output = Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+        Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding
+            + Concat<Output = Uint<DOUBLE_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>
+            + Split<Output = Uint<HALF_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+        Uint<DOUBLE_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>:
+            Split<Output = Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+    {
+        let mut rng = seeded_rng(&q);
+        let class_group_parameters =
+            Parameters::<Q_LIMBS, P_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>::new_random_vartime(
+                NonZero::new(q).unwrap(),
+                1,
+                DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+                &mut rng,
+            )
+            .unwrap();
+        let h_kronecker_prime = class_group_parameters
+            .sample_h_kronecker_prime(&mut rng)
+            .unwrap();
+        println!(
+            "SAMPLE {name} q={} p={} h_kronecker_prime={}",
+            be_hex(&q),
+            be_hex(&class_group_parameters.p),
+            be_hex(&h_kronecker_prime)
+        );
+    }
+
+    #[test]
+    #[ignore = "prints the historical samples; run once to (re)capture `known_setup_samples`"]
+    fn print_historical_samples() {
+        use crate::publicly_verifiable_secret_sharing::chinese_remainder_theorem::{
+            CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS, CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, CRT_PRIMES,
+            CRT_PRIME_LIMBS,
+        };
+
+        print_historical_sample::<
+            SECP256K1_SCALAR_LIMBS,
+            SECP256K1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            { SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS / 2 },
+            SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            { SECP256K1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS * 2 },
+        >(
+            "secp256k1",
+            secp256k1::Scalar::order_from_public_parameters(
+                &secp256k1::scalar::PublicParameters::default(),
+            ),
+        );
+        print_historical_sample::<
+            SECP256R1_SCALAR_LIMBS,
+            SECP256R1_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            { SECP256R1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS / 2 },
+            SECP256R1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            { SECP256R1_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS * 2 },
+        >(
+            "secp256r1",
+            secp256r1::Scalar::order_from_public_parameters(
+                &secp256r1::scalar::PublicParameters::default(),
+            ),
+        );
+        print_historical_sample::<
+            RISTRETTO_SCALAR_LIMBS,
+            RISTRETTO_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            { RISTRETTO_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS / 2 },
+            RISTRETTO_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            { RISTRETTO_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS * 2 },
+        >(
+            "ristretto",
+            ristretto::Scalar::order_from_public_parameters(
+                &ristretto::scalar::PublicParameters::default(),
+            ),
+        );
+        for (index, prime) in CRT_PRIMES.iter().enumerate() {
+            print_historical_sample::<
+                CRT_PRIME_LIMBS,
+                CRT_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                { CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS / 2 },
+                CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                { CRT_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS * 2 },
+            >(&format!("crt{index}"), *prime);
+        }
+    }
+
+    // SHA-256 of the BCS serialization of every production setup parameter set, captured from
+    // the historical seeded derivation at commit `0d5046df`. The sets are now built from the
+    // recorded samples in `known_setup_samples`; this test is the backward-compatibility
+    // guard for every key and ciphertext that depends on them.
+    #[test]
+    fn snapshot_test_recorded_setup_parameters_serialization() {
+        let secp256k1 =
+            Secp256k1SetupParameters::derive_from_plaintext_parameters::<secp256k1::Scalar>(
+                secp256k1::scalar::PublicParameters::default(),
+                DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+            )
+            .unwrap();
+        assert_eq!(
+            Sha256::digest(bcs::to_bytes(&secp256k1).unwrap()).as_slice(),
+            U256::from_be_hex("4510c9e8e35c10ee570c6946c6456dfb7904d0917e2d9b365d68f80963ed54a8")
+                .to_be_bytes()
+                .as_slice()
+        );
+        let secp256r1 =
+            Secp256r1SetupParameters::derive_from_plaintext_parameters::<secp256r1::Scalar>(
+                secp256r1::scalar::PublicParameters::default(),
+                DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+            )
+            .unwrap();
+        assert_eq!(
+            Sha256::digest(bcs::to_bytes(&secp256r1).unwrap()).as_slice(),
+            U256::from_be_hex("e5b9980d06b406903d5ee33235f1370eab9ab7ca7f77234ddc227040c595e3cb")
+                .to_be_bytes()
+                .as_slice()
+        );
+        let ristretto =
+            RistrettoSetupParameters::derive_from_plaintext_parameters::<ristretto::Scalar>(
+                ristretto::scalar::PublicParameters::default(),
+                DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+            )
+            .unwrap();
+        assert_eq!(
+            Sha256::digest(bcs::to_bytes(&ristretto).unwrap()).as_slice(),
+            U256::from_be_hex("b1a9eb2e16700c01fe13828cb9d370f08e001e63a4eccd212c3e55515d04d5e4")
+                .to_be_bytes()
+                .as_slice()
+        );
+        let curve25519 =
+            Curve25519SetupParameters::derive_from_plaintext_parameters::<curve25519::Scalar>(
+                curve25519::scalar::PublicParameters::default(),
+                DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+            )
+            .unwrap();
+        assert_eq!(
+            Sha256::digest(bcs::to_bytes(&curve25519).unwrap()).as_slice(),
+            U256::from_be_hex("b1a9eb2e16700c01fe13828cb9d370f08e001e63a4eccd212c3e55515d04d5e4")
+                .to_be_bytes()
+                .as_slice()
+        );
+    }
 
     #[test]
     fn test_derive_from_plaintext_parameters_random_secp256k1() {

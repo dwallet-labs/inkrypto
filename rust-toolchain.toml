@@ -1,4 +1,4 @@
 [toolchain]
 # Hardcode a Rust version.
-channel = "1.88"
+channel = "1.99.1"
 

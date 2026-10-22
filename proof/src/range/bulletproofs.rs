@@ -112,7 +112,7 @@ impl super::RangeProof<COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS> for RangePr
             .iter()
             .any(|witness| witness >= &(U256::ONE << RANGE_CLAIM_BITS))
         {
-            return Err(Error::from(ErrorKind::InvalidParameters))?;
+            Err(Error::from(ErrorKind::InvalidParameters))?;
         }
 
         let witnesses: Vec<u64> = witnesses
@@ -159,7 +159,9 @@ impl super::RangeProof<COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS> for RangePr
             witnesses.as_slice(),
             commitments_randomness.as_slice(),
             RANGE_CLAIM_BITS,
-            rng,
+            // TEMPORARY (two crypto-bigint versions): `group::Rng010` presents our rand_core 0.9 RNG to
+            // the Bulletproofs fork's rand_core 0.10 API; revert to `rng` with it.
+            &mut group::Rng010(rng),
         )
         .map_err(|_| Error::from(ErrorKind::InvalidParameters))?;
 
@@ -261,7 +263,8 @@ impl super::RangeProof<COMMITMENT_SCHEME_MESSAGE_SPACE_SCALAR_LIMBS> for RangePr
                 &mut transcript,
                 compressed_commitments.as_slice(),
                 RANGE_CLAIM_BITS,
-                rng,
+                // TEMPORARY (two crypto-bigint versions): as in `prove` above; revert to `rng`.
+                &mut group::Rng010(rng),
             )
             .map_err(|e| match e {
                 bulletproofs::ProofError::VerificationError => Error::from(ErrorKind::OutOfRange),

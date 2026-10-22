@@ -4,7 +4,7 @@
 use crypto_bigint::{Int, Limb, Uint, U1536, U2048, U64};
 
 pub use accelerator::MultiFoldNupowAccelerator;
-pub use decryption_key::{DecryptionKey, DiscreteLogInF, SecretKey};
+pub use decryption_key::{sample_secret_key_legacy, DecryptionKey, DiscreteLogInF, SecretKey};
 #[cfg(feature = "threshold")]
 pub use decryption_key_share::DecryptionKeyShare;
 pub use encryption_key::EncryptionKey;
@@ -30,6 +30,7 @@ pub mod encryption_key;
 pub mod equivalence_class;
 mod helpers;
 mod ibqf;
+mod known_setup_samples;
 mod parameters;
 pub mod setup;
 
