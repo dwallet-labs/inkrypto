@@ -65,7 +65,7 @@ impl<const NUM_RANGE_CLAIMS: usize> DecommitmentRoundParty<super::Output<NUM_RAN
             .deduplicate_and_sort();
 
         if !parties_sending_wrong_number_of_bitcommitments.is_empty() {
-            return Err(crate::synchronous::Error::from(
+            Err(crate::synchronous::Error::from(
                 crate::synchronous::ErrorKind::InvalidCommitment(
                     parties_sending_wrong_number_of_bitcommitments,
                 ),
@@ -127,7 +127,9 @@ impl<const NUM_RANGE_CLAIMS: usize> DecommitmentRoundParty<super::Output<NUM_RAN
         let (parties_awaiting_poly_challenge, poly_commitments): (Vec<_>, Vec<_>) = self
             .parties_awaiting_bit_challenge
             .into_iter()
-            .map(|party| party.apply_challenge_with_rng(&bit_challenge, rng))
+            // TEMPORARY (two crypto-bigint versions): `group::Rng010` presents our rand_core 0.9 RNG to the
+            // Bulletproofs fork's rand_core 0.10 API; revert to `rng`.
+            .map(|party| party.apply_challenge_with_rng(&bit_challenge, &mut group::Rng010(rng)))
             .unzip();
 
         let third_round_party = proof_share_round::Party {

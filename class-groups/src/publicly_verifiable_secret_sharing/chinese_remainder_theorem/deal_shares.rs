@@ -7,8 +7,6 @@ use std::array;
 use std::collections::{HashMap, HashSet};
 
 use crypto_bigint::{ConstChoice, Encoding, Int, Uint};
-#[cfg(feature = "parallel")]
-use rayon::prelude::*;
 
 use group::helpers::{DeduplicateAndSort, FlatMapResults, TryCollectHashMap};
 use group::SeedableCollection;

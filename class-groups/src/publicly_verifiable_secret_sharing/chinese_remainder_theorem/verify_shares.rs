@@ -7,8 +7,6 @@ use std::array;
 use std::collections::{HashMap, HashSet};
 
 use crypto_bigint::{Encoding, Int, Uint};
-#[cfg(feature = "parallel")]
-use rayon::prelude::*;
 
 use crate::accelerator::MultiFoldNupowAccelerator;
 use crate::dkg::verify_encryptions_of_secrets_per_crt_prime;

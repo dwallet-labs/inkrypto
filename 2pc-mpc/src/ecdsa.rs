@@ -102,7 +102,7 @@ impl TryFrom<(secp256k1::GroupElement, secp256k1::Scalar)> for ECDSASecp256k1Sig
 
 impl Debug for ECDSASecp256k1Signature {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ECDSASecp256k1Signature({:?})", &self.0)
+        write!(f, "ECDSASecp256k1Signature({:?})", self.0)
     }
 }
 
@@ -235,7 +235,7 @@ impl TryFrom<(secp256r1::GroupElement, secp256r1::Scalar)> for ECDSASecp256r1Sig
 }
 impl Debug for ECDSASecp256r1Signature {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ECDSASecp256r1Signature({:?})", &self.0)
+        write!(f, "ECDSASecp256r1Signature({:?})", self.0)
     }
 }
 

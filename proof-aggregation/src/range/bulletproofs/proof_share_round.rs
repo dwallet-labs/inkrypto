@@ -62,7 +62,7 @@ impl<const NUM_RANGE_CLAIMS: usize> ProofShareRoundParty<super::Output<NUM_RANGE
             .deduplicate_and_sort();
 
         if !parties_sending_wrong_number_of_poly_commitments.is_empty() {
-            return Err(crate::synchronous::Error::from(
+            Err(crate::synchronous::Error::from(
                 crate::synchronous::ErrorKind::InvalidDecommitment(
                     parties_sending_wrong_number_of_poly_commitments,
                 ),

@@ -15,7 +15,7 @@ env:
   RUST_BACKTRACE: 1
   RUST_MIN_STACK: 16777216
   # Change to specific Rust release to pin or `stable` for the latest stable version.
-  rust_stable: "1.88"
+  rust_stable: "1.99.1"
   rust_nightly: nightly
 
 jobs:
@@ -38,7 +38,7 @@ jobs:
         run: rustup target add ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
       - name: Build
-        run: rustup target add x86_64-unknown-linux-gnu && cargo build --workspace --release --target ${{ matrix.target }}
+        run: rustup target add x86_64-unknown-linux-gnu && cargo build --locked --workspace --release --target ${{ matrix.target }}
 
   build_wasm:
     name: Build WASM
@@ -59,7 +59,7 @@ jobs:
         run: rustup target add ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
       - name: Build
-        run: rustup target add wasm32-unknown-unknown && RUSTFLAGS='--cfg getrandom_backend="wasm_js"' cargo build --workspace --release --target ${{ matrix.target }}
+        run: rustup target add wasm32-unknown-unknown && RUSTFLAGS='--cfg getrandom_backend="wasm_js"' cargo build --locked --workspace --release --target ${{ matrix.target }}
 
   fmt:
     name: Format Check
@@ -75,7 +75,7 @@ jobs:
       - name: Use Rust Cache
         uses: Swatinem/rust-cache@v2
       - name: Fmt Check
-        run: rustup component add --toolchain 1.88-x86_64-unknown-linux-gnu rustfmt && cargo fmt --all -- --check
+        run: rustup component add --toolchain 1.99.1-x86_64-unknown-linux-gnu rustfmt && cargo fmt --all -- --check
 
   test:
     name: Test Suite
@@ -100,10 +100,10 @@ jobs:
         # downstream in ika; locally run e.g.
         # `cargo test -p twopc_mpc --features unsafe_mock --release`.
         run: |
-          cargo test --all-features --workspace --exclude twopc_mpc --exclude class_groups --exclude mpc --release
-          cargo test -p twopc_mpc --features benchmarking,parallel --release
-          cargo test -p class_groups --features benchmarking,randomized_decryption --release
-          cargo test -p mpc --features test_helpers,parallel --release
+          cargo test --locked --all-features --workspace --exclude twopc_mpc --exclude class_groups --exclude mpc --release
+          cargo test --locked -p twopc_mpc --features benchmarking,parallel --release
+          cargo test --locked -p class_groups --features benchmarking,randomized_decryption --release
+          cargo test --locked -p mpc --features test_helpers,parallel --release
 
   clippy:
     name: Clippy
@@ -119,7 +119,7 @@ jobs:
       - name: Use Rust Cache
         uses: Swatinem/rust-cache@v2
       - name: Run Clippy
-        run: rustup component add --toolchain 1.88-x86_64-unknown-linux-gnu clippy && cargo clippy --all --tests --all-targets --all-features --no-deps -- -D warnings
+        run: rustup component add --toolchain 1.99.1-x86_64-unknown-linux-gnu clippy && cargo clippy --locked --all --tests --all-targets --all-features --no-deps -- -D warnings
 
   docs:
     name: Docs
@@ -141,7 +141,7 @@ jobs:
         # This will be enabled by default if documenting a binary target.
         # --examples = Document all example targets.
         run: |
-          cargo doc --workspace --no-deps --all-features --document-private-items --examples
+          cargo doc --locked --workspace --no-deps --all-features --document-private-items --examples
 
   verify-license:
     name: License Check

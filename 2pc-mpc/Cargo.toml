@@ -27,7 +27,7 @@ class_groups = { path = "../class-groups", features = ["threshold"] }
 criterion = { workspace = true, default-features = false, features = ["html_reports", "cargo_bench_support", "rayon"], optional = true }
 rand = { workspace = true, default-features = false, optional = true }
 rstest = { workspace = true, optional = true }
-ecdsa = { workspace = true, features = ["verifying"], default-features = false }
+ecdsa = { workspace = true, features = ["algorithm"], default-features = false }
 k256 = { workspace = true, features = ["arithmetic", "critical-section", "precomputed-tables", "serde", "ecdsa", "hash2curve", "alloc", "schnorr"], default-features = false }
 p256 = { workspace = true, features = ["arithmetic", "serde", "ecdsa", "hash2curve", "alloc"], default-features = false }
 ed25519 = { workspace = true, default-features = false }
@@ -45,7 +45,7 @@ maurer = { path = "../maurer", features = ["test_helpers"] }
 rand_chacha = { workspace = true }
 bcs = { workspace = true }
 class_groups = { path = "../class-groups", features = ["threshold", "test_helpers", "randomized_decryption"] }
-ecdsa = { workspace = true, features = ["verifying"] }
+ecdsa = { workspace = true, features = ["algorithm"] }
 k256 = { workspace = true, features = ["arithmetic", "critical-section", "precomputed-tables", "schnorr", "serde", "ecdsa", "hash2curve", "alloc"], default-features = false }
 p256 = { workspace = true, features = ["arithmetic", "serde", "ecdsa", "hash2curve", "alloc"], default-features = false }
 tiny-keccak = { version = "2.0.2", features = ["keccak"] }

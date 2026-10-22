@@ -212,16 +212,39 @@ where
         &self,
         rng: &mut impl CsRng,
     ) -> Result<EquivalenceClass<DELTA_QK_LIMBS>, Error> {
-        let kronecker_prime: NonZero<Uint<HALF_DELTA_QK_LIMBS>> = math::random_kronecker_prime(
+        let kronecker_prime = self.sample_h_kronecker_prime(rng)?;
+
+        self.h_from_kronecker_prime(kronecker_prime)
+    }
+
+    /// Sample the prime whose prime form generates `h`: a prime $\ell$ with
+    /// $(\Delta_{q^k} | \ell) = 1$, so that a form of norm $\ell$ exists in $CL(\Delta_{q^k})$.
+    pub(crate) fn sample_h_kronecker_prime(
+        &self,
+        rng: &mut impl CsRng,
+    ) -> Result<NonZero<Uint<HALF_DELTA_QK_LIMBS>>, Error> {
+        math::random_kronecker_prime(
             self.delta_qk.deref(),
             rng,
             H_PRIME_BIT_LENGTH_TARGET,
             H_PRIME_MAX_SAMPLE_ATTEMPTS,
         )
-        .ok_or_else(|| Error::from(ErrorKind::InvalidPublicParameters))?
-        .to_nz()
-        .expect("is non-zero; kronecker_prime is a prime");
+        .ok_or_else(|| Error::from(ErrorKind::InvalidPublicParameters))
+        .map(|kronecker_prime| {
+            kronecker_prime
+                .to_nz()
+                .expect("is non-zero; kronecker_prime is a prime")
+        })
+    }
 
+    /// Construct `h` from the prime sampled by [`Self::sample_h_kronecker_prime`].
+    ///
+    /// This is the deterministic half of [`Self::h`]. Fails if no prime form of norm
+    /// `kronecker_prime` exists for $\Delta_{q^k}$.
+    pub(crate) fn h_from_kronecker_prime(
+        &self,
+        kronecker_prime: NonZero<Uint<HALF_DELTA_QK_LIMBS>>,
+    ) -> Result<EquivalenceClass<DELTA_QK_LIMBS>, Error> {
         // Construct t, a prime form for CL(∆_{q^k})²
         // Safe to vartime; delta_qk is a public value.
         let t = EquivalenceClass::prime_form_vartime_discriminant(self.delta_qk, kronecker_prime)?

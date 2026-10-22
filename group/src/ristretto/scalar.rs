@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use sha3::Sha3_512;
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq, CtOption};
 
+use crate::csrng::Rng010;
 use crate::{
     curve25519, BoundedGroupElement, CsRng, CyclicGroupElement, GroupElement as _, HashToGroup,
     Invert, KnownOrderGroupElement, KnownOrderScalar, MulByGenerator, PrimeGroupElement, Reduce,
@@ -44,7 +45,11 @@ impl Samplable for Scalar {
         _public_parameters: &Self::PublicParameters,
         rng: &mut impl CsRng,
     ) -> crate::Result<Self> {
-        Ok(Self(curve25519_dalek::scalar::Scalar::random(rng)))
+        // TEMPORARY (two crypto-bigint versions): `Rng010` presents our rand_core 0.9 RNG to
+        // dalek's rand_core 0.10 sampler; revert to `Scalar::random(rng)` with it.
+        Ok(Self(curve25519_dalek::scalar::Scalar::random(&mut Rng010(
+            rng,
+        ))))
     }
 
     fn sample_randomizer(

@@ -1021,7 +1021,7 @@ pub mod test_helpers {
 
 #[cfg(test)]
 mod tests {
-    use rayon::prelude::*;
+    use rayon::iter::{IntoParallelIterator, ParallelIterator};
     use rstest::rstest;
 
     use group::{ristretto, secp256k1, OsCsRng};
@@ -1153,7 +1153,7 @@ mod tests {
 #[cfg(feature = "benchmarking")]
 pub(crate) mod benches {
     use criterion::Criterion;
-    use rayon::prelude::*;
+    use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
     use group::{ristretto, secp256k1, OsCsRng};
 

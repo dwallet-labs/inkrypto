@@ -31,6 +31,13 @@ chacha20poly1305 = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }
+# TEMPORARY (two crypto-bigint versions): the stable RustCrypto crates reach getrandom 0.4 through
+# crypto-common, and on wasm32 that version compiles only with its `wasm_js` feature on. Our own
+# code keeps using the workspace getrandom 0.3 (and 0.2 here on wasm32) because crypto-bigint
+# rc.9 and rand_core 0.9 do; this line only switches the feature on for the other copy. When
+# rand_core moves to 0.10 together with crypto-bigint, getrandom 0.4 becomes the workspace's
+# only getrandom and this line folds into the `getrandom` line above it.
+getrandom_for_the_stable_crates = { package = "getrandom", version = "0.4", default-features = false, features = ["wasm_js"] }
 group = { path = "../group", features = ["wasm_js"] }
 
 [dev-dependencies]

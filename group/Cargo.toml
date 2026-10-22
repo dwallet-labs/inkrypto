@@ -5,6 +5,9 @@ edition = "2021"
 license = "CC-BY-NC-ND-4.0"
 
 [dependencies]
+# The deployed revision of crypto-bigint, compiled in as a second crate for `sampling`: seeded
+# key derivation must keep reproducing the values that revision produced. Pinned forever.
+crypto-bigint-legacy = { package = "crypto-bigint", git = "https://github.com/ycscaly/crypto-bigint.git", rev = "8aabcee553b25f9f619722391de33edbe2f7412c", default-features = false, features = ["rand_core"] }
 crypto-bigint = { workspace = true, features = ["serde"], default-features = false }
 serde = { workspace = true, features = ["derive"] }
 subtle = { workspace = true, features = ["const-generics"] }
@@ -21,6 +24,9 @@ rayon = { workspace = true, optional = true }
 rand = { workspace = true, default-features = false,  features = ["alloc"] }
 rand_chacha = { workspace = true, default-features = false }
 rand_core = { workspace = true }
+# TEMPORARY (two crypto-bigint versions): only for the `Rng010` adapter in `csrng.rs`; see the root manifest.
+rand_core_010 = { workspace = true }
+shake = { workspace = true }
 getrandom = { workspace = true, optional = true }
 serde_json = { workspace = true, default-features = false, features = ["alloc"] }
 
@@ -28,6 +34,7 @@ serde_json = { workspace = true, default-features = false, features = ["alloc"] 
 criterion = { workspace = true, default-features = false, features = ["html_reports", "cargo_bench_support", "rayon"], optional = true }
 
 [dev-dependencies]
+sha2 = { workspace = true }
 k256 = { workspace = true, features = ["arithmetic", "critical-section", "precomputed-tables", "serde", "hash2curve", "alloc", "ecdsa"], default-features = false }
 rand = { workspace = true }
 getrandom = { workspace = true }

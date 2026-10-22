@@ -962,7 +962,8 @@ pub(crate) mod tests {
                 witnesses.as_slice(),
                 commitments_randomness.as_slice(),
                 64,
-                &mut OsCsRng,
+                // TEMPORARY (two crypto-bigint versions): revert to `&mut OsCsRng`.
+                &mut group::Rng010(&mut OsCsRng),
             )
             .unwrap()
             .0,
@@ -1146,7 +1147,8 @@ pub(crate) mod tests {
                 witnesses.as_slice(),
                 commitments_randomness.as_slice(),
                 RANGE_CLAIM_BITS,
-                &mut OsCsRng,
+                // TEMPORARY (two crypto-bigint versions): revert to `&mut OsCsRng`.
+                &mut group::Rng010(&mut OsCsRng),
             )
             .unwrap()
             .0,

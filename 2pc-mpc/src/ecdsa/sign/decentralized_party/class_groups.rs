@@ -724,7 +724,7 @@ pub mod asynchronous {
         >,
         Uint<MESSAGE_LIMBS>: Encoding,
         GroupElement::Scalar: Serialize + for<'a> Deserialize<'a>,
-    {
+{
         public_input
             .presign
             .as_ref()
@@ -826,7 +826,7 @@ pub mod asynchronous {
         >,
         Uint<MESSAGE_LIMBS>: Encoding,
         GroupElement::Scalar: Serialize + for<'a> Deserialize<'a>,
-    {
+{
         match &public_input.sign_message {
             SignData::Unverified(msg) => Ok(VerifiedSignDataRaw {
                 public_signature_nonce: msg.public_signature_nonce.clone(),
@@ -939,7 +939,7 @@ pub mod asynchronous {
         >,
         Uint<MESSAGE_LIMBS>: Encoding,
         GroupElement::Scalar: Serialize + for<'a> Deserialize<'a>,
-    {
+{
         match &public_input.sign_message {
             SignData::Unverified(sign_message) => {
                 let dkg_output_ref: crate::dkg::decentralized_party::Output<
@@ -1069,7 +1069,7 @@ pub mod asynchronous {
         >,
         Uint<MESSAGE_LIMBS>: Encoding,
         GroupElement::Scalar: Serialize + for<'a> Deserialize<'a>,
-    {
+{
         let dkg_output_ref: crate::dkg::decentralized_party::Output<
             GroupElement::Value,
             group::Value<CiphertextSpaceGroupElement<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
@@ -1338,7 +1338,7 @@ pub mod asynchronous {
         >,
         Uint<MESSAGE_LIMBS>: Encoding,
         GroupElement::Scalar: Serialize + for<'a> Deserialize<'a>,
-    {
+{
         // A present presign must match the protocol public parameters and the DKG output. A
         // missing presign is only acceptable for verified sign data; see `targeted_presign`.
         if public_input.dkg_output != *public_input.protocol_public_parameters

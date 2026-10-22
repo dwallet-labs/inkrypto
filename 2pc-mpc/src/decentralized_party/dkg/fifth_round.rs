@@ -69,7 +69,7 @@ impl super::Party {
         >,
         rng: &mut impl CsRng,
     ) -> crate::Result<crate::decentralized_party::threshold_encryption_of_secret_key_share_parts_to_sharing::AccusationRoundMessage>
-    {
+{
         crate::decentralized_party::threshold_encryption_of_secret_key_share_parts_to_sharing::accusation::advance(
             session_id,
             party_id,

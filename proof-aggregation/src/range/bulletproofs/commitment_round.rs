@@ -81,7 +81,7 @@ impl<const NUM_RANGE_CLAIMS: usize> CommitmentRoundParty<super::Output<NUM_RANGE
             .iter()
             .any(|witness| witness >= &(U256::ONE << RANGE_CLAIM_BITS))
         {
-            return Err(Error::from(ErrorKind::InvalidParameters))?;
+            Err(Error::from(ErrorKind::InvalidParameters))?;
         }
 
         let commitments_randomness: Vec<_> = self
@@ -165,8 +165,10 @@ impl<const NUM_RANGE_CLAIMS: usize> CommitmentRoundParty<super::Output<NUM_RANGE
                     .and_then(|position| position.checked_add(i))
                     .ok_or_else(|| Error::from(ErrorKind::InternalError))
                     .and_then(|position| {
+                        // TEMPORARY (two crypto-bigint versions): `group::Rng010` presents our rand_core
+                        // 0.9 RNG to the Bulletproofs fork's rand_core 0.10 API; revert to `rng`.
                         party
-                            .assign_position_with_rng(position, rng)
+                            .assign_position_with_rng(position, &mut group::Rng010(rng))
                             .map_err(|_| Error::from(ErrorKind::InvalidParameters))
                     })
             })

@@ -154,7 +154,6 @@ pub(crate) mod tests {
     use ecdsa::signature::hazmat::PrehashVerifier;
     use ecdsa::{
         elliptic_curve::{ops::Reduce, Scalar},
-        hazmat::{bits2field, DigestAlgorithm},
         signature::{digest::Digest, Verifier},
         Signature, VerifyingKey,
     };
@@ -507,7 +506,7 @@ pub(crate) mod tests {
         <GroupElement::Scalar as group::GroupElement>::PublicParameters:
         Clone + Serialize + for<'a> Deserialize<'a> + PartialEq + Eq,
         group::Value<GroupElement::Scalar>: Into<Uint<SCALAR_LIMBS>>,
-    {
+{
         crate::class_groups::ecdsa::SignPartyPublicInput {
             dkg_output,
             message,
@@ -619,7 +618,7 @@ pub(crate) mod tests {
         <GroupElement::Scalar as group::GroupElement>::PublicParameters:
         Clone + Serialize + for<'a> Deserialize<'a> + PartialEq + Eq,
         group::Value<GroupElement::Scalar>: Into<Uint<SCALAR_LIMBS>>,
-    {
+{
         crate::schnorr::ahe::sign::decentralized_party::PublicInput {
             expected_decrypters,
             message,
@@ -732,7 +731,7 @@ pub(crate) mod tests {
         <GroupElement::Scalar as group::GroupElement>::PublicParameters:
         Clone + Serialize + for<'a> Deserialize<'a> + PartialEq + Eq,
         group::Value<GroupElement::Scalar>: Into<Uint<SCALAR_LIMBS>>,
-    {
+{
         // VSS Schnorr derives each party's signature share from the presign, so it is never
         // optional there.
         let presign = presign.expect("VSS Schnorr sign requires the presign");
@@ -1191,7 +1190,7 @@ pub(crate) mod tests {
             secp256r1::GroupElement,
             Secp256r1EncryptionKey,
         >,
-    {
+{
         let access_structure =
             WeightedThresholdAccessStructure::new(threshold, party_to_weight.clone()).unwrap();
 
@@ -1437,7 +1436,7 @@ pub(crate) mod tests {
             curve25519::GroupElement,
             Curve25519EncryptionKey,
         >,
-    {
+{
         let access_structure =
             WeightedThresholdAccessStructure::new(threshold, party_to_weight.clone()).unwrap();
 
@@ -1690,7 +1689,7 @@ pub(crate) mod tests {
             ristretto::GroupElement,
             RistrettoEncryptionKey,
         >,
-    {
+{
         let access_structure =
             WeightedThresholdAccessStructure::new(threshold, party_to_weight.clone()).unwrap();
 
@@ -2275,7 +2274,7 @@ pub(crate) mod tests {
                 >,
             >,
         >,
-    {
+{
         let dkg_session_id = CommitmentSizedNumber::random(&mut OsCsRng);
         let (
             centralized_party_dkg_output,
@@ -2628,7 +2627,7 @@ pub(crate) mod tests {
                 >,
             >,
         >,
-    {
+{
         let dkg_session_id = CommitmentSizedNumber::random(&mut OsCsRng);
         let (
             centralized_party_dkg_output,
@@ -2964,7 +2963,7 @@ pub(crate) mod tests {
                 >,
             >,
         >,
-    {
+{
         // VSS requires weight-1 access structure
         let party_to_weight: HashMap<PartyID, Weight> =
             (1..=number_of_parties).map(|id| (id, 1)).collect();
@@ -3382,7 +3381,7 @@ pub(crate) mod tests {
             SecretKey = group::Value<secp256r1::Scalar>,
         >,
         <<P as Protocol>::SignDecentralizedParty as mpc::Party>::Message: Send + Sync,
-    {
+{
         let access_structure =
             WeightedThresholdAccessStructure::new(threshold, party_to_weight.clone()).unwrap();
 
@@ -3669,7 +3668,7 @@ pub(crate) mod tests {
             SecretKey = group::Value<curve25519::Scalar>,
         >,
         <<P as Protocol>::SignDecentralizedParty as mpc::Party>::Message: Send + Sync,
-    {
+{
         let access_structure =
             WeightedThresholdAccessStructure::new(threshold, party_to_weight.clone()).unwrap();
 
@@ -3959,7 +3958,7 @@ pub(crate) mod tests {
             SecretKey = group::Value<ristretto::Scalar>,
         >,
         <<P as Protocol>::SignDecentralizedParty as mpc::Party>::Message: Send + Sync,
-    {
+{
         let access_structure =
             WeightedThresholdAccessStructure::new(threshold, party_to_weight.clone()).unwrap();
 
@@ -4328,7 +4327,7 @@ pub(crate) mod tests {
             SecretKey = group::Value<secp256k1::Scalar>,
         >,
         <<P as Protocol>::SignDecentralizedParty as mpc::Party>::Message: Send + Sync,
-    {
+{
         let access_structure =
             WeightedThresholdAccessStructure::new(threshold, party_to_weight.clone()).unwrap();
 
@@ -4593,7 +4592,7 @@ pub(crate) mod tests {
             SecretKey = group::Value<secp256k1::Scalar>,
         >,
         <<P as Protocol>::SignDecentralizedParty as mpc::Party>::Message: Send + Sync,
-    {
+{
         let access_structure =
             WeightedThresholdAccessStructure::new(threshold, party_to_weight.clone()).unwrap();
 
@@ -4843,7 +4842,7 @@ pub(crate) mod tests {
             SecretKey = group::Value<secp256k1::Scalar>,
         >,
         <<P as Protocol>::SignDecentralizedParty as mpc::Party>::Message: Send + Sync,
-    {
+{
         // VSS requires weight-1 access structure
         let party_to_weight: HashMap<PartyID, Weight> =
             (1..=number_of_parties).map(|id| (id, 1)).collect();
@@ -5186,7 +5185,7 @@ pub(crate) mod tests {
             SecretKey = group::Value<curve25519::Scalar>,
         >,
         <<P as Protocol>::SignDecentralizedParty as mpc::Party>::Message: Send + Sync,
-    {
+{
         use crate::schnorr::vss::sign::decentralized_party::PrivateInput as VSSPrivateInput;
         use group::{CyclicGroupElement, Samplable};
 
@@ -5512,7 +5511,7 @@ pub(crate) mod tests {
             SecretKey = group::Value<ristretto::Scalar>,
         >,
         <<P as Protocol>::SignDecentralizedParty as mpc::Party>::Message: Send + Sync,
-    {
+{
         use crate::schnorr::vss::sign::decentralized_party::PrivateInput as VSSPrivateInput;
         use group::{CyclicGroupElement, Samplable};
 

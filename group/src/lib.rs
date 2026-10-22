@@ -22,6 +22,7 @@ mod hash_to_scalar;
 pub mod linear_combination;
 mod reduce;
 pub mod ristretto;
+pub mod sampling;
 pub mod scalar;
 pub mod secp256k1;
 pub mod secp256r1;
@@ -40,7 +41,8 @@ pub mod test_helpers {
 use crate::linear_combination::linearly_combine_bounded;
 #[cfg(any(test, feature = "os_rng"))]
 pub use csrng::OsCsRng;
-pub use csrng::{CsRng, SeedableRng};
+// `Rng010` is TEMPORARY (two crypto-bigint versions); see its definition in `csrng.rs`.
+pub use csrng::{CsRng, Rng010, SeedableRng};
 pub use linear_combination::linearly_combine_bounded_or_scale;
 pub use seedable_collection::SeedableCollection;
 

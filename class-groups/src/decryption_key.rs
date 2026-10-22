@@ -4,7 +4,7 @@
 use std::marker::PhantomData;
 
 use crypto_bigint::subtle::{Choice, ConstantTimeLess, CtOption};
-use crypto_bigint::{Concat, ConstantTimeSelect, Encoding, Int, InvertMod, Split, Uint};
+use crypto_bigint::{Concat, ConstantTimeSelect, Encoding, Int, InvertMod, NonZero, Split, Uint};
 use serde::{Deserialize, Serialize};
 
 use group::{
@@ -14,6 +14,9 @@ use homomorphic_encryption::{
     AdditivelyHomomorphicDecryptionKey, AdditivelyHomomorphicEncryptionKey,
     GroupsPublicParametersAccessors,
 };
+
+use group::sampling::legacy_random_mod;
+use rand_chacha::ChaCha20Rng;
 
 use crate::accelerator::MultiFoldNupowAccelerator;
 use crate::encryption_key::public_parameters::Instantiate;
@@ -197,6 +200,69 @@ where
         )?
         .value();
 
+        Self::new_from_secret_key_with_setup_parameters(setup_parameters, secret_key)
+    }
+
+    /// Reproduce a decryption key that was derived from its seed with the deployed crypto-bigint
+    /// revision, before the library's sampler changed.
+    ///
+    /// This is the backward-compatibility pathway, for keys that already exist: it draws with
+    /// [`sample_secret_key_legacy`], the deployed crypto-bigint sampler, from `rng`, the ChaCha20
+    /// RNG built by [`group::sampling::legacy_seeded_rng`], fresh from the seed or advanced only
+    /// by earlier legacy draws (the CRT keypairs are drawn one after another from one RNG). It is otherwise identical to [`Self::generate_with_setup_parameters`]. Every new
+    /// key, seeded or not, must use that function and the current sampler.
+    ///
+    /// Not compatible between 32-bit and 64-bit targets: the legacy sampler draws whole
+    /// machine words, so the same seed gives a different key on `wasm32` than on native, and a
+    /// key is reproduced only on a target with the same word width as the one that first derived
+    /// it.
+    #[allow(clippy::type_complexity)]
+    pub fn generate_with_setup_parameters_legacy(
+        setup_parameters: SetupParameters<
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            <GroupElement::Scalar as group::GroupElement>::PublicParameters,
+        >,
+        rng: &mut ChaCha20Rng,
+    ) -> Result<
+        (
+            PublicParameters<
+                PLAINTEXT_SPACE_SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                <GroupElement::Scalar as group::GroupElement>::PublicParameters,
+            >,
+            Self,
+        ),
+        Error,
+    > {
+        let secret_key = sample_secret_key_legacy(setup_parameters.decryption_key_bits(), rng);
+
+        Self::new_from_secret_key_with_setup_parameters(setup_parameters, secret_key)
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn new_from_secret_key_with_setup_parameters(
+        setup_parameters: SetupParameters<
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            <GroupElement::Scalar as group::GroupElement>::PublicParameters,
+        >,
+        secret_key: SecretKey<FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+    ) -> Result<
+        (
+            PublicParameters<
+                PLAINTEXT_SPACE_SCALAR_LIMBS,
+                FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                <GroupElement::Scalar as group::GroupElement>::PublicParameters,
+            >,
+            Self,
+        ),
+        Error,
+    > {
         let pp = PublicParameters::new_from_secret_key(setup_parameters, secret_key)?;
 
         let neutral = <EncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS, FUNDAMENTAL_DISCRIMINANT_LIMBS, NON_FUNDAMENTAL_DISCRIMINANT_LIMBS, GroupElement> as AdditivelyHomomorphicEncryptionKey<PLAINTEXT_SPACE_SCALAR_LIMBS>>::PlaintextSpaceGroupElement::neutral_from_public_parameters(
@@ -215,6 +281,26 @@ where
             },
         ))
     }
+}
+
+/// Draw a decryption key of `decryption_key_bits` bits exactly as the deployed crypto-bigint
+/// revision drew it, on this target, from the ChaCha20 RNG of
+/// [`group::sampling::legacy_seeded_rng`]: the backward-compatibility sampler behind [`DecryptionKey::generate_with_setup_parameters_legacy`]. Use only to
+/// reproduce a key that was derived from its seed before the sampler changed; see
+/// [`group::sampling::legacy_random_mod`]. Every new key uses the current sampler.
+///
+/// Not compatible between 32-bit and 64-bit targets: the legacy sampler draws whole
+/// machine words, so the same seed gives a different key on `wasm32` than on native, and a
+/// key is reproduced only on a target with the same word width as the one that first derived
+/// it.
+pub fn sample_secret_key_legacy<const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize>(
+    decryption_key_bits: u32,
+    rng: &mut ChaCha20Rng,
+) -> SecretKey<FUNDAMENTAL_DISCRIMINANT_LIMBS> {
+    let upper_bound =
+        NonZero::new(Uint::<FUNDAMENTAL_DISCRIMINANT_LIMBS>::ONE << decryption_key_bits).unwrap();
+
+    legacy_random_mod::<FUNDAMENTAL_DISCRIMINANT_LIMBS>(rng, &upper_bound)
 }
 
 pub trait DiscreteLogInF<
@@ -515,6 +601,121 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::setup::DeriveFromPlaintextPublicParameters;
+    use crate::{
+        Curve25519DecryptionKey, Curve25519SetupParameters, RistrettoDecryptionKey,
+        RistrettoSetupParameters, Secp256k1DecryptionKey, Secp256k1SetupParameters,
+        Secp256r1DecryptionKey, Secp256r1SetupParameters, DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+    };
+    use group::sampling::legacy_seeded_rng;
+    use group::{
+        ristretto as ristretto_group, secp256k1 as secp256k1_group, secp256r1 as secp256r1_group,
+        PublicParameters,
+    };
+    use sha2::{Digest, Sha256};
+
+    // Native 64-bit BCS fingerprints captured with crypto-bigint fork 8aabcee5 and rand_chacha
+    // 0.9.0 from the seed `[42; 32]`.
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn seeded_wire_serialization_compatibility() {
+        let mut rng = legacy_seeded_rng([42u8; 32]);
+        let (_, key) = Secp256k1DecryptionKey::generate_with_setup_parameters_legacy(
+            Secp256k1SetupParameters::derive_from_plaintext_parameters::<secp256k1_group::Scalar>(
+                PublicParameters::<secp256k1_group::Scalar>::default(),
+                DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+            )
+            .unwrap(),
+            &mut rng,
+        )
+        .unwrap();
+        assert_eq!(
+            Sha256::digest(bcs::to_bytes(&key.decryption_key).unwrap()).as_slice(),
+            &[
+                166, 5, 114, 250, 84, 162, 79, 102, 254, 192, 67, 229, 244, 196, 125, 101, 33, 99,
+                219, 253, 21, 104, 103, 16, 98, 40, 140, 90, 214, 235, 170, 204
+            ]
+        );
+        assert_eq!(
+            Sha256::digest(bcs::to_bytes(&key.encryption_key).unwrap()).as_slice(),
+            &[
+                99, 82, 152, 160, 63, 44, 40, 112, 76, 104, 29, 214, 43, 124, 135, 171, 206, 241,
+                202, 132, 49, 88, 152, 101, 158, 175, 166, 147, 243, 77, 95, 59
+            ]
+        );
+        let mut rng = legacy_seeded_rng([42u8; 32]);
+        let (_, key) = Secp256r1DecryptionKey::generate_with_setup_parameters_legacy(
+            Secp256r1SetupParameters::derive_from_plaintext_parameters::<secp256r1_group::Scalar>(
+                PublicParameters::<secp256r1_group::Scalar>::default(),
+                DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+            )
+            .unwrap(),
+            &mut rng,
+        )
+        .unwrap();
+        assert_eq!(
+            Sha256::digest(bcs::to_bytes(&key.decryption_key).unwrap()).as_slice(),
+            &[
+                166, 5, 114, 250, 84, 162, 79, 102, 254, 192, 67, 229, 244, 196, 125, 101, 33, 99,
+                219, 253, 21, 104, 103, 16, 98, 40, 140, 90, 214, 235, 170, 204
+            ]
+        );
+        assert_eq!(
+            Sha256::digest(bcs::to_bytes(&key.encryption_key).unwrap()).as_slice(),
+            &[
+                172, 12, 205, 94, 113, 0, 224, 24, 200, 13, 199, 226, 198, 136, 111, 246, 242, 11,
+                13, 127, 46, 249, 111, 127, 82, 91, 53, 31, 193, 234, 197, 118
+            ]
+        );
+        let mut rng = legacy_seeded_rng([42u8; 32]);
+        let (_, key) = RistrettoDecryptionKey::generate_with_setup_parameters_legacy(
+            RistrettoSetupParameters::derive_from_plaintext_parameters::<ristretto_group::Scalar>(
+                PublicParameters::<ristretto_group::Scalar>::default(),
+                DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+            )
+            .unwrap(),
+            &mut rng,
+        )
+        .unwrap();
+        assert_eq!(
+            Sha256::digest(bcs::to_bytes(&key.decryption_key).unwrap()).as_slice(),
+            &[
+                166, 5, 114, 250, 84, 162, 79, 102, 254, 192, 67, 229, 244, 196, 125, 101, 33, 99,
+                219, 253, 21, 104, 103, 16, 98, 40, 140, 90, 214, 235, 170, 204
+            ]
+        );
+        assert_eq!(
+            Sha256::digest(bcs::to_bytes(&key.encryption_key).unwrap()).as_slice(),
+            &[
+                154, 18, 98, 49, 127, 109, 231, 203, 129, 135, 43, 219, 197, 11, 113, 121, 200,
+                233, 146, 217, 166, 47, 206, 246, 246, 35, 17, 53, 79, 102, 238, 106
+            ]
+        );
+        let mut rng = legacy_seeded_rng([42u8; 32]);
+        let (_, key) = Curve25519DecryptionKey::generate_with_setup_parameters_legacy(
+            Curve25519SetupParameters::derive_from_plaintext_parameters::<ristretto_group::Scalar>(
+                PublicParameters::<ristretto_group::Scalar>::default(),
+                DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+            )
+            .unwrap(),
+            &mut rng,
+        )
+        .unwrap();
+        assert_eq!(
+            Sha256::digest(bcs::to_bytes(&key.decryption_key).unwrap()).as_slice(),
+            &[
+                166, 5, 114, 250, 84, 162, 79, 102, 254, 192, 67, 229, 244, 196, 125, 101, 33, 99,
+                219, 253, 21, 104, 103, 16, 98, 40, 140, 90, 214, 235, 170, 204
+            ]
+        );
+        assert_eq!(
+            Sha256::digest(bcs::to_bytes(&key.encryption_key).unwrap()).as_slice(),
+            &[
+                154, 18, 98, 49, 127, 109, 231, 203, 129, 135, 43, 219, 197, 11, 113, 121, 200,
+                233, 146, 217, 166, 47, 206, 246, 246, 35, 17, 53, 79, 102, 238, 106
+            ]
+        );
+    }
     mod ristretto {
         use crypto_bigint::Uint;
 

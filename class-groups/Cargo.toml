@@ -31,6 +31,8 @@ serde_json = { workspace = true, optional = true  }
 bcs = { workspace = true, optional = true }
 
 [dev-dependencies]
+bcs = { workspace = true }
+sha2 = { workspace = true }
 group = { path = "../group", features = ["os_rng"] }
 criterion = { workspace = true }
 rstest = { workspace = true }

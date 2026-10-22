@@ -33,6 +33,7 @@ use crate::setup::SetupParameters;
 #[cfg(any(not(feature = "unsafe_mock"), test))]
 use crate::setup::DeriveFromPlaintextPublicParameters;
 use crate::{equivalence_class, CompactIbqf, DecryptionKey, EquivalenceClass, Result};
+use group::sampling::legacy_seeded_rng;
 
 /// Knowledge of discrete log UC-secure Fischlin proof for PVSS encryption keys.
 ///
@@ -166,8 +167,176 @@ where
             PlaintextSpaceGroupElement,
         >::generate_with_setup_parameters(setup_parameters.clone(), rng)?;
 
-    let decryption_key = decryption_key.decryption_key;
+    // Steps 2 to 4 are unchanged and shared with the legacy form below, which differs only in
+    // how the decryption key is drawn.
+    prove_encryption_keypair::<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        HALF_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        DOUBLE_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        DECRYPTION_KEY_WITNESS_LIMBS,
+        PlaintextSpaceGroupElement,
+    >(
+        setup_parameters,
+        encryption_scheme_public_parameters.encryption_key.value(),
+        decryption_key.decryption_key,
+        rng,
+    )
+}
 
+/// Reproduce the keypair a validator derived from `seed` with the deployed crypto-bigint
+/// revision; see [`DecryptionKey::generate_with_setup_parameters_legacy`]. The key and then the
+/// proof are drawn from one fresh ChaCha20 RNG seeded with `seed` ([`legacy_seeded_rng`]),
+/// exactly as the deployed caller did. New keys use [`generate_and_prove_encryption_keypair`].
+///
+/// Not compatible between 32-bit and 64-bit targets: the legacy sampler draws whole
+/// machine words, so the same seed gives a different key on `wasm32` than on native, and a
+/// key is reproduced only on a target with the same word width as the one that first derived
+/// it.
+pub fn generate_and_prove_encryption_keypair_legacy<
+    const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
+    const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    const HALF_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    const DOUBLE_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    const DECRYPTION_KEY_WITNESS_LIMBS: usize,
+    PlaintextSpaceGroupElement: PrimeGroupElement<PLAINTEXT_SPACE_SCALAR_LIMBS>,
+>(
+    setup_parameters: &SetupParameters<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<PlaintextSpaceGroupElement::Scalar>,
+    >,
+    seed: [u8; 32],
+) -> Result<(
+    CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+    KnowledgeOfDecryptionKeyUCProof<
+        DECRYPTION_KEY_WITNESS_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    >,
+    Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+)>
+where
+    Int<PLAINTEXT_SPACE_SCALAR_LIMBS>: Encoding,
+    Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>:
+        Encoding + crypto_bigint::InvertMod<Output = Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>>,
+
+    Int<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+
+    Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Uint<HALF_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>:
+        crypto_bigint::Concat<Output = Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+    Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding
+        + crypto_bigint::Concat<Output = Uint<DOUBLE_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>
+        + crypto_bigint::Split<Output = Uint<HALF_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+    Uint<DOUBLE_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>:
+        crypto_bigint::Split<Output = Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+
+    Int<DECRYPTION_KEY_WITNESS_LIMBS>: Encoding,
+    Uint<DECRYPTION_KEY_WITNESS_LIMBS>: Encoding,
+
+    EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
+{
+    let mut rng = legacy_seeded_rng(seed);
+
+    // Step 1: Reproduce the decryption key sk ← Z_Δ with the deployed sampler and RNG
+    let (encryption_scheme_public_parameters, decryption_key) =
+        DecryptionKey::<
+            PLAINTEXT_SPACE_SCALAR_LIMBS,
+            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            PlaintextSpaceGroupElement,
+        >::generate_with_setup_parameters_legacy(setup_parameters.clone(), &mut rng)?;
+
+    prove_encryption_keypair::<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        HALF_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        DOUBLE_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        DECRYPTION_KEY_WITNESS_LIMBS,
+        PlaintextSpaceGroupElement,
+    >(
+        setup_parameters,
+        encryption_scheme_public_parameters.encryption_key.value(),
+        decryption_key.decryption_key,
+        &mut rng,
+    )
+}
+
+/// Steps 2 to 4 of [`generate_and_prove_encryption_keypair`], shared with its legacy form: the
+/// proof of knowledge of `decryption_key` behind `encryption_key`.
+fn prove_encryption_keypair<
+    const PLAINTEXT_SPACE_SCALAR_LIMBS: usize,
+    const FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    const HALF_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    const NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    const DOUBLE_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS: usize,
+    const DECRYPTION_KEY_WITNESS_LIMBS: usize,
+    PlaintextSpaceGroupElement: PrimeGroupElement<PLAINTEXT_SPACE_SCALAR_LIMBS>,
+>(
+    setup_parameters: &SetupParameters<
+        PLAINTEXT_SPACE_SCALAR_LIMBS,
+        FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+        group::PublicParameters<PlaintextSpaceGroupElement::Scalar>,
+    >,
+    encryption_key: CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+    decryption_key: Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+    rng: &mut impl CsRng,
+) -> Result<(
+    CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+    KnowledgeOfDecryptionKeyUCProof<
+        DECRYPTION_KEY_WITNESS_LIMBS,
+        NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+    >,
+    Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+)>
+where
+    Int<PLAINTEXT_SPACE_SCALAR_LIMBS>: Encoding,
+    Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>:
+        Encoding + crypto_bigint::InvertMod<Output = Uint<PLAINTEXT_SPACE_SCALAR_LIMBS>>,
+
+    Int<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Uint<FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+
+    Int<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding,
+    Uint<HALF_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>:
+        crypto_bigint::Concat<Output = Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+    Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: Encoding
+        + crypto_bigint::Concat<Output = Uint<DOUBLE_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>
+        + crypto_bigint::Split<Output = Uint<HALF_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+    Uint<DOUBLE_NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>:
+        crypto_bigint::Split<Output = Uint<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>>,
+
+    Int<DECRYPTION_KEY_WITNESS_LIMBS>: Encoding,
+    Uint<DECRYPTION_KEY_WITNESS_LIMBS>: Encoding,
+
+    EquivalenceClass<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>: group::GroupElement<
+            Value = CompactIbqf<NON_FUNDAMENTAL_DISCRIMINANT_LIMBS>,
+            PublicParameters = equivalence_class::PublicParameters<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        > + EquivalenceClassOps<
+            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            MultiFoldNupowAccelerator = MultiFoldNupowAccelerator<
+                NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+            >,
+        >,
+{
     // Step 2: Construct proof public parameters
     let language_public_parameters = construct_knowledge_of_decryption_key_uc_public_parameters::<
         PLAINTEXT_SPACE_SCALAR_LIMBS,
@@ -194,11 +363,7 @@ where
         rng,
     )?;
 
-    Ok((
-        encryption_scheme_public_parameters.encryption_key.value(),
-        proof,
-        decryption_key,
-    ))
+    Ok((encryption_key, proof, decryption_key))
 }
 
 /// Fixture generator (test-only, feature `unsafe_mock`): derives the curve's

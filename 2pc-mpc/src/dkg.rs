@@ -165,6 +165,20 @@ pub trait Protocol {
     /// *WARNING*: KEEP OUTPUT PRIVATE.
     fn generate_decryption_key(rng: &mut impl CsRng) -> crate::Result<Self::DecryptionKey>;
 
+    /// Reproduce a decryption key that was derived from `seed` with the deployed crypto-bigint
+    /// revision, before the library's sampler changed. The key is drawn from a fresh ChaCha20
+    /// RNG seeded with `seed` ([`group::sampling::legacy_seeded_rng`]), exactly as the deployed
+    /// caller did. For keys that already exist only; new keys use
+    /// [`Self::generate_decryption_key`].
+    ///
+    /// Not compatible between 32-bit and 64-bit targets: the legacy sampler draws whole
+    /// machine words, so the same seed gives a different key on `wasm32` than on native, and
+    /// a key is reproduced only on a target with the same word width as the one that first
+    /// derived it.
+    ///
+    /// *WARNING*: KEEP OUTPUT PRIVATE.
+    fn generate_decryption_key_legacy(seed: [u8; 32]) -> crate::Result<Self::DecryptionKey>;
+
     /// A helper function for the "encrypted user-share" feature,
     /// in which the centralized party encrypts its secret key share under its own key,
     /// and lets an external entity verify & store it as backup.

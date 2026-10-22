@@ -23,7 +23,8 @@ pub mod asynchronous {
     use class_groups::setup::SetupParameters;
     use class_groups::MultiFoldNupowAccelerator;
     use class_groups::DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER;
-    use class_groups::{CiphertextSpaceValue, DecryptionKey};
+    use class_groups::{sample_secret_key_legacy, CiphertextSpaceValue, DecryptionKey};
+    use group::sampling::legacy_seeded_rng;
     use group::{CsRng, GroupElement, PrimeGroupElement, StatisticalSecuritySizedNumber};
     use homomorphic_encryption::{
         AdditivelyHomomorphicDecryptionKey, AdditivelyHomomorphicEncryptionKey,
@@ -126,7 +127,7 @@ pub mod asynchronous {
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             group::PublicParameters<GroupElement::Scalar>,
         >,
-    {
+{
         match centralized_party_secret_key_share_verification {
             CentralizedPartyKeyShareVerification::Encrypted {
                 encryption_key_value,
@@ -238,7 +239,7 @@ pub mod asynchronous {
             NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
             group::PublicParameters<GroupElement::Scalar>,
         >,
-    {
+{
         if &dkg_output != protocol_public_parameters {
             return Err(Error::from(ErrorKind::InvalidParameters));
         }
@@ -479,7 +480,7 @@ pub mod asynchronous {
             >,
             SecretKey = ::class_groups::SecretKey<FUNDAMENTAL_DISCRIMINANT_LIMBS>
         >,
-    {
+{
         let setup_parameters = protocol_public_parameters
             .encryption_scheme_public_parameters
             .setup_parameters
@@ -691,6 +692,26 @@ pub mod asynchronous {
                         )?;
 
                         Ok(decryption_key.decryption_key)
+                    }
+
+                    fn generate_decryption_key_legacy(
+                        seed: [u8; 32],
+                    ) -> crate::Result<Self::DecryptionKey> {
+                        let plaintext_space_public_parameters = group::PublicParameters::<GroupElement::Scalar>::default();
+                        let setup_parameters = SetupParameters::<
+                            SCALAR_LIMBS,
+                            FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                            NON_FUNDAMENTAL_DISCRIMINANT_LIMBS,
+                            group::PublicParameters<GroupElement::Scalar>,
+                        >::derive_from_plaintext_parameters::<GroupElement::Scalar>(
+                            plaintext_space_public_parameters,
+                            DEFAULT_COMPUTATIONAL_SECURITY_PARAMETER,
+                        )?;
+
+                        Ok(sample_secret_key_legacy::<FUNDAMENTAL_DISCRIMINANT_LIMBS>(
+                            setup_parameters.decryption_key_bits(),
+                            &mut legacy_seeded_rng(seed),
+                        ))
                     }
 
                     fn encryption_key_from_decryption_key(

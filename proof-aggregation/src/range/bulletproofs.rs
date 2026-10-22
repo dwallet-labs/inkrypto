@@ -341,8 +341,9 @@ mod tests {
 
             let position = (usize::from(party_id) - 1) * NUM_RANGE_CLAIMS * batch_size;
 
+            // TEMPORARY (two crypto-bigint versions): revert to `&mut OsCsRng`.
             let (malicious_subparty, commitment) = malicious_subparty
-                .assign_position_with_rng(position, &mut OsCsRng)
+                .assign_position_with_rng(position, &mut group::Rng010(&mut OsCsRng))
                 .unwrap();
 
             malicious_party.parties_awaiting_bit_challenge[0] = malicious_subparty;

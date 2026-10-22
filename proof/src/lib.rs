@@ -189,7 +189,7 @@ pub trait Proof:
             || proofs.len() != protocol_contexts.len()
             || statements.iter().any(|v| v.len() != batch_size)
         {
-            return Err(Error::from(ErrorKind::InvalidParameters))?;
+            Err(Error::from(ErrorKind::InvalidParameters))?;
         }
 
         proofs

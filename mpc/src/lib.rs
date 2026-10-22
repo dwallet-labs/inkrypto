@@ -171,7 +171,7 @@ impl<T, E: fmt::Debug, I: IntoIterator<Item = (PartyID, std::result::Result<T, E
         let (malicious_parties, map) = self.handle_invalid_messages_async();
 
         if !malicious_parties.is_empty() {
-            return Err(Error::from(ErrorKind::InvalidMessage(malicious_parties)))?;
+            Err(Error::from(ErrorKind::InvalidMessage(malicious_parties)))?;
         }
 
         Ok(map)
