@@ -14,3 +14,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: errata-ai/vale-action@reviewdog
+        with:
+          # Pinned. With `latest`, the step downloads whatever Vale release is newest.
+          # On 2026-10-22 Vale published v3.25.0 with no binaries attached for about an
+          # hour, the download answered 404, and this job failed on every branch.
+          # 3.24.0 is the release the job last passed with.
+          version: 3.24.0
